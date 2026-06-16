@@ -4,3 +4,4 @@ __pycache__/
 coordinator.db
 runs/
 worktrees/
+tmp/
