@@ -78,3 +78,13 @@ def diff_patch(worktree_path: Path) -> str:
         if untracked_files:
             reset = git(["reset", "-q", "--", *untracked_files], cwd=worktree_path)
             require_success(reset, "clear untracked intent-to-add markers")
+
+
+def commit_all(worktree_path: Path, message: str) -> str:
+    add_result = git(["add", "--all"], cwd=worktree_path)
+    require_success(add_result, "git add")
+    commit_result = git(["commit", "-m", message], cwd=worktree_path)
+    require_success(commit_result, "git commit")
+    rev_result = git(["rev-parse", "HEAD"], cwd=worktree_path)
+    require_success(rev_result, "read commit hash")
+    return rev_result.stdout.strip()

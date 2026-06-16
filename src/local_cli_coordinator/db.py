@@ -109,3 +109,31 @@ def transition_task(conn: sqlite3.Connection, task_id: str, new_state: str, note
         (task_id, current["state"], new_state, note),
     )
     conn.commit()
+
+
+def next_ready_task(conn: sqlite3.Connection) -> sqlite3.Row | None:
+    return conn.execute(
+        "select * from tasks where state = ? order by created_at, id limit 1",
+        ("ready",),
+    ).fetchone()
+
+
+def set_task_branch_and_worktree(
+    conn: sqlite3.Connection,
+    task_id: str,
+    branch: str,
+    worktree_path: Path,
+) -> None:
+    conn.execute(
+        "update tasks set branch = ?, worktree_path = ?, updated_at = current_timestamp where id = ?",
+        (branch, str(worktree_path), task_id),
+    )
+    conn.commit()
+
+
+def add_artifact(conn: sqlite3.Connection, task_id: str, kind: str, path: Path) -> None:
+    conn.execute(
+        "insert into artifacts(task_id, kind, path) values (?, ?, ?)",
+        (task_id, kind, str(path)),
+    )
+    conn.commit()
