@@ -1,6 +1,6 @@
 import unittest
 
-from helpers import run_cli
+from tests.helpers import run_cli
 
 
 class CliSmokeTests(unittest.TestCase):

@@ -103,7 +103,7 @@ Add this to `tests/test_cli.py`:
 ```python
 import unittest
 
-from helpers import run_cli
+from tests.helpers import run_cli
 
 
 class CliSmokeTests(unittest.TestCase):
@@ -1134,7 +1134,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from helpers import init_git_repo
+from tests.helpers import init_git_repo
 from local_cli_coordinator.gitops import collect_changed_files, create_worktree, diff_patch, is_git_repo
 
 
@@ -1525,7 +1525,7 @@ import textwrap
 import unittest
 from pathlib import Path
 
-from helpers import init_git_repo
+from tests.helpers import init_git_repo
 from local_cli_coordinator.config import AgentConfig, CoordinatorConfig, PolicyConfig, RepoConfig
 from local_cli_coordinator.db import connect, create_task, get_task, init_db
 from local_cli_coordinator.engine import run_one_ready_task
@@ -1786,7 +1786,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from helpers import init_git_repo, run
+from tests.helpers import init_git_repo, run
 from local_cli_coordinator.gitops import commit_all, create_worktree, push_branch
 
 
@@ -1911,7 +1911,7 @@ import textwrap
 import unittest
 from pathlib import Path
 
-from helpers import run_cli
+from tests.helpers import run_cli
 
 
 class CliCommandTests(unittest.TestCase):
