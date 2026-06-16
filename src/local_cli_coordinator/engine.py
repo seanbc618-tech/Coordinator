@@ -124,9 +124,17 @@ def run_one_ready_task(conn: sqlite3.Connection, config: CoordinatorConfig, root
     )
     if repo.allow_push and repo.merge_policy != "no_push":
         transition_task(conn, task["id"], "pushing", "pushing branch")
-        push_branch(worktree, repo.remote, branch)
-    if repo.merge_policy == "auto_merge_default_branch":
-        transition_task(conn, task["id"], "merging", "merging to default branch")
-        merge_branch_to_default(repo.path, branch, repo.default_branch, repo.remote)
+        try:
+            push_branch(worktree, repo.remote, branch)
+        except (RuntimeError, OSError) as exc:
+            transition_task(conn, task["id"], "failed", f"push failed: {exc}")
+            return True
+        if repo.merge_policy == "auto_merge_default_branch":
+            transition_task(conn, task["id"], "merging", "merging to default branch")
+            try:
+                merge_branch_to_default(repo.path, branch, repo.default_branch, repo.remote)
+            except (RuntimeError, OSError) as exc:
+                transition_task(conn, task["id"], "failed", f"merge failed: {exc}")
+                return True
     transition_task(conn, task["id"], "done", "completed")
     return True

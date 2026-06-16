@@ -161,3 +161,145 @@ class PushMergeTests(unittest.TestCase):
             self.assertEqual(task["state"], "done")
             self.assertEqual(latest_event_note(conn, task_id), "completed")
             self.assertIn(task["branch"], remote_branches(remote))
+
+    def test_engine_does_not_merge_when_push_is_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            init_git_repo(repo)
+            remote = init_bare_remote(root, repo)
+            conn = connect(root / "coordinator.db")
+            init_db(conn)
+            task_id = create_task(
+                conn,
+                title="Local only feature file",
+                repo="demo",
+                source_path="tasks/inbox/local.md",
+                priority="normal",
+                capabilities=["code"],
+                goal="Create feature.txt.",
+                acceptance_criteria=["feature.txt contains done"],
+                verification_commands=[],
+            )
+            config = push_config(repo)
+            config = CoordinatorConfig(
+                agents=config.agents,
+                repos={
+                    "demo": RepoConfig(
+                        id="demo",
+                        path=repo,
+                        default_branch="main",
+                        remote="origin",
+                        branch_prefix="coord/",
+                        allow_push=False,
+                        merge_policy="auto_merge_default_branch",
+                        verify_commands=config.repos["demo"].verify_commands,
+                    )
+                },
+                policy=config.policy,
+            )
+
+            processed = run_one_ready_task(conn, config, root)
+
+            self.assertTrue(processed)
+            task = get_task(conn, task_id)
+            self.assertEqual(task["state"], "done")
+            self.assertNotIn(task["branch"], remote_branches(remote))
+            remote_show = run(
+                "git",
+                f"--git-dir={remote}",
+                "show",
+                "main:feature.txt",
+                cwd=remote.parent,
+            )
+            self.assertNotEqual(remote_show.returncode, 0)
+
+    def test_engine_marks_task_failed_when_push_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            init_git_repo(repo)
+            conn = connect(root / "coordinator.db")
+            init_db(conn)
+            task_id = create_task(
+                conn,
+                title="Push without remote",
+                repo="demo",
+                source_path="tasks/inbox/push-fail.md",
+                priority="normal",
+                capabilities=["code"],
+                goal="Create feature.txt.",
+                acceptance_criteria=["feature.txt contains done"],
+                verification_commands=[],
+            )
+
+            processed = run_one_ready_task(conn, push_config(repo), root)
+
+            self.assertTrue(processed)
+            task = get_task(conn, task_id)
+            self.assertEqual(task["state"], "failed")
+            self.assertIn("push failed", latest_event_note(conn, task_id))
+
+    def test_engine_marks_task_failed_when_merge_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            init_git_repo(repo)
+            init_bare_remote(root, repo)
+            agent_script = root / "agent.py"
+            agent_script.write_text(
+                "from pathlib import Path\n"
+                "import subprocess\n"
+                f"repo = Path({str(repo)!r})\n"
+                "Path('feature.txt').write_text('task\\n')\n"
+                "(repo / 'README.md').write_text('diverged\\n')\n"
+                "subprocess.run(['git', 'add', 'README.md'], cwd=repo, check=True)\n"
+                "subprocess.run(['git', 'commit', '-m', 'diverge main'], cwd=repo, check=True)\n"
+                "subprocess.run(['git', 'push', 'origin', 'main'], cwd=repo, check=True)\n"
+            )
+            conn = connect(root / "coordinator.db")
+            init_db(conn)
+            task_id = create_task(
+                conn,
+                title="Merge divergent branch",
+                repo="demo",
+                source_path="tasks/inbox/merge-fail.md",
+                priority="normal",
+                capabilities=["code"],
+                goal="Create feature.txt.",
+                acceptance_criteria=["feature.txt contains task"],
+                verification_commands=[],
+            )
+            config = push_config(repo)
+            config = CoordinatorConfig(
+                agents={
+                    "fake": AgentConfig(
+                        id="fake",
+                        command=f"{sys.executable} {agent_script}",
+                        capabilities=["code"],
+                        max_concurrency=1,
+                    )
+                },
+                repos={
+                    "demo": RepoConfig(
+                        id="demo",
+                        path=repo,
+                        default_branch="main",
+                        remote="origin",
+                        branch_prefix="coord/",
+                        allow_push=True,
+                        merge_policy="auto_merge_default_branch",
+                        verify_commands=[
+                            f"{sys.executable} -c \"from pathlib import Path; assert Path('feature.txt').read_text() == 'task\\\\n'\""
+                        ],
+                    )
+                },
+                policy=config.policy,
+            )
+
+            processed = run_one_ready_task(conn, config, root)
+
+            self.assertTrue(processed)
+            task = get_task(conn, task_id)
+            self.assertEqual(task["state"], "failed")
+            self.assertIn("merge failed", latest_event_note(conn, task_id))
