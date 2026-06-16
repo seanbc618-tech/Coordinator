@@ -48,6 +48,48 @@ class PolicyTests(unittest.TestCase):
         self.assertFalse(result.accepted)
         self.assertIn("missing acceptance criteria", result.reasons)
 
+    def test_rejects_task_with_blank_acceptance_criteria(self) -> None:
+        task = TaskDraft(
+            title="Vague",
+            repo="demo",
+            priority="normal",
+            capabilities=["code"],
+            goal="Improve the project.",
+            acceptance_criteria=[""],
+            verification_commands=["python -m unittest"],
+        )
+        result = check_task_draft(task, policy())
+        self.assertFalse(result.accepted)
+        self.assertIn("missing acceptance criteria", result.reasons)
+
+    def test_rejects_task_with_blank_verification_commands(self) -> None:
+        task = TaskDraft(
+            title="Vague",
+            repo="demo",
+            priority="normal",
+            capabilities=["code"],
+            goal="Improve the project.",
+            acceptance_criteria=["Test passes."],
+            verification_commands=[""],
+        )
+        result = check_task_draft(task, policy())
+        self.assertFalse(result.accepted)
+        self.assertIn("missing verification commands", result.reasons)
+
+    def test_rejects_task_with_blank_repo(self) -> None:
+        task = TaskDraft(
+            title="Vague",
+            repo="   ",
+            priority="normal",
+            capabilities=["code"],
+            goal="Improve the project.",
+            acceptance_criteria=["Test passes."],
+            verification_commands=["python -m unittest"],
+        )
+        result = check_task_draft(task, policy())
+        self.assertFalse(result.accepted)
+        self.assertIn("missing repo", result.reasons)
+
     def test_rejects_too_many_changed_files(self) -> None:
         result = check_changed_files(
             ["a.py", "b.py", "c.py", "d.py"],

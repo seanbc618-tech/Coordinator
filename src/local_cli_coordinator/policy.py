@@ -10,13 +10,21 @@ class PolicyResult:
     reasons: list[str]
 
 
+def _has_nonblank_item(values: list[str]) -> bool:
+    return any(value.strip() for value in values)
+
+
 def check_task_draft(task: TaskDraft, policy: PolicyConfig) -> PolicyResult:
     reasons: list[str] = []
-    if policy.require_single_repo and not task.repo:
+    if policy.require_single_repo and not task.repo.strip():
         reasons.append("missing repo")
-    if policy.require_acceptance_criteria and not task.acceptance_criteria:
+    if policy.require_acceptance_criteria and not _has_nonblank_item(
+        task.acceptance_criteria
+    ):
         reasons.append("missing acceptance criteria")
-    if policy.require_verification_commands and not task.verification_commands:
+    if policy.require_verification_commands and not _has_nonblank_item(
+        task.verification_commands
+    ):
         reasons.append("missing verification commands")
     if not task.goal.strip():
         reasons.append("missing goal")
