@@ -33,7 +33,12 @@ def run_verification(
 
     for command in commands:
         output.append(f"$ {command}\n")
-        argv = shlex.split(command)
+        try:
+            argv = shlex.split(command)
+        except ValueError as exc:
+            output.append(f"error: {exc}\n")
+            results.append(CommandResult(command=command, exit_code=127))
+            break
         if not argv:
             output.append("empty verification command\n")
             results.append(CommandResult(command=command, exit_code=127))

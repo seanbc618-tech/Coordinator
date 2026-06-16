@@ -51,6 +51,21 @@ class VerificationTests(unittest.TestCase):
             self.assertIn(command, log)
             self.assertIn("error:", log)
 
+    def test_malformed_quoted_command_fails_and_writes_log(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            worktree = root / "worktree"
+            run_dir = root / "run"
+            worktree.mkdir()
+
+            result = run_verification(['echo "unterminated'], worktree, run_dir)
+
+            self.assertFalse(result.passed)
+            self.assertEqual(len(result.results), 1)
+            self.assertEqual(result.results[0].exit_code, 127)
+            self.assertTrue((run_dir / "verifier.log").exists())
+            self.assertIn("error:", (run_dir / "verifier.log").read_text())
+
     def test_verification_pass_and_fail_are_recorded(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
