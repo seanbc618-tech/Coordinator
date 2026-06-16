@@ -26,24 +26,40 @@ def run_verification(
     log_path = run_dir / "verifier.log"
     output: list[str] = []
     results: list[CommandResult] = []
+    if not commands:
+        output.append("no verification commands configured\n")
+        log_path.write_text("".join(output))
+        return VerificationResult(passed=False, results=results, log_path=log_path)
+
     for command in commands:
-        result = subprocess.run(
-            shlex.split(command),
-            cwd=worktree_path,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
         output.append(f"$ {command}\n")
-        output.append(result.stdout)
-        output.append(result.stderr)
-        results.append(CommandResult(command=command, exit_code=result.returncode))
-        if result.returncode != 0:
+        argv = shlex.split(command)
+        if not argv:
+            output.append("empty verification command\n")
+            results.append(CommandResult(command=command, exit_code=127))
             break
+        try:
+            result = subprocess.run(
+                argv,
+                cwd=worktree_path,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+        except OSError as exc:
+            output.append(f"error: {exc}\n")
+            results.append(CommandResult(command=command, exit_code=127))
+            break
+        else:
+            output.append(result.stdout)
+            output.append(result.stderr)
+            results.append(CommandResult(command=command, exit_code=result.returncode))
+            if result.returncode != 0:
+                break
     log_path.write_text("".join(output))
     return VerificationResult(
-        passed=all(result.exit_code == 0 for result in results),
+        passed=bool(results) and all(result.exit_code == 0 for result in results),
         results=results,
         log_path=log_path,
     )
