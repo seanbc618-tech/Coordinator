@@ -1,0 +1,10 @@
+[task_policy]
+require_single_repo = true
+require_acceptance_criteria = true
+require_verification_commands = true
+require_handoff_summary = true
+max_files_touched = 3
+max_expected_minutes = 30
+max_attempts = 3
+split_if_touches_multiple_subsystems = true
+split_if_research_and_code_are_mixed = true

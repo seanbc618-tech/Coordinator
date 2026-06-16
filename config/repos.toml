@@ -1,0 +1,8 @@
+[repos.example]
+path = "/tmp/coordinator-example-repo"
+default_branch = "main"
+remote = "origin"
+branch_prefix = "coord/"
+allow_push = false
+merge_policy = "no_push"
+verify_commands = ["python -m unittest"]

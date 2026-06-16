@@ -1,0 +1,4 @@
+[agents.echo]
+command = "python -c \"from pathlib import Path; Path('agent-output.txt').write_text('done')\""
+capabilities = ["code", "tests", "docs", "planner"]
+max_concurrency = 1
