@@ -17,11 +17,13 @@ def _slug(text: str) -> str:
 
 
 def _select_agent(config: CoordinatorConfig, capabilities: list[str]):
+    if not config.agents:
+        return None
     required = set(capabilities)
     for agent in config.agents.values():
         if required.issubset(set(agent.capabilities)):
             return agent
-    return next(iter(config.agents.values()))
+    return None
 
 
 def _write_prompt(task, run_dir: Path) -> Path:
@@ -40,19 +42,43 @@ def run_one_ready_task(conn: sqlite3.Connection, config: CoordinatorConfig, root
     task = next_ready_task(conn)
     if task is None:
         return False
-    repo = config.repos[task["repo"]]
+    repo = config.repos.get(task["repo"])
+    if repo is None:
+        transition_task(
+            conn,
+            task["id"],
+            "blocked",
+            f"repo is not configured: {task['repo']}",
+        )
+        return True
     capabilities = [part for part in task["capabilities"].split(",") if part]
+    if not config.agents:
+        transition_task(conn, task["id"], "blocked", "no configured agents")
+        return True
     agent = _select_agent(config, capabilities)
+    if agent is None:
+        capability_text = ", ".join(capabilities) if capabilities else "(none)"
+        transition_task(
+            conn,
+            task["id"],
+            "blocked",
+            f"no matching agent for capabilities: {capability_text}",
+        )
+        return True
     branch = f"{repo.branch_prefix}{task['id']}-{_slug(task['title'])}"
     run_dir = root / "runs" / task["id"]
 
     transition_task(conn, task["id"], "running", f"assigned to {agent.id}")
-    worktree = create_worktree(
-        repo_path=repo.path,
-        worktrees_root=root / "worktrees" / repo.id,
-        task_id=task["id"],
-        branch_name=branch,
-    )
+    try:
+        worktree = create_worktree(
+            repo_path=repo.path,
+            worktrees_root=root / "worktrees" / repo.id,
+            task_id=task["id"],
+            branch_name=branch,
+        )
+    except RuntimeError as exc:
+        transition_task(conn, task["id"], "failed", f"worktree creation failed: {exc}")
+        return True
     set_task_branch_and_worktree(conn, task["id"], branch, worktree)
     prompt = _write_prompt(task, run_dir)
     agent_result = run_agent(agent, prompt, worktree, run_dir)
@@ -62,6 +88,9 @@ def run_one_ready_task(conn: sqlite3.Connection, config: CoordinatorConfig, root
         return True
 
     changed_files = collect_changed_files(worktree)
+    if not changed_files:
+        transition_task(conn, task["id"], "failed", "no changed files")
+        return True
     policy_result = check_changed_files(changed_files, config.policy)
     if not policy_result.accepted:
         transition_task(conn, task["id"], "needs_split", "; ".join(policy_result.reasons))
