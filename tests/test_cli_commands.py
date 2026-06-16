@@ -126,3 +126,47 @@ class CliCommandTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("no ready tasks", result.stdout)
+
+    def test_bare_nested_commands_return_usage_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            inbox = run_cli("--root", str(root), "inbox")
+            task = run_cli("--root", str(root), "task")
+
+            self.assertEqual(inbox.returncode, 2, inbox.stdout + inbox.stderr)
+            self.assertIn("usage:", inbox.stderr)
+            self.assertEqual(task.returncode, 2, task.stdout + task.stderr)
+            self.assertIn("usage:", task.stderr)
+
+    def test_inbox_scan_reports_rejected_task_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_config(root)
+            inbox = root / "tasks" / "inbox"
+            inbox.mkdir(parents=True)
+            bad = textwrap.dedent("""
+                # Task: Bad
+
+                repo: missing
+                priority: normal
+                capabilities: [code]
+                verification: []
+
+                ## Goal
+
+                Ship bad.
+
+                ## Acceptance Criteria
+
+                - Works.
+            """).strip()
+            (inbox / "bad.md").write_text(bad)
+
+            result = run_cli("--root", str(root), "inbox", "scan")
+
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn("rejected tasks/inbox/bad.md", result.stderr)
+            self.assertIn("missing verification commands", result.stderr)
+            self.assertIn("repo is not allowlisted: missing", result.stderr)
+            self.assertTrue((root / "tasks" / "inbox" / "bad.md").exists())

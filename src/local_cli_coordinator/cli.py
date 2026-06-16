@@ -1,6 +1,7 @@
 import argparse
 import shutil
 import sqlite3
+import sys
 from pathlib import Path
 
 from .config import load_config
@@ -54,10 +55,15 @@ def _cmd_inbox_scan(args: argparse.Namespace) -> int:
     config = load_config(root)
     conn = _open_db(root, args.db)
     imported = 0
+    rejected: list[tuple[str, list[str]]] = []
     try:
         for draft in scan_inbox(root):
             result = check_task_draft(draft, config.policy)
-            if not result.accepted or draft.repo not in config.repos:
+            reasons = list(result.reasons)
+            if draft.repo not in config.repos:
+                reasons.append(f"repo is not allowlisted: {draft.repo}")
+            if reasons:
+                rejected.append((draft.source_path, reasons))
                 continue
             create_task(
                 conn,
@@ -75,7 +81,9 @@ def _cmd_inbox_scan(args: argparse.Namespace) -> int:
     finally:
         conn.close()
     print(f"imported {_plural(imported, 'task')}")
-    return 0
+    for source_path, reasons in rejected:
+        print(f"rejected {source_path}: {'; '.join(reasons)}", file=sys.stderr)
+    return 1 if rejected else 0
 
 
 def _cmd_status(args: argparse.Namespace) -> int:
@@ -195,10 +203,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     inbox = subparsers.add_parser("inbox")
     inbox_subparsers = inbox.add_subparsers(dest="inbox_command")
+    inbox_subparsers.required = True
     inbox_subparsers.add_parser("scan")
 
     task = subparsers.add_parser("task")
     task_subparsers = task.add_subparsers(dest="task_command")
+    task_subparsers.required = True
     task_subparsers.add_parser("list")
     task_subparsers.add_parser("show").add_argument("task_id")
     task_subparsers.add_parser("retry").add_argument("task_id")
@@ -206,10 +216,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     agent = subparsers.add_parser("agent")
     agent_subparsers = agent.add_subparsers(dest="agent_command")
+    agent_subparsers.required = True
     agent_subparsers.add_parser("list")
 
     repo = subparsers.add_parser("repo")
     repo_subparsers = repo.add_subparsers(dest="repo_command")
+    repo_subparsers.required = True
     repo_subparsers.add_parser("list")
 
     subparsers.add_parser("logs").add_argument("task_id")
