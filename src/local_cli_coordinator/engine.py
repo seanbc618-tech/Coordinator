@@ -138,3 +138,9 @@ def run_one_ready_task(conn: sqlite3.Connection, config: CoordinatorConfig, root
                 return True
     transition_task(conn, task["id"], "done", "completed")
     return True
+
+
+def queue_follow_up_task(root: Path, task_draft) -> Path:
+    from .tasks import write_generated_task
+
+    return write_generated_task(root, task_draft)

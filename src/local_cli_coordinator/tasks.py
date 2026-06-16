@@ -67,3 +67,27 @@ def scan_inbox(root: Path) -> list[TaskDraft]:
     for path in sorted(inbox.glob("*.md")):
         tasks.append(parse_task_markdown(path.read_text(), str(path.relative_to(root))))
     return tasks
+
+
+def _filename_slug(title: str) -> str:
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", title).strip("-").lower()
+    return slug[:60] or "generated-task"
+
+
+def write_generated_task(root: Path, task: TaskDraft) -> Path:
+    generated = root / "tasks" / "generated"
+    generated.mkdir(parents=True, exist_ok=True)
+    path = generated / f"{_filename_slug(task.title)}.md"
+    acceptance = "\n".join(f"- {item}" for item in task.acceptance_criteria)
+    capabilities = ", ".join(task.capabilities)
+    verification = ", ".join(task.verification_commands)
+    path.write_text(
+        f"# Task: {task.title}\n\n"
+        f"repo: {task.repo}\n"
+        f"priority: {task.priority}\n"
+        f"capabilities: [{capabilities}]\n"
+        f"verification: [{verification}]\n\n"
+        f"## Goal\n\n{task.goal}\n\n"
+        f"## Acceptance Criteria\n\n{acceptance}\n"
+    )
+    return path
