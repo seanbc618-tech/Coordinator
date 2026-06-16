@@ -1,0 +1,96 @@
+import sqlite3
+import uuid
+from pathlib import Path
+
+from .models import TASK_STATES
+
+ROOT = Path(__file__).resolve().parents[2]
+MIGRATIONS_DIR = ROOT / "migrations"
+
+
+def connect(path: Path) -> sqlite3.Connection:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("pragma foreign_keys = on")
+    return conn
+
+
+def init_db(conn: sqlite3.Connection, migrations_dir: Path = MIGRATIONS_DIR) -> None:
+    conn.execute(
+        "create table if not exists schema_migrations "
+        "(version text primary key, applied_at text not null default current_timestamp)"
+    )
+    applied = {
+        row["version"]
+        for row in conn.execute("select version from schema_migrations").fetchall()
+    }
+    for migration in sorted(migrations_dir.glob("*.sql")):
+        if migration.name in applied:
+            continue
+        conn.executescript(migration.read_text())
+        conn.execute("insert into schema_migrations(version) values (?)", (migration.name,))
+    conn.commit()
+
+
+def create_task(
+    conn: sqlite3.Connection,
+    *,
+    title: str,
+    repo: str,
+    source_path: str,
+    priority: str,
+    capabilities: list[str],
+    goal: str,
+    acceptance_criteria: list[str],
+    verification_commands: list[str],
+) -> str:
+    task_id = f"task-{uuid.uuid4().hex[:12]}"
+    conn.execute(
+        """
+        insert into tasks(
+            id, title, repo, state, priority, capabilities, source_path,
+            goal, acceptance_criteria, verification_commands
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            task_id,
+            title,
+            repo,
+            "ready",
+            priority,
+            ",".join(capabilities),
+            source_path,
+            goal,
+            "\n".join(acceptance_criteria),
+            "\n".join(verification_commands),
+        ),
+    )
+    conn.execute(
+        "insert into events(task_id, old_state, new_state, note) values (?, ?, ?, ?)",
+        (task_id, "inbox", "ready", "task imported"),
+    )
+    conn.commit()
+    return task_id
+
+
+def get_task(conn: sqlite3.Connection, task_id: str) -> sqlite3.Row:
+    row = conn.execute("select * from tasks where id = ?", (task_id,)).fetchone()
+    if row is None:
+        raise KeyError(f"unknown task: {task_id}")
+    return row
+
+
+def transition_task(conn: sqlite3.Connection, task_id: str, new_state: str, note: str) -> None:
+    if new_state not in TASK_STATES:
+        raise ValueError(f"invalid task state: {new_state}")
+    current = get_task(conn, task_id)
+    conn.execute(
+        "update tasks set state = ?, updated_at = current_timestamp where id = ?",
+        (new_state, task_id),
+    )
+    conn.execute(
+        "insert into events(task_id, old_state, new_state, note) values (?, ?, ?, ?)",
+        (task_id, current["state"], new_state, note),
+    )
+    conn.commit()
