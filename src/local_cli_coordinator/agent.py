@@ -63,6 +63,8 @@ def run_agent(
             _render_token(token, prompt_path, worktree_path)
             for token in shlex.split(agent.command)
         ]
+        if not argv:
+            raise ValueError("empty agent command")
         command = shlex.join(argv)
         result = subprocess.run(
             argv,

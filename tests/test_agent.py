@@ -100,3 +100,25 @@ class AgentRunnerTests(unittest.TestCase):
             log = result.log_path.read_text()
             self.assertIn("local-cli-coordinator-missing-binary", log)
             self.assertIn("error:", log)
+
+    def test_empty_command_returns_failure_and_writes_log(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            worktree = root / "worktree"
+            run_dir = root / "run"
+            worktree.mkdir()
+            run_dir.mkdir()
+            prompt = run_dir / "prompt.md"
+            prompt.write_text("write output")
+            agent = AgentConfig(
+                id="empty",
+                command="",
+                capabilities=["code"],
+                max_concurrency=1,
+            )
+
+            result = run_agent(agent, prompt, worktree, run_dir)
+
+            self.assertEqual(result.exit_code, 127)
+            self.assertTrue(result.log_path.exists())
+            self.assertIn("empty agent command", result.log_path.read_text())
