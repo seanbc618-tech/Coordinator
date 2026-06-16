@@ -38,19 +38,43 @@ def create_worktree(
 
 
 def collect_changed_files(worktree_path: Path) -> list[str]:
-    result = git(["status", "--porcelain"], cwd=worktree_path)
+    result = git(["status", "--porcelain=v1", "-z"], cwd=worktree_path)
     require_success(result, "collect changed files")
     files: list[str] = []
-    for line in result.stdout.splitlines():
-        if not line:
+    records = result.stdout.split("\0")
+    index = 0
+    while index < len(records):
+        record = records[index]
+        if not record:
+            index += 1
             continue
-        files.append(line[3:])
+        status = record[:2]
+        path = record[3:]
+        if "R" in status or "C" in status:
+            index += 1
+            if index < len(records) and records[index]:
+                files.append(records[index])
+            files.append(path)
+        else:
+            files.append(path)
+        index += 1
     return sorted(files)
 
 
 def diff_patch(worktree_path: Path) -> str:
-    intent = git(["add", "--intent-to-add", "--all"], cwd=worktree_path)
-    require_success(intent, "mark untracked files for diff")
-    result = git(["diff", "--", "."], cwd=worktree_path)
-    require_success(result, "collect diff")
-    return result.stdout
+    untracked_result = git(["ls-files", "--others", "--exclude-standard", "-z"], cwd=worktree_path)
+    require_success(untracked_result, "list untracked files")
+    untracked_files = [path for path in untracked_result.stdout.split("\0") if path]
+
+    if untracked_files:
+        intent = git(["add", "--intent-to-add", "--", *untracked_files], cwd=worktree_path)
+        require_success(intent, "mark untracked files for diff")
+
+    try:
+        result = git(["diff", "HEAD", "--", "."], cwd=worktree_path)
+        require_success(result, "collect diff")
+        return result.stdout
+    finally:
+        if untracked_files:
+            reset = git(["reset", "-q", "--", *untracked_files], cwd=worktree_path)
+            require_success(reset, "clear untracked intent-to-add markers")
