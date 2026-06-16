@@ -19,6 +19,8 @@ def _slug(text: str) -> str:
 def _select_agent(config: CoordinatorConfig, capabilities: list[str]):
     if not config.agents:
         return None
+    if not capabilities:
+        return None
     required = set(capabilities)
     for agent in config.agents.values():
         if required.issubset(set(agent.capabilities)):
@@ -76,7 +78,7 @@ def run_one_ready_task(conn: sqlite3.Connection, config: CoordinatorConfig, root
             task_id=task["id"],
             branch_name=branch,
         )
-    except RuntimeError as exc:
+    except (RuntimeError, OSError) as exc:
         transition_task(conn, task["id"], "failed", f"worktree creation failed: {exc}")
         return True
     set_task_branch_and_worktree(conn, task["id"], branch, worktree)

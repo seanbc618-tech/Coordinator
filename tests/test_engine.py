@@ -178,6 +178,35 @@ class EngineTests(unittest.TestCase):
                 latest_event_note(conn, task_id),
             )
 
+    def test_blocks_task_when_required_capabilities_are_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            init_git_repo(repo)
+            conn = connect(root / "coordinator.db")
+            init_db(conn)
+            task_id = create_task(
+                conn,
+                title="Create feature file",
+                repo="demo",
+                source_path="tasks/inbox/feature.md",
+                priority="normal",
+                capabilities=[],
+                goal="Create feature.txt.",
+                acceptance_criteria=["feature.txt contains done"],
+                verification_commands=[],
+            )
+
+            processed = run_one_ready_task(conn, test_config(repo), root)
+
+            self.assertTrue(processed)
+            task = get_task(conn, task_id)
+            self.assertEqual(task["state"], "blocked")
+            self.assertIn(
+                "no matching agent for capabilities: (none)",
+                latest_event_note(conn, task_id),
+            )
+
     def test_fails_task_when_worktree_creation_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -201,6 +230,48 @@ class EngineTests(unittest.TestCase):
             self.assertEqual(branch_result.returncode, 0, branch_result.stderr)
 
             processed = run_one_ready_task(conn, test_config(repo), root)
+
+            self.assertTrue(processed)
+            task = get_task(conn, task_id)
+            self.assertEqual(task["state"], "failed")
+            self.assertIn("worktree creation failed", latest_event_note(conn, task_id))
+
+    def test_fails_task_when_configured_repo_path_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            init_git_repo(repo)
+            conn = connect(root / "coordinator.db")
+            init_db(conn)
+            task_id = create_task(
+                conn,
+                title="Create feature file",
+                repo="demo",
+                source_path="tasks/inbox/feature.md",
+                priority="normal",
+                capabilities=["code"],
+                goal="Create feature.txt.",
+                acceptance_criteria=["feature.txt contains done"],
+                verification_commands=[],
+            )
+            config = test_config(repo)
+            repos = {
+                "demo": RepoConfig(
+                    id="demo",
+                    path=root / "missing-repo",
+                    default_branch="main",
+                    remote="origin",
+                    branch_prefix="coord/",
+                    allow_push=False,
+                    merge_policy="no_push",
+                    verify_commands=[
+                        f"{sys.executable} -c \"from pathlib import Path; assert Path('feature.txt').read_text() == 'done'\""
+                    ],
+                )
+            }
+            config = CoordinatorConfig(agents=config.agents, repos=repos, policy=config.policy)
+
+            processed = run_one_ready_task(conn, config, root)
 
             self.assertTrue(processed)
             task = get_task(conn, task_id)
