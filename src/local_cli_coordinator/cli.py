@@ -1,11 +1,195 @@
 import argparse
+import shutil
+import sqlite3
+from pathlib import Path
+
+from .config import load_config
+from .db import (
+    connect,
+    create_task,
+    get_task,
+    init_db,
+    list_tasks,
+    task_counts,
+    transition_task,
+)
+from .engine import run_one_ready_task
+from .policy import check_task_draft
+from .tasks import scan_inbox
+
+
+def _db_path(root: Path, db: str) -> Path:
+    path = Path(db)
+    if not path.is_absolute():
+        path = root / path
+    return path
+
+
+def _open_db(root: Path, db: str) -> sqlite3.Connection:
+    conn = connect(_db_path(root, db))
+    init_db(conn)
+    return conn
+
+
+def _plural(count: int, singular: str) -> str:
+    return f"{count} {singular}" if count == 1 else f"{count} {singular}s"
+
+
+def _move_to_accepted(root: Path, source_path: str) -> None:
+    source = root / source_path
+    accepted = root / "tasks" / "accepted" / source.name
+    accepted.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(source), str(accepted))
+
+
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    print("Coordinator doctor")
+    print(f"root: {args.root}")
+    print("status: ok")
+    return 0
+
+
+def _cmd_inbox_scan(args: argparse.Namespace) -> int:
+    root = Path(args.root)
+    config = load_config(root)
+    conn = _open_db(root, args.db)
+    imported = 0
+    try:
+        for draft in scan_inbox(root):
+            result = check_task_draft(draft, config.policy)
+            if not result.accepted or draft.repo not in config.repos:
+                continue
+            create_task(
+                conn,
+                title=draft.title,
+                repo=draft.repo,
+                source_path=draft.source_path,
+                priority=draft.priority,
+                capabilities=draft.capabilities,
+                goal=draft.goal,
+                acceptance_criteria=draft.acceptance_criteria,
+                verification_commands=draft.verification_commands,
+            )
+            _move_to_accepted(root, draft.source_path)
+            imported += 1
+    finally:
+        conn.close()
+    print(f"imported {_plural(imported, 'task')}")
+    return 0
+
+
+def _cmd_status(args: argparse.Namespace) -> int:
+    root = Path(args.root)
+    conn = _open_db(root, args.db)
+    try:
+        counts = task_counts(conn)
+    finally:
+        conn.close()
+    if not counts:
+        print("no tasks")
+        return 0
+    for state in sorted(counts):
+        print(f"{state}: {counts[state]}")
+    return 0
+
+
+def _cmd_task_list(args: argparse.Namespace) -> int:
+    root = Path(args.root)
+    conn = _open_db(root, args.db)
+    try:
+        rows = list_tasks(conn)
+    finally:
+        conn.close()
+    if not rows:
+        print("no tasks")
+        return 0
+    for row in rows:
+        print(f"{row['id']} {row['state']} {row['title']}")
+    return 0
+
+
+def _cmd_task_show(args: argparse.Namespace) -> int:
+    root = Path(args.root)
+    conn = _open_db(root, args.db)
+    try:
+        task = get_task(conn, args.task_id)
+        print(f"id: {task['id']}")
+        print(f"state: {task['state']}")
+        print(f"title: {task['title']}")
+        print(f"repo: {task['repo']}")
+    except KeyError as exc:
+        print(str(exc))
+        return 1
+    finally:
+        conn.close()
+    return 0
+
+
+def _cmd_task_transition(args: argparse.Namespace, state: str, note: str) -> int:
+    root = Path(args.root)
+    conn = _open_db(root, args.db)
+    try:
+        transition_task(conn, args.task_id, state, note)
+    except KeyError as exc:
+        print(str(exc))
+        return 1
+    finally:
+        conn.close()
+    print(f"{args.task_id} {state}")
+    return 0
+
+
+def _cmd_daemon(args: argparse.Namespace) -> int:
+    if not args.once:
+        print("daemon requires --once")
+        return 2
+    root = Path(args.root)
+    config = load_config(root)
+    conn = _open_db(root, args.db)
+    try:
+        processed = run_one_ready_task(conn, config, root)
+    finally:
+        conn.close()
+    print("processed 1 task" if processed else "no ready tasks")
+    return 0
+
+
+def _cmd_logs(args: argparse.Namespace) -> int:
+    root = Path(args.root)
+    conn = _open_db(root, args.db)
+    try:
+        get_task(conn, args.task_id)
+        attempts = conn.execute(
+            "select log_path from attempts where task_id = ? order by id",
+            (args.task_id,),
+        ).fetchall()
+        artifacts = conn.execute(
+            "select kind, path from artifacts where task_id = ? order by id",
+            (args.task_id,),
+        ).fetchall()
+    except KeyError as exc:
+        print(str(exc))
+        return 1
+    finally:
+        conn.close()
+    if not attempts and not artifacts:
+        print("no logs")
+        return 0
+    for attempt in attempts:
+        print(attempt["log_path"])
+    for artifact in artifacts:
+        print(f"{artifact['kind']}: {artifact['path']}")
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="coordinator")
+    parser.add_argument("--root", default=".")
+    parser.add_argument("--db", default="coordinator.db")
     subparsers = parser.add_subparsers(dest="command")
 
-    subparsers.add_parser("daemon")
+    daemon = subparsers.add_parser("daemon")
+    daemon.add_argument("--once", action="store_true")
     subparsers.add_parser("status")
     subparsers.add_parser("doctor")
 
@@ -36,9 +220,23 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.command == "doctor":
-        print("Coordinator doctor")
-        print("status: ok")
-        return 0
+        return _cmd_doctor(args)
+    if args.command == "inbox" and args.inbox_command == "scan":
+        return _cmd_inbox_scan(args)
+    if args.command == "status":
+        return _cmd_status(args)
+    if args.command == "task" and args.task_command == "list":
+        return _cmd_task_list(args)
+    if args.command == "task" and args.task_command == "show":
+        return _cmd_task_show(args)
+    if args.command == "task" and args.task_command == "retry":
+        return _cmd_task_transition(args, "ready", "manual retry")
+    if args.command == "task" and args.task_command == "block":
+        return _cmd_task_transition(args, "blocked", "manual block")
+    if args.command == "daemon":
+        return _cmd_daemon(args)
+    if args.command == "logs":
+        return _cmd_logs(args)
     if args.command is None:
         parser.print_help()
         return 0

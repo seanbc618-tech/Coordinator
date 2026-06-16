@@ -96,6 +96,17 @@ def get_task(conn: sqlite3.Connection, task_id: str) -> sqlite3.Row:
     return row
 
 
+def task_counts(conn: sqlite3.Connection) -> dict[str, int]:
+    rows = conn.execute(
+        "select state, count(*) as count from tasks group by state"
+    ).fetchall()
+    return {row["state"]: row["count"] for row in rows}
+
+
+def list_tasks(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute("select * from tasks order by created_at, id").fetchall()
+
+
 def transition_task(conn: sqlite3.Connection, task_id: str, new_state: str, note: str) -> None:
     if new_state not in TASK_STATES:
         raise ValueError(f"invalid task state: {new_state}")
