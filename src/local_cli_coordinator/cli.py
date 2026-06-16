@@ -4,7 +4,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from .config import load_config
+from .config import load_config, try_load_config
 from .db import (
     connect,
     create_task,
@@ -16,6 +16,7 @@ from .db import (
 )
 from .engine import run_one_ready_task
 from .policy import check_task_draft
+from .readiness import check_loop_readiness
 from .tasks import scan_inbox
 
 
@@ -44,9 +45,17 @@ def _move_to_accepted(root: Path, source_path: str) -> None:
 
 
 def _cmd_doctor(args: argparse.Namespace) -> int:
+    root = Path(args.root)
+    config, config_error = try_load_config(root)
     print("Coordinator doctor")
     print(f"root: {args.root}")
     print("status: ok")
+    print()
+    print("Loop readiness")
+    if config_error is not None:
+        print(f"  [WARN] configuration: {config_error}")
+    for check in check_loop_readiness(root, config):
+        print(f"  [{check.status.upper()}] {check.name}: {check.message}")
     return 0
 
 

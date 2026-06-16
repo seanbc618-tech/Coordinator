@@ -91,3 +91,10 @@ def load_config(root: Path) -> CoordinatorConfig:
     )
 
     return CoordinatorConfig(agents=agents, repos=repos, policy=policy)
+
+
+def try_load_config(root: Path) -> tuple[CoordinatorConfig | None, str | None]:
+    try:
+        return load_config(root), None
+    except (FileNotFoundError, KeyError, tomllib.TOMLDecodeError, TypeError, ValueError) as exc:
+        return None, str(exc)
