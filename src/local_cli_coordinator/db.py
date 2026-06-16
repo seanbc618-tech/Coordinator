@@ -8,6 +8,10 @@ ROOT = Path(__file__).resolve().parents[2]
 MIGRATIONS_DIR = ROOT / "migrations"
 
 
+def _sql_string(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
 def connect(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
@@ -21,6 +25,7 @@ def init_db(conn: sqlite3.Connection, migrations_dir: Path = MIGRATIONS_DIR) -> 
         "create table if not exists schema_migrations "
         "(version text primary key, applied_at text not null default current_timestamp)"
     )
+    conn.commit()
     applied = {
         row["version"]
         for row in conn.execute("select version from schema_migrations").fetchall()
@@ -28,8 +33,18 @@ def init_db(conn: sqlite3.Connection, migrations_dir: Path = MIGRATIONS_DIR) -> 
     for migration in sorted(migrations_dir.glob("*.sql")):
         if migration.name in applied:
             continue
-        conn.executescript(migration.read_text())
-        conn.execute("insert into schema_migrations(version) values (?)", (migration.name,))
+        script = (
+            "begin;\n"
+            f"{migration.read_text()}\n"
+            "insert into schema_migrations(version) values "
+            f"({_sql_string(migration.name)});\n"
+            "commit;"
+        )
+        try:
+            conn.executescript(script)
+        except sqlite3.Error:
+            conn.rollback()
+            raise
     conn.commit()
 
 

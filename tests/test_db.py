@@ -1,3 +1,4 @@
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -39,3 +40,30 @@ class DatabaseTests(unittest.TestCase):
             ).fetchall()
             self.assertEqual(events[-1]["new_state"], "running")
             self.assertEqual(events[-1]["note"], "agent started")
+
+    def test_failed_migration_rolls_back_partial_ddl(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            migrations_dir = tmp_path / "migrations"
+            migrations_dir.mkdir()
+            (migrations_dir / "001_broken.sql").write_text(
+                "create table leaked(id integer);\n"
+                "select * from missing_table;\n"
+            )
+
+            conn = connect(tmp_path / "coordinator.db")
+
+            with self.assertRaises(sqlite3.OperationalError):
+                init_db(conn, migrations_dir=migrations_dir)
+
+            leaked = conn.execute(
+                "select name from sqlite_master where type = 'table' and name = ?",
+                ("leaked",),
+            ).fetchone()
+            self.assertIsNone(leaked)
+
+            recorded = conn.execute(
+                "select version from schema_migrations where version = ?",
+                ("001_broken.sql",),
+            ).fetchone()
+            self.assertIsNone(recorded)
