@@ -1,0 +1,8 @@
+[project]
+name = "local-cli-coordinator"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "Local CLI agent coordinator"
+
+[project.scripts]
+coordinator = "local_cli_coordinator.cli:main"
