@@ -88,3 +88,19 @@ def commit_all(worktree_path: Path, message: str) -> str:
     rev_result = git(["rev-parse", "HEAD"], cwd=worktree_path)
     require_success(rev_result, "read commit hash")
     return rev_result.stdout.strip()
+
+
+def push_branch(worktree_path: Path, remote: str, branch_name: str) -> None:
+    result = git(["push", remote, f"HEAD:{branch_name}"], cwd=worktree_path)
+    require_success(result, "push branch")
+
+
+def merge_branch_to_default(repo_path: Path, branch_name: str, default_branch: str, remote: str) -> None:
+    checkout = git(["checkout", default_branch], cwd=repo_path)
+    require_success(checkout, "checkout default branch")
+    pull = git(["pull", "--ff-only", remote, default_branch], cwd=repo_path)
+    require_success(pull, "pull default branch")
+    merge = git(["merge", "--ff-only", branch_name], cwd=repo_path)
+    require_success(merge, "merge branch")
+    push = git(["push", remote, default_branch], cwd=repo_path)
+    require_success(push, "push default branch")

@@ -5,7 +5,14 @@ import sqlite3
 from .agent import run_agent
 from .config import CoordinatorConfig
 from .db import add_artifact, next_ready_task, set_task_branch_and_worktree, transition_task
-from .gitops import collect_changed_files, commit_all, create_worktree, diff_patch
+from .gitops import (
+    collect_changed_files,
+    commit_all,
+    create_worktree,
+    diff_patch,
+    merge_branch_to_default,
+    push_branch,
+)
 from .policy import check_changed_files
 from .verify import run_verification
 
@@ -115,5 +122,11 @@ def run_one_ready_task(conn: sqlite3.Connection, config: CoordinatorConfig, root
         worktree,
         f"{task['title']}\n\nTask: {task['id']}\nAgent: {agent.id}",
     )
-    transition_task(conn, task["id"], "done", "committed locally")
+    if repo.allow_push and repo.merge_policy != "no_push":
+        transition_task(conn, task["id"], "pushing", "pushing branch")
+        push_branch(worktree, repo.remote, branch)
+    if repo.merge_policy == "auto_merge_default_branch":
+        transition_task(conn, task["id"], "merging", "merging to default branch")
+        merge_branch_to_default(repo.path, branch, repo.default_branch, repo.remote)
+    transition_task(conn, task["id"], "done", "completed")
     return True
