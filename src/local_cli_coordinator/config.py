@@ -21,6 +21,7 @@ class RepoConfig:
     allow_push: bool
     merge_policy: str
     verify_commands: list[str]
+    memory_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -74,6 +75,11 @@ def load_config(root: Path) -> CoordinatorConfig:
             allow_push=bool(raw.get("allow_push", False)),
             merge_policy=str(raw.get("merge_policy", "no_push")),
             verify_commands=list(raw.get("verify_commands", [])),
+            memory_path=(
+                Path(raw["memory_path"])
+                if raw.get("memory_path") is not None
+                else None
+            ),
         )
         for repo_id, raw in repos_raw.items()
     }

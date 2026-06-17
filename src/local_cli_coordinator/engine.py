@@ -3,7 +3,7 @@ import re
 import sqlite3
 
 from .agent import run_agent
-from .config import CoordinatorConfig
+from .config import CoordinatorConfig, RepoConfig
 from .db import (
     add_artifact,
     get_task,
@@ -21,7 +21,7 @@ from .gitops import (
 )
 from .policy import check_changed_files
 from .verify import run_verification
-from .memory import LoopMemoryEntry, append_loop_memory
+from .memory import LoopMemoryEntry, append_loop_memory, loop_memory_path
 
 
 def _slug(text: str) -> str:
@@ -42,15 +42,37 @@ def _select_agent(config: CoordinatorConfig, capabilities: list[str]):
     return None
 
 
-def _write_prompt(task, run_dir: Path) -> Path:
+def _read_optional_text(path: Path) -> str | None:
+    if not path.is_file():
+        return None
+    try:
+        text = path.read_text().strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    return text or None
+
+
+def _resolve_memory_path(root: Path, path: Path) -> Path:
+    return path if path.is_absolute() else root / path
+
+
+def _write_prompt(task, run_dir: Path, root: Path, repo: RepoConfig) -> Path:
     run_dir.mkdir(parents=True, exist_ok=True)
+    sections = [
+        f"# Task: {task['title']}\n",
+        f"Repo: {task['repo']}\n",
+        f"## Goal\n\n{task['goal']}\n",
+        f"## Acceptance Criteria\n\n{task['acceptance_criteria']}\n",
+    ]
+    loop_memory = _read_optional_text(loop_memory_path(root))
+    if loop_memory is not None:
+        sections.append(f"## Loop Memory\n\n{loop_memory}\n")
+    if repo.memory_path is not None:
+        repo_memory = _read_optional_text(_resolve_memory_path(root, repo.memory_path))
+        if repo_memory is not None:
+            sections.append(f"## Repo Memory\n\n{repo_memory}\n")
     prompt = run_dir / "prompt.md"
-    prompt.write_text(
-        f"# Task: {task['title']}\n\n"
-        f"Repo: {task['repo']}\n\n"
-        f"## Goal\n\n{task['goal']}\n\n"
-        f"## Acceptance Criteria\n\n{task['acceptance_criteria']}\n"
-    )
+    prompt.write_text("\n".join(sections))
     return prompt
 
 
@@ -144,7 +166,7 @@ def run_one_ready_task(conn: sqlite3.Connection, config: CoordinatorConfig, root
         )
         return True
     set_task_branch_and_worktree(conn, task["id"], branch, worktree)
-    prompt = _write_prompt(task, run_dir)
+    prompt = _write_prompt(task, run_dir, root, repo)
     agent_result = run_agent(agent, prompt, worktree, run_dir)
     add_artifact(conn, task["id"], "agent_log", agent_result.log_path)
     if agent_result.exit_code != 0:
