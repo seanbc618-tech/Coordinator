@@ -20,7 +20,7 @@ from .gitops import (
     push_branch,
 )
 from .policy import check_changed_files
-from .review import run_spec_review
+from .review import run_quality_review, run_spec_review
 from .verify import run_verification
 from .memory import LoopMemoryEntry, append_loop_memory, loop_memory_path
 
@@ -233,6 +233,7 @@ def run_one_ready_task(conn: sqlite3.Connection, config: CoordinatorConfig, root
         )
         return True
 
+    spec_review_passed = False
     spec_reviewer = _select_agent(config, capabilities, role="spec_reviewer")
     if spec_reviewer is not None:
         transition_task(conn, task["id"], "reviewing_spec", "running spec review")
@@ -255,6 +256,46 @@ def run_one_ready_task(conn: sqlite3.Connection, config: CoordinatorConfig, root
                 "spec review failed",
                 verifier_result="passed",
                 next_action="address spec review feedback",
+            )
+            return True
+        spec_review_passed = True
+
+    quality_reviewer = _select_agent(config, capabilities, role="quality_reviewer")
+    if quality_reviewer is not None:
+        if not spec_review_passed:
+            state = _review_failure_state(repo)
+            _finish_task(
+                conn,
+                root,
+                task["id"],
+                state,
+                "quality review requires passing spec review",
+                verifier_result="passed",
+                next_action="configure spec reviewer before quality reviewer",
+            )
+            return True
+        transition_task(conn, task["id"], "reviewing_quality", "running quality review")
+        quality_review = run_quality_review(
+            quality_reviewer,
+            task,
+            changed_files,
+            patch_path,
+            verification.log_path,
+            repo,
+            worktree,
+            run_dir,
+        )
+        add_artifact(conn, task["id"], "quality_review_log", quality_review.log_path)
+        if not quality_review.passed:
+            state = _review_failure_state(repo)
+            _finish_task(
+                conn,
+                root,
+                task["id"],
+                state,
+                "quality review failed",
+                verifier_result="passed",
+                next_action="address quality review feedback",
             )
             return True
 
