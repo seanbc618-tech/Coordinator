@@ -44,6 +44,7 @@ def review_config(repo_path: Path, reviewer_command: str) -> CoordinatorConfig:
                 verify_commands=[
                     f"{sys.executable} -c \"from pathlib import Path; assert Path('feature.txt').read_text() == 'done'\""
                 ],
+                review_policy="tests_only",
             )
         },
         policy=PolicyConfig(
@@ -159,6 +160,7 @@ class SpecReviewTests(unittest.TestCase):
                         allow_push=repo_config.allow_push,
                         merge_policy="auto_merge_default_branch",
                         verify_commands=repo_config.verify_commands,
+                        review_policy=repo_config.review_policy,
                     )
                 },
                 policy=config.policy,

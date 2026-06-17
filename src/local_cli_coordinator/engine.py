@@ -6,6 +6,7 @@ from .agent import run_agent
 from .config import CoordinatorConfig, RepoConfig
 from .db import (
     add_artifact,
+    artifact_kinds,
     get_task,
     next_ready_task,
     set_task_branch_and_worktree,
@@ -107,6 +108,17 @@ def _review_failure_state(repo: RepoConfig) -> str:
     if repo.merge_policy == "auto_merge_default_branch":
         return "rejected"
     return "awaiting_human"
+
+
+def _missing_completion_evidence(
+    conn: sqlite3.Connection,
+    task_id: str,
+    repo: RepoConfig,
+) -> list[str]:
+    required = {"verifier_log"}
+    if repo.review_policy != "tests_only":
+        required.update({"spec_review_log", "quality_review_log"})
+    return sorted(required - artifact_kinds(conn, task_id))
 
 
 def run_one_ready_task(conn: sqlite3.Connection, config: CoordinatorConfig, root: Path) -> bool:
@@ -298,6 +310,27 @@ def run_one_ready_task(conn: sqlite3.Connection, config: CoordinatorConfig, root
                 next_action="address quality review feedback",
             )
             return True
+
+    missing_evidence = _missing_completion_evidence(conn, task["id"], repo)
+    if missing_evidence:
+        if "verifier_log" in missing_evidence:
+            state = "failed"
+            next_action = "rerun verification and capture verifier evidence"
+            verifier_result = "failed"
+        else:
+            state = _review_failure_state(repo)
+            next_action = "provide required review evidence"
+            verifier_result = "passed"
+        _finish_task(
+            conn,
+            root,
+            task["id"],
+            state,
+            f"missing completion evidence: {', '.join(missing_evidence)}",
+            verifier_result=verifier_result,
+            next_action=next_action,
+        )
+        return True
 
     transition_task(conn, task["id"], "committing", "creating commit")
     commit_all(

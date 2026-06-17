@@ -81,6 +81,7 @@ def push_config(repo_path: Path) -> CoordinatorConfig:
                 verify_commands=[
                     f"{sys.executable} -c \"from pathlib import Path; assert Path('feature.txt').read_text() == 'done'\""
                 ],
+                review_policy="tests_only",
             )
         },
         policy=base_policy(),
@@ -194,6 +195,7 @@ class PushMergeTests(unittest.TestCase):
                         allow_push=False,
                         merge_policy="auto_merge_default_branch",
                         verify_commands=config.repos["demo"].verify_commands,
+                        review_policy="tests_only",
                     )
                 },
                 policy=config.policy,
@@ -292,6 +294,7 @@ class PushMergeTests(unittest.TestCase):
                         verify_commands=[
                             f"{sys.executable} -c \"from pathlib import Path; assert Path('feature.txt').read_text() == 'task\\\\n'\""
                         ],
+                        review_policy="tests_only",
                     )
                 },
                 policy=config.policy,

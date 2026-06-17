@@ -48,6 +48,7 @@ class PromptContextTests(unittest.TestCase):
                 merge_policy = "no_push"
                 verify_commands = ["python -m unittest"]
                 memory_path = "memory/demo.md"
+                review_policy = "tests_only"
                 """.strip()
             )
             (root / "config" / "policy.toml").write_text(
@@ -68,6 +69,7 @@ class PromptContextTests(unittest.TestCase):
             config = load_config(root)
 
         self.assertEqual(config.repos["demo"].memory_path, Path("memory") / "demo.md")
+        self.assertEqual(config.repos["demo"].review_policy, "tests_only")
 
     def test_prompt_includes_loop_and_repo_memory_when_files_exist(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -95,6 +97,7 @@ class PromptContextTests(unittest.TestCase):
                         f"{sys.executable} -c \"from pathlib import Path; assert Path('feature.txt').read_text() == 'done'\""
                     ],
                     memory_path=Path("memory") / "demo.md",
+                    review_policy="tests_only",
                 )
             }
             config = CoordinatorConfig(
@@ -137,6 +140,7 @@ class PromptContextTests(unittest.TestCase):
                         f"{sys.executable} -c \"from pathlib import Path; assert Path('feature.txt').read_text() == 'done'\""
                     ],
                     memory_path=Path("missing") / "demo.md",
+                    review_policy="tests_only",
                 )
             }
             config = CoordinatorConfig(
@@ -181,6 +185,7 @@ class PromptContextTests(unittest.TestCase):
                         f"{sys.executable} -c \"from pathlib import Path; assert Path('feature.txt').read_text() == 'done'\""
                     ],
                     memory_path=Path("memory") / "demo.md",
+                    review_policy="tests_only",
                 )
             }
             config = CoordinatorConfig(

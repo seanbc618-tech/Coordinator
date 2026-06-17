@@ -31,6 +31,7 @@ def test_config(repo_path: Path) -> CoordinatorConfig:
                 verify_commands=[
                     f"{sys.executable} -c \"from pathlib import Path; assert Path('feature.txt').read_text() == 'done'\""
                 ],
+                review_policy="tests_only",
             )
         },
         policy=PolicyConfig(
@@ -267,6 +268,7 @@ class EngineTests(unittest.TestCase):
                     verify_commands=[
                         f"{sys.executable} -c \"from pathlib import Path; assert Path('feature.txt').read_text() == 'done'\""
                     ],
+                    review_policy="tests_only",
                 )
             }
             config = CoordinatorConfig(agents=config.agents, repos=repos, policy=config.policy)
@@ -315,6 +317,7 @@ class EngineTests(unittest.TestCase):
                     allow_push=False,
                     merge_policy="no_push",
                     verify_commands=[f"{sys.executable} -c \"print('ok')\""],
+                    review_policy="tests_only",
                 )
             }
             config = CoordinatorConfig(agents=agents, repos=repos, policy=config.policy)

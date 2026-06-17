@@ -6,3 +6,4 @@ branch_prefix = "coord/"
 allow_push = false
 merge_policy = "no_push"
 verify_commands = ["python -m unittest"]
+review_policy = "tests_only"

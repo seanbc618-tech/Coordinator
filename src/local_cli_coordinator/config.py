@@ -23,6 +23,7 @@ class RepoConfig:
     merge_policy: str
     verify_commands: list[str]
     memory_path: Path | None = None
+    review_policy: str = "full_review"
 
 
 @dataclass(frozen=True)
@@ -82,6 +83,7 @@ def load_config(root: Path) -> CoordinatorConfig:
                 if raw.get("memory_path") is not None
                 else None
             ),
+            review_policy=str(raw.get("review_policy", "full_review")),
         )
         for repo_id, raw in repos_raw.items()
     }

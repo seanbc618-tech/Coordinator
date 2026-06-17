@@ -44,4 +44,5 @@ class ConfigTests(unittest.TestCase):
 
             self.assertEqual(config.agents["codex"].max_concurrency, 2)
             self.assertEqual(config.repos["demo"].merge_policy, "push_branch_only")
+            self.assertEqual(config.repos["demo"].review_policy, "full_review")
             self.assertEqual(config.policy.max_files_touched, 3)

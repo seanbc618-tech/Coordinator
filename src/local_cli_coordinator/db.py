@@ -148,3 +148,11 @@ def add_artifact(conn: sqlite3.Connection, task_id: str, kind: str, path: Path) 
         (task_id, kind, str(path)),
     )
     conn.commit()
+
+
+def artifact_kinds(conn: sqlite3.Connection, task_id: str) -> set[str]:
+    rows = conn.execute(
+        "select kind from artifacts where task_id = ?",
+        (task_id,),
+    ).fetchall()
+    return {row["kind"] for row in rows}
