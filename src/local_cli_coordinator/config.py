@@ -37,6 +37,11 @@ class PolicyConfig:
     max_attempts: int
     split_if_touches_multiple_subsystems: bool
     split_if_research_and_code_are_mixed: bool
+    max_task_runtime_seconds: int = 1800
+    max_daemon_runtime_seconds: int = 3600
+    max_tasks_per_run: int = 1
+    max_tasks_per_day: int = 24
+    max_consecutive_failures: int = 3
 
 
 @dataclass(frozen=True)
@@ -98,6 +103,11 @@ def load_config(root: Path) -> CoordinatorConfig:
         max_attempts=int(policy_raw["max_attempts"]),
         split_if_touches_multiple_subsystems=bool(policy_raw["split_if_touches_multiple_subsystems"]),
         split_if_research_and_code_are_mixed=bool(policy_raw["split_if_research_and_code_are_mixed"]),
+        max_task_runtime_seconds=int(policy_raw.get("max_task_runtime_seconds", 1800)),
+        max_daemon_runtime_seconds=int(policy_raw.get("max_daemon_runtime_seconds", 3600)),
+        max_tasks_per_run=int(policy_raw.get("max_tasks_per_run", 1)),
+        max_tasks_per_day=int(policy_raw.get("max_tasks_per_day", 24)),
+        max_consecutive_failures=int(policy_raw.get("max_consecutive_failures", 3)),
     )
 
     return CoordinatorConfig(agents=agents, repos=repos, policy=policy)

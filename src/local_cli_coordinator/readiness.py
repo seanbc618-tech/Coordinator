@@ -91,16 +91,25 @@ def check_loop_readiness(root: Path, config: CoordinatorConfig | None) -> list[R
             )
         )
 
-    if config.policy.max_files_touched > 0 and config.policy.max_attempts > 0:
+    budget_caps = [
+        config.policy.max_files_touched,
+        config.policy.max_attempts,
+        config.policy.max_task_runtime_seconds,
+        config.policy.max_daemon_runtime_seconds,
+        config.policy.max_tasks_per_run,
+        config.policy.max_tasks_per_day,
+        config.policy.max_consecutive_failures,
+    ]
+    if all(cap > 0 for cap in budget_caps):
         checks.append(
             _check(
-                "warn",
+                "pass",
                 "budget cap",
-                "file and attempt policy caps are configured, but runtime caps are not configured yet",
+                "file, attempt, runtime caps, task-count caps, and failure caps are configured",
             )
         )
     else:
-        checks.append(_check("warn", "budget cap", "file and attempt caps are missing"))
+        checks.append(_check("warn", "budget cap", "one or more budget caps are missing"))
 
     if not config.repos:
         checks.append(_check("warn", "human review point", "no repos are configured"))

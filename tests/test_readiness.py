@@ -82,8 +82,8 @@ class ReadinessTests(unittest.TestCase):
 
         self.assertEqual(checks["evaluator"].status, "warn")
         self.assertIn("independent reviewer", checks["evaluator"].message)
-        self.assertEqual(checks["budget cap"].status, "warn")
-        self.assertIn("runtime", checks["budget cap"].message)
+        self.assertEqual(checks["budget cap"].status, "pass")
+        self.assertIn("runtime caps", checks["budget cap"].message)
 
     def test_doctor_output_includes_loop_readiness_section_and_labels(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
