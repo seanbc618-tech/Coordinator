@@ -30,14 +30,14 @@ def _slug(text: str) -> str:
     return cleaned[:40] or "task"
 
 
-def _select_agent(config: CoordinatorConfig, capabilities: list[str]):
+def _select_agent(config: CoordinatorConfig, capabilities: list[str], role: str = "worker"):
     if not config.agents:
         return None
     if not capabilities:
         return None
     required = set(capabilities)
     for agent in config.agents.values():
-        if required.issubset(set(agent.capabilities)):
+        if agent.role == role and required.issubset(set(agent.capabilities)):
             return agent
     return None
 

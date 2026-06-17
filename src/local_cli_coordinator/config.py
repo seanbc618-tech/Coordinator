@@ -9,6 +9,7 @@ class AgentConfig:
     command: str
     capabilities: list[str]
     max_concurrency: int
+    role: str = "worker"
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,7 @@ def load_config(root: Path) -> CoordinatorConfig:
             command=str(raw["command"]),
             capabilities=list(raw.get("capabilities", [])),
             max_concurrency=int(raw.get("max_concurrency", 1)),
+            role=str(raw.get("role", "worker")),
         )
         for agent_id, raw in agents_raw.items()
     }
