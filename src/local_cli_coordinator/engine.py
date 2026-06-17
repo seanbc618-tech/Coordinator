@@ -20,6 +20,7 @@ from .gitops import (
     push_branch,
 )
 from .policy import check_changed_files
+from .review import run_spec_review
 from .verify import run_verification
 from .memory import LoopMemoryEntry, append_loop_memory, loop_memory_path
 
@@ -100,6 +101,12 @@ def _finish_task(
             next_action=next_action,
         ),
     )
+
+
+def _review_failure_state(repo: RepoConfig) -> str:
+    if repo.merge_policy == "auto_merge_default_branch":
+        return "rejected"
+    return "awaiting_human"
 
 
 def run_one_ready_task(conn: sqlite3.Connection, config: CoordinatorConfig, root: Path) -> bool:
@@ -225,6 +232,31 @@ def run_one_ready_task(conn: sqlite3.Connection, config: CoordinatorConfig, root
             next_action="inspect verifier log and retry",
         )
         return True
+
+    spec_reviewer = _select_agent(config, capabilities, role="spec_reviewer")
+    if spec_reviewer is not None:
+        transition_task(conn, task["id"], "reviewing_spec", "running spec review")
+        spec_review = run_spec_review(
+            spec_reviewer,
+            task,
+            changed_files,
+            patch_path,
+            worktree,
+            run_dir,
+        )
+        add_artifact(conn, task["id"], "spec_review_log", spec_review.log_path)
+        if not spec_review.passed:
+            state = _review_failure_state(repo)
+            _finish_task(
+                conn,
+                root,
+                task["id"],
+                state,
+                "spec review failed",
+                verifier_result="passed",
+                next_action="address spec review feedback",
+            )
+            return True
 
     transition_task(conn, task["id"], "committing", "creating commit")
     commit_all(
