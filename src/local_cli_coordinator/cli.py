@@ -49,7 +49,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     config, config_error = try_load_config(root)
     print("Coordinator doctor")
     print(f"root: {args.root}")
-    print("status: ok")
+    print(f"status: {'degraded' if config_error is not None else 'ok'}")
     print()
     print("Loop readiness")
     if config_error is not None:

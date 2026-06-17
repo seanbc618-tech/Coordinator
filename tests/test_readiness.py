@@ -71,6 +71,20 @@ class ReadinessTests(unittest.TestCase):
 
         self.assertEqual([check.name for check in checks], EXPECTED_LABELS)
 
+    def test_incomplete_loop_guards_are_warnings_until_enforced(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "tasks" / "inbox").mkdir(parents=True)
+            write_minimal_config(root)
+            config = load_config(root)
+
+            checks = {check.name: check for check in check_loop_readiness(root, config)}
+
+        self.assertEqual(checks["evaluator"].status, "warn")
+        self.assertIn("independent reviewer", checks["evaluator"].message)
+        self.assertEqual(checks["budget cap"].status, "warn")
+        self.assertIn("runtime", checks["budget cap"].message)
+
     def test_doctor_output_includes_loop_readiness_section_and_labels(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -85,3 +99,13 @@ class ReadinessTests(unittest.TestCase):
         self.assertIn("Loop readiness", result.stdout)
         for label in EXPECTED_LABELS:
             self.assertIn(label, result.stdout)
+
+    def test_doctor_reports_degraded_status_when_config_is_not_loadable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            result = run_cli("--root", str(root), "doctor")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("status: degraded", result.stdout)
+        self.assertIn("[WARN] configuration", result.stdout)

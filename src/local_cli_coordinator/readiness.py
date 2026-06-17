@@ -62,9 +62,9 @@ def check_loop_readiness(root: Path, config: CoordinatorConfig | None) -> list[R
     if has_verifier:
         checks.append(
             _check(
-                "pass",
+                "warn",
                 "evaluator",
-                "verification commands are required or configured; independent reviewer is not configured yet",
+                "verification commands are required or configured, but independent reviewer is not configured yet",
             )
         )
     else:
@@ -94,9 +94,9 @@ def check_loop_readiness(root: Path, config: CoordinatorConfig | None) -> list[R
     if config.policy.max_files_touched > 0 and config.policy.max_attempts > 0:
         checks.append(
             _check(
-                "pass",
+                "warn",
                 "budget cap",
-                "file and attempt caps are configured; runtime caps are not configured yet",
+                "file and attempt policy caps are configured, but runtime caps are not configured yet",
             )
         )
     else:
