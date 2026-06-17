@@ -15,6 +15,7 @@ from .db import (
     transition_task,
 )
 from .engine import run_one_ready_task
+from .memory import LOOP_MEMORY_RELATIVE_PATH, loop_memory_path
 from .policy import check_task_draft
 from .readiness import check_loop_readiness
 from .tasks import scan_inbox
@@ -102,6 +103,8 @@ def _cmd_status(args: argparse.Namespace) -> int:
         counts = task_counts(conn)
     finally:
         conn.close()
+    if loop_memory_path(root).exists():
+        print(f"loop memory: {LOOP_MEMORY_RELATIVE_PATH.as_posix()}")
     if not counts:
         print("no tasks")
         return 0

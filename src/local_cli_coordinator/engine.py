@@ -4,7 +4,13 @@ import sqlite3
 
 from .agent import run_agent
 from .config import CoordinatorConfig
-from .db import add_artifact, next_ready_task, set_task_branch_and_worktree, transition_task
+from .db import (
+    add_artifact,
+    get_task,
+    next_ready_task,
+    set_task_branch_and_worktree,
+    transition_task,
+)
 from .gitops import (
     collect_changed_files,
     commit_all,
@@ -15,6 +21,7 @@ from .gitops import (
 )
 from .policy import check_changed_files
 from .verify import run_verification
+from .memory import LoopMemoryEntry, append_loop_memory
 
 
 def _slug(text: str) -> str:
@@ -47,31 +54,71 @@ def _write_prompt(task, run_dir: Path) -> Path:
     return prompt
 
 
+def _finish_task(
+    conn: sqlite3.Connection,
+    root: Path,
+    task_id: str,
+    state: str,
+    note: str,
+    *,
+    verifier_result: str,
+    next_action: str,
+) -> None:
+    transition_task(conn, task_id, state, note)
+    task = get_task(conn, task_id)
+    append_loop_memory(
+        root,
+        LoopMemoryEntry(
+            task_id=task["id"],
+            repo=task["repo"],
+            title=task["title"],
+            outcome=state,
+            branch=task["branch"],
+            verifier_result=verifier_result,
+            next_action=next_action,
+        ),
+    )
+
+
 def run_one_ready_task(conn: sqlite3.Connection, config: CoordinatorConfig, root: Path) -> bool:
     task = next_ready_task(conn)
     if task is None:
         return False
     repo = config.repos.get(task["repo"])
     if repo is None:
-        transition_task(
+        _finish_task(
             conn,
+            root,
             task["id"],
             "blocked",
             f"repo is not configured: {task['repo']}",
+            verifier_result="not run",
+            next_action="configure repo allowlist",
         )
         return True
     capabilities = [part for part in task["capabilities"].split(",") if part]
     if not config.agents:
-        transition_task(conn, task["id"], "blocked", "no configured agents")
+        _finish_task(
+            conn,
+            root,
+            task["id"],
+            "blocked",
+            "no configured agents",
+            verifier_result="not run",
+            next_action="configure an agent",
+        )
         return True
     agent = _select_agent(config, capabilities)
     if agent is None:
         capability_text = ", ".join(capabilities) if capabilities else "(none)"
-        transition_task(
+        _finish_task(
             conn,
+            root,
             task["id"],
             "blocked",
             f"no matching agent for capabilities: {capability_text}",
+            verifier_result="not run",
+            next_action="split task or configure capable agent",
         )
         return True
     branch = f"{repo.branch_prefix}{task['id']}-{_slug(task['title'])}"
@@ -86,23 +133,55 @@ def run_one_ready_task(conn: sqlite3.Connection, config: CoordinatorConfig, root
             branch_name=branch,
         )
     except (RuntimeError, OSError) as exc:
-        transition_task(conn, task["id"], "failed", f"worktree creation failed: {exc}")
+        _finish_task(
+            conn,
+            root,
+            task["id"],
+            "failed",
+            f"worktree creation failed: {exc}",
+            verifier_result="not run",
+            next_action="inspect git worktree setup and retry",
+        )
         return True
     set_task_branch_and_worktree(conn, task["id"], branch, worktree)
     prompt = _write_prompt(task, run_dir)
     agent_result = run_agent(agent, prompt, worktree, run_dir)
     add_artifact(conn, task["id"], "agent_log", agent_result.log_path)
     if agent_result.exit_code != 0:
-        transition_task(conn, task["id"], "failed", "agent command failed")
+        _finish_task(
+            conn,
+            root,
+            task["id"],
+            "failed",
+            "agent command failed",
+            verifier_result="not run",
+            next_action="inspect agent log and retry",
+        )
         return True
 
     changed_files = collect_changed_files(worktree)
     if not changed_files:
-        transition_task(conn, task["id"], "failed", "no changed files")
+        _finish_task(
+            conn,
+            root,
+            task["id"],
+            "failed",
+            "no changed files",
+            verifier_result="not run",
+            next_action="inspect agent output and retry",
+        )
         return True
     policy_result = check_changed_files(changed_files, config.policy)
     if not policy_result.accepted:
-        transition_task(conn, task["id"], "needs_split", "; ".join(policy_result.reasons))
+        _finish_task(
+            conn,
+            root,
+            task["id"],
+            "needs_split",
+            "; ".join(policy_result.reasons),
+            verifier_result="not run",
+            next_action="split task smaller",
+        )
         return True
 
     patch_path = run_dir / "diff.patch"
@@ -114,7 +193,15 @@ def run_one_ready_task(conn: sqlite3.Connection, config: CoordinatorConfig, root
     verification = run_verification(commands, worktree, run_dir)
     add_artifact(conn, task["id"], "verifier_log", verification.log_path)
     if not verification.passed:
-        transition_task(conn, task["id"], "failed", "verification failed")
+        _finish_task(
+            conn,
+            root,
+            task["id"],
+            "failed",
+            "verification failed",
+            verifier_result="failed",
+            next_action="inspect verifier log and retry",
+        )
         return True
 
     transition_task(conn, task["id"], "committing", "creating commit")
@@ -127,16 +214,40 @@ def run_one_ready_task(conn: sqlite3.Connection, config: CoordinatorConfig, root
         try:
             push_branch(worktree, repo.remote, branch)
         except (RuntimeError, OSError) as exc:
-            transition_task(conn, task["id"], "failed", f"push failed: {exc}")
+            _finish_task(
+                conn,
+                root,
+                task["id"],
+                "failed",
+                f"push failed: {exc}",
+                verifier_result="passed",
+                next_action="inspect push failure and retry",
+            )
             return True
         if repo.merge_policy == "auto_merge_default_branch":
             transition_task(conn, task["id"], "merging", "merging to default branch")
             try:
                 merge_branch_to_default(repo.path, branch, repo.default_branch, repo.remote)
             except (RuntimeError, OSError) as exc:
-                transition_task(conn, task["id"], "failed", f"merge failed: {exc}")
+                _finish_task(
+                    conn,
+                    root,
+                    task["id"],
+                    "failed",
+                    f"merge failed: {exc}",
+                    verifier_result="passed",
+                    next_action="inspect merge failure and retry",
+                )
                 return True
-    transition_task(conn, task["id"], "done", "completed")
+    _finish_task(
+        conn,
+        root,
+        task["id"],
+        "done",
+        "completed",
+        verifier_result="passed",
+        next_action="continue next task",
+    )
     return True
 
 
