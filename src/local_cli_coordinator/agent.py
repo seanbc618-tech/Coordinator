@@ -2,9 +2,9 @@ from dataclasses import dataclass
 from pathlib import Path
 import os
 import shlex
-import subprocess
 
 from .config import AgentConfig
+from .process import run_command
 
 
 @dataclass(frozen=True)
@@ -13,6 +13,7 @@ class AgentRunResult:
     command: str
     exit_code: int
     log_path: Path
+    timed_out: bool = False
 
 
 def _render_token(token: str, prompt_path: Path, worktree_path: Path) -> str:
@@ -28,11 +29,15 @@ def _write_log(
     stdout: str,
     stderr: str,
     exit_code: int,
+    timed_out: bool,
+    timeout_seconds: float | None,
     error: BaseException | None = None,
 ) -> None:
     lines = [
         f"command: {command}",
         f"exit_code: {exit_code}",
+        f"timed_out: {timed_out}",
+        f"timeout_seconds: {timeout_seconds}",
         "stdout:",
         stdout,
         "stderr:",
@@ -48,10 +53,12 @@ def run_agent(
     prompt_path: Path,
     worktree_path: Path,
     run_dir: Path,
+    timeout_seconds: float | None = None,
 ) -> AgentRunResult:
     run_dir.mkdir(parents=True, exist_ok=True)
     log_path = run_dir / "agent.log"
     exit_code = 127
+    timed_out = False
     command = agent.command
     env = os.environ.copy()
     env["COORDINATOR_AGENT_ID"] = agent.id
@@ -66,23 +73,39 @@ def run_agent(
         if not argv:
             raise ValueError("empty agent command")
         command = shlex.join(argv)
-        result = subprocess.run(
+        result = run_command(
             argv,
             cwd=worktree_path,
             env=env,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
+            timeout_seconds=timeout_seconds,
         )
         exit_code = result.returncode
-        _write_log(log_path, command, result.stdout, result.stderr, exit_code)
+        timed_out = result.timed_out
+        _write_log(
+            log_path,
+            command,
+            result.stdout,
+            result.stderr,
+            exit_code,
+            timed_out,
+            timeout_seconds,
+        )
     except (OSError, ValueError) as exc:
-        _write_log(log_path, command, "", "", exit_code, exc)
+        _write_log(
+            log_path,
+            command,
+            "",
+            "",
+            exit_code,
+            timed_out,
+            timeout_seconds,
+            exc,
+        )
 
     return AgentRunResult(
         agent_id=agent.id,
         command=command,
         exit_code=exit_code,
         log_path=log_path,
+        timed_out=timed_out,
     )

@@ -10,6 +10,7 @@ class ReviewResult:
     passed: bool
     log_path: Path
     prompt_path: Path
+    timed_out: bool = False
 
 
 def _format_changed_files(changed_files: list[str]) -> str:
@@ -38,13 +39,21 @@ def run_spec_review(
     diff_path: Path,
     worktree: Path,
     run_dir: Path,
+    timeout_seconds: float | None = None,
 ) -> ReviewResult:
     prompt_path = write_spec_review_prompt(task, changed_files, diff_path, run_dir)
-    agent_result = run_agent(agent, prompt_path, worktree, run_dir / "spec_review")
+    agent_result = run_agent(
+        agent,
+        prompt_path,
+        worktree,
+        run_dir / "spec_review",
+        timeout_seconds=timeout_seconds,
+    )
     return ReviewResult(
-        passed=agent_result.exit_code == 0,
+        passed=agent_result.exit_code == 0 and not agent_result.timed_out,
         log_path=agent_result.log_path,
         prompt_path=prompt_path,
+        timed_out=agent_result.timed_out,
     )
 
 
@@ -80,6 +89,7 @@ def run_quality_review(
     repo: RepoConfig,
     worktree: Path,
     run_dir: Path,
+    timeout_seconds: float | None = None,
 ) -> ReviewResult:
     prompt_path = write_quality_review_prompt(
         task,
@@ -89,9 +99,16 @@ def run_quality_review(
         repo,
         run_dir,
     )
-    agent_result = run_agent(agent, prompt_path, worktree, run_dir / "quality_review")
+    agent_result = run_agent(
+        agent,
+        prompt_path,
+        worktree,
+        run_dir / "quality_review",
+        timeout_seconds=timeout_seconds,
+    )
     return ReviewResult(
-        passed=agent_result.exit_code == 0,
+        passed=agent_result.exit_code == 0 and not agent_result.timed_out,
         log_path=agent_result.log_path,
         prompt_path=prompt_path,
+        timed_out=agent_result.timed_out,
     )

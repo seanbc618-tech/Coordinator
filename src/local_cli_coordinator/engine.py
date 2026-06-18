@@ -186,15 +186,26 @@ def run_one_ready_task(conn: sqlite3.Connection, config: CoordinatorConfig, root
         return True
     set_task_branch_and_worktree(conn, task["id"], branch, worktree)
     prompt = _write_prompt(task, run_dir, root, repo)
-    agent_result = run_agent(agent, prompt, worktree, run_dir)
+    agent_result = run_agent(
+        agent,
+        prompt,
+        worktree,
+        run_dir,
+        timeout_seconds=config.policy.max_task_runtime_seconds,
+    )
     add_artifact(conn, task["id"], "agent_log", agent_result.log_path)
-    if agent_result.exit_code != 0:
+    if agent_result.exit_code != 0 or agent_result.timed_out:
         _finish_task(
             conn,
             root,
             task["id"],
             "failed",
-            "agent command failed",
+            (
+                f"agent command timed out after "
+                f"{config.policy.max_task_runtime_seconds} seconds"
+                if agent_result.timed_out
+                else "agent command failed"
+            ),
             verifier_result="not run",
             next_action="inspect agent log and retry",
         )
@@ -231,7 +242,12 @@ def run_one_ready_task(conn: sqlite3.Connection, config: CoordinatorConfig, root
 
     transition_task(conn, task["id"], "verifying", "running verification")
     commands = [line for line in task["verification_commands"].splitlines() if line] or repo.verify_commands
-    verification = run_verification(commands, worktree, run_dir)
+    verification = run_verification(
+        commands,
+        worktree,
+        run_dir,
+        timeout_seconds=config.policy.max_task_runtime_seconds,
+    )
     add_artifact(conn, task["id"], "verifier_log", verification.log_path)
     if not verification.passed:
         _finish_task(
@@ -239,8 +255,13 @@ def run_one_ready_task(conn: sqlite3.Connection, config: CoordinatorConfig, root
             root,
             task["id"],
             "failed",
-            "verification failed",
-            verifier_result="failed",
+            (
+                f"verification timed out after "
+                f"{config.policy.max_task_runtime_seconds} seconds"
+                if verification.timed_out
+                else "verification failed"
+            ),
+            verifier_result="timed out" if verification.timed_out else "failed",
             next_action="inspect verifier log and retry",
         )
         return True
@@ -256,18 +277,28 @@ def run_one_ready_task(conn: sqlite3.Connection, config: CoordinatorConfig, root
             patch_path,
             worktree,
             run_dir,
+            timeout_seconds=config.policy.max_task_runtime_seconds,
         )
         add_artifact(conn, task["id"], "spec_review_log", spec_review.log_path)
         if not spec_review.passed:
-            state = _review_failure_state(repo)
+            state = "failed" if spec_review.timed_out else _review_failure_state(repo)
             _finish_task(
                 conn,
                 root,
                 task["id"],
                 state,
-                "spec review failed",
+                (
+                    f"spec review timed out after "
+                    f"{config.policy.max_task_runtime_seconds} seconds"
+                    if spec_review.timed_out
+                    else "spec review failed"
+                ),
                 verifier_result="passed",
-                next_action="address spec review feedback",
+                next_action=(
+                    "inspect spec reviewer log and retry"
+                    if spec_review.timed_out
+                    else "address spec review feedback"
+                ),
             )
             return True
         spec_review_passed = True
@@ -296,18 +327,28 @@ def run_one_ready_task(conn: sqlite3.Connection, config: CoordinatorConfig, root
             repo,
             worktree,
             run_dir,
+            timeout_seconds=config.policy.max_task_runtime_seconds,
         )
         add_artifact(conn, task["id"], "quality_review_log", quality_review.log_path)
         if not quality_review.passed:
-            state = _review_failure_state(repo)
+            state = "failed" if quality_review.timed_out else _review_failure_state(repo)
             _finish_task(
                 conn,
                 root,
                 task["id"],
                 state,
-                "quality review failed",
+                (
+                    f"quality review timed out after "
+                    f"{config.policy.max_task_runtime_seconds} seconds"
+                    if quality_review.timed_out
+                    else "quality review failed"
+                ),
                 verifier_result="passed",
-                next_action="address quality review feedback",
+                next_action=(
+                    "inspect quality reviewer log and retry"
+                    if quality_review.timed_out
+                    else "address quality review feedback"
+                ),
             )
             return True
 
