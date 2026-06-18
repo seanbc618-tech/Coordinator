@@ -9,9 +9,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from .gitops import git
 from .models import Finding
 
 FINDINGS_DIR = Path("state") / "findings"
+CURSORS_DIR = Path("state") / "discovery" / "cursors"
 
 
 def findings_dir(root: Path) -> Path:
@@ -58,6 +60,103 @@ def list_findings(root: Path) -> list[Finding]:
         except (json.JSONDecodeError, KeyError):
             continue
     return results
+
+
+def _cursor_path(root: Path, source_id: str, repo_id: str) -> Path:
+    return root / CURSORS_DIR / f"{source_id}__{repo_id}.txt"
+
+
+def load_cursor(root: Path, source_id: str, repo_id: str) -> str | None:
+    path = _cursor_path(root, source_id, repo_id)
+    if not path.is_file():
+        return None
+    value = path.read_text(encoding="utf-8").strip()
+    return value or None
+
+
+def save_cursor(root: Path, source_id: str, repo_id: str, commit_hash: str) -> Path:
+    path = _cursor_path(root, source_id, repo_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"{commit_hash}\n", encoding="utf-8")
+    return path
+
+
+def _root_commit(repo_path: Path) -> str:
+    result = git(["rev-list", "--max-parents=0", "HEAD"], cwd=repo_path)
+    if result.returncode != 0:
+        raise RuntimeError(f"read root commit failed: {result.stderr.strip()}")
+    commits = [line for line in result.stdout.splitlines() if line.strip()]
+    if not commits:
+        raise RuntimeError("repository has no commits")
+    return commits[0]
+
+
+def _recent_commits_since(repo_path: Path, since_commit: str) -> list[tuple[str, str, str]]:
+    result = git(
+        [
+            "log",
+            f"{since_commit}..HEAD",
+            "--reverse",
+            "--format=%H%x1f%s%x1f%aI",
+        ],
+        cwd=repo_path,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"read recent commits failed: {result.stderr.strip()}")
+
+    commits: list[tuple[str, str, str]] = []
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
+        commit_hash, subject, discovered_at = line.split("\x1f", 2)
+        commits.append((commit_hash, subject, discovered_at))
+    return commits
+
+
+def _finding_id(source_id: str, repo_id: str, commit_hash: str) -> str:
+    return f"finding-{source_id}-{repo_id}-{commit_hash[:12]}"
+
+
+def _commit_evidence(commit_hash: str, subject: str) -> str:
+    return f"commit={commit_hash};subject={subject}"
+
+
+def discover_git_recent_commits(
+    *,
+    root: Path,
+    source_id: str,
+    repo_id: str,
+    repo_path: Path,
+    enabled_repos: dict[str, bool],
+    persist: bool = False,
+) -> list[Finding]:
+    if not enabled_repos.get(repo_id, False):
+        return []
+
+    since_commit = load_cursor(root, source_id, repo_id) or _root_commit(repo_path)
+    raw_commits = _recent_commits_since(repo_path, since_commit)
+    if not raw_commits:
+        return []
+
+    findings = [
+        Finding(
+            id=_finding_id(source_id, repo_id, commit_hash),
+            repo=repo_id,
+            source=source_id,
+            title=subject,
+            body=subject,
+            severity="info",
+            evidence=_commit_evidence(commit_hash, subject),
+            discovered_at=discovered_at,
+        )
+        for commit_hash, subject, discovered_at in raw_commits
+    ]
+
+    save_cursor(root, source_id, repo_id, raw_commits[-1][0])
+    if persist:
+        for finding in findings:
+            save_finding(root, finding)
+    return findings
 
 
 def delete_finding(root: Path, finding_id: str) -> bool:
