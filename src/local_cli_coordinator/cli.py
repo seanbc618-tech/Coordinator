@@ -19,6 +19,7 @@ from .db import (
     transition_task,
 )
 from .engine import run_one_ready_task
+from .locks import acquire_lock, release_lock
 from .memory import LOOP_MEMORY_RELATIVE_PATH, loop_memory_path
 from .policy import check_task_draft
 from .readiness import check_loop_readiness
@@ -169,6 +170,12 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
         return 2
     root = Path(args.root)
     config = load_config(root)
+
+    lock_result = acquire_lock(root, force=getattr(args, "force_lock", False))
+    if isinstance(lock_result, str):
+        print(lock_result, file=sys.stderr)
+        return 1
+
     conn = _open_db(root, args.db)
     run_id = start_daemon_run(conn)
     tasks_processed = 0
@@ -199,6 +206,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
             stop_reason=stop_reason,
         )
         conn.close()
+        release_lock(root)
     print(message)
     return 0
 
@@ -239,6 +247,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     daemon = subparsers.add_parser("daemon")
     daemon.add_argument("--once", action="store_true")
+    daemon.add_argument("--force-lock", action="store_true")
     subparsers.add_parser("status")
     subparsers.add_parser("doctor")
 
