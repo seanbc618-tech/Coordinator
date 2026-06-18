@@ -156,3 +156,64 @@ def artifact_kinds(conn: sqlite3.Connection, task_id: str) -> set[str]:
         (task_id,),
     ).fetchall()
     return {row["kind"] for row in rows}
+
+
+def start_daemon_run(conn: sqlite3.Connection) -> int:
+    cursor = conn.execute("insert into daemon_runs default values")
+    conn.commit()
+    return cursor.lastrowid
+
+
+def finish_daemon_run(
+    conn: sqlite3.Connection,
+    run_id: int,
+    *,
+    tasks_processed: int,
+    failures: int,
+    stop_reason: str | None = None,
+) -> None:
+    conn.execute(
+        """
+        update daemon_runs
+        set ended_at = current_timestamp,
+            tasks_processed = ?,
+            failures = ?,
+            stop_reason = ?
+        where id = ?
+        """,
+        (tasks_processed, failures, stop_reason, run_id),
+    )
+    conn.commit()
+
+
+def circuit_breaker_reason(conn: sqlite3.Connection, policy) -> str | None:
+    daily_tasks = conn.execute(
+        """
+        select coalesce(sum(tasks_processed), 0) as total
+        from daemon_runs
+        where date(started_at) = date('now')
+        """,
+    ).fetchone()["total"]
+    if daily_tasks >= policy.max_tasks_per_day:
+        return f"daily task limit reached ({daily_tasks}/{policy.max_tasks_per_day})"
+
+    consecutive_failures = 0
+    rows = conn.execute(
+        """
+        select failures
+        from daemon_runs
+        where ended_at is not null
+          and tasks_processed > 0
+        order by id desc
+        """
+    ).fetchall()
+    for row in rows:
+        if row["failures"] <= 0:
+            break
+        consecutive_failures += 1
+    if consecutive_failures >= policy.max_consecutive_failures:
+        return (
+            "consecutive failure limit reached "
+            f"({consecutive_failures}/{policy.max_consecutive_failures})"
+        )
+    return None

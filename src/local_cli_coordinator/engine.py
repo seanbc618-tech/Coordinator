@@ -7,6 +7,7 @@ from .config import CoordinatorConfig, RepoConfig
 from .db import (
     add_artifact,
     artifact_kinds,
+    circuit_breaker_reason,
     get_task,
     next_ready_task,
     set_task_branch_and_worktree,
@@ -122,6 +123,8 @@ def _missing_completion_evidence(
 
 
 def run_one_ready_task(conn: sqlite3.Connection, config: CoordinatorConfig, root: Path) -> bool:
+    if circuit_breaker_reason(conn, config.policy) is not None:
+        return False
     task = next_ready_task(conn)
     if task is None:
         return False

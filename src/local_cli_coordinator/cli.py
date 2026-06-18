@@ -6,11 +6,15 @@ from pathlib import Path
 
 from .config import load_config, try_load_config
 from .db import (
+    circuit_breaker_reason,
     connect,
     create_task,
+    finish_daemon_run,
     get_task,
     init_db,
     list_tasks,
+    next_ready_task,
+    start_daemon_run,
     task_counts,
     transition_task,
 )
@@ -166,11 +170,36 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
     root = Path(args.root)
     config = load_config(root)
     conn = _open_db(root, args.db)
+    run_id = start_daemon_run(conn)
+    tasks_processed = 0
+    failures = 0
+    stop_reason = None
     try:
-        processed = run_one_ready_task(conn, config, root)
+        stop_reason = circuit_breaker_reason(conn, config.policy)
+        if stop_reason is not None:
+            message = f"stopped: {stop_reason}"
+        else:
+            candidate = next_ready_task(conn)
+            processed = run_one_ready_task(conn, config, root)
+            tasks_processed = int(processed)
+            if processed and candidate is not None:
+                failures = int(get_task(conn, candidate["id"])["state"] == "failed")
+            stop_reason = None if processed else "no ready tasks"
+            message = "processed 1 task" if processed else "no ready tasks"
+    except Exception as exc:
+        failures = 1
+        stop_reason = f"daemon error: {type(exc).__name__}: {exc}"
+        raise
     finally:
+        finish_daemon_run(
+            conn,
+            run_id,
+            tasks_processed=tasks_processed,
+            failures=failures,
+            stop_reason=stop_reason,
+        )
         conn.close()
-    print("processed 1 task" if processed else "no ready tasks")
+    print(message)
     return 0
 
 
@@ -266,3 +295,4 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     print(f"{args.command}: command is registered")
     return 0
+    finish_daemon_run,
