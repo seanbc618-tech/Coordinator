@@ -157,7 +157,7 @@ class CircuitBreakerTests(unittest.TestCase):
 
             with (
                 patch(
-                    "local_cli_coordinator.cli.run_one_ready_task",
+                    "local_cli_coordinator.cli.run_daemon_cycle",
                     side_effect=RuntimeError("boom"),
                 ),
                 self.assertRaisesRegex(RuntimeError, "boom"),

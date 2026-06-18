@@ -1,3 +1,7 @@
+import json
+import shutil
+import time
+from dataclasses import dataclass
 from pathlib import Path
 import re
 import sqlite3
@@ -9,12 +13,17 @@ from .db import (
     artifact_kinds,
     circuit_breaker_reason,
     claim_next_ready_task,
+    create_task,
     get_task,
     next_ready_task,
     release_task_lease,
     set_task_branch_and_worktree,
     transition_task,
 )
+from .discovery import list_findings
+from .planner import plan_finding
+from .policy import check_changed_files, check_task_draft
+from .tasks import parse_task_markdown, scan_inbox, write_generated_task
 from .gitops import (
     collect_changed_files,
     commit_all,
@@ -23,7 +32,6 @@ from .gitops import (
     merge_branch_to_default,
     push_branch,
 )
-from .policy import check_changed_files
 from .review import run_quality_review, run_spec_review
 from .verify import run_verification
 from .memory import LoopMemoryEntry, append_loop_memory, loop_memory_path
@@ -144,6 +152,209 @@ def _missing_completion_evidence(
     if repo.review_policy != "tests_only":
         required.update({"spec_review_log", "quality_review_log"})
     return sorted(required - artifact_kinds(conn, task_id))
+
+
+PLANNED_FINDINGS_RELATIVE_PATH = Path("state") / "discovery" / "planned_findings.json"
+
+
+@dataclass(frozen=True)
+class DaemonCycleResult:
+    imported_tasks: int
+    planned_tasks: int
+    tasks_processed: int
+    failures: int
+    stop_reason: str | None
+
+
+@dataclass(frozen=True)
+class ContinuousDaemonResult:
+    message: str
+    tasks_processed: int
+    failures: int
+    stop_reason: str | None
+
+
+def _planned_findings_path(root: Path) -> Path:
+    return root / PLANNED_FINDINGS_RELATIVE_PATH
+
+
+def _load_planned_finding_ids(root: Path) -> set[str]:
+    path = _planned_findings_path(root)
+    if not path.is_file():
+        return set()
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, list):
+        raise ValueError("planned findings state must be a JSON array")
+    return {str(item) for item in payload}
+
+
+def _mark_finding_planned(root: Path, finding_id: str, planned_ids: set[str]) -> None:
+    planned_ids.add(finding_id)
+    path = _planned_findings_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(sorted(planned_ids), indent=2) + "\n", encoding="utf-8")
+
+
+def _move_to_accepted(root: Path, source_path: str) -> None:
+    source = root / source_path
+    accepted = root / "tasks" / "accepted" / source.name
+    accepted.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(source), str(accepted))
+
+
+def _scan_markdown_tasks(root: Path, relative_dir: str) -> list:
+    directory = root / relative_dir
+    if not directory.is_dir():
+        return []
+    drafts = []
+    for path in sorted(directory.glob("*.md")):
+        drafts.append(parse_task_markdown(path.read_text(encoding="utf-8"), str(path.relative_to(root))))
+    return drafts
+
+
+def _import_task_draft(
+    conn: sqlite3.Connection,
+    config: CoordinatorConfig,
+    root: Path,
+    draft,
+) -> bool:
+    reasons = list(check_task_draft(draft, config.policy).reasons)
+    if draft.repo not in config.repos:
+        reasons.append(f"repo is not allowlisted: {draft.repo}")
+    if reasons:
+        return False
+    create_task(
+        conn,
+        title=draft.title,
+        repo=draft.repo,
+        source_path=draft.source_path,
+        priority=draft.priority,
+        capabilities=draft.capabilities,
+        goal=draft.goal,
+        acceptance_criteria=draft.acceptance_criteria,
+        verification_commands=draft.verification_commands,
+    )
+    _move_to_accepted(root, draft.source_path)
+    return True
+
+
+def _import_discovered_tasks(
+    conn: sqlite3.Connection,
+    config: CoordinatorConfig,
+    root: Path,
+) -> int:
+    imported = 0
+    for draft in scan_inbox(root):
+        if _import_task_draft(conn, config, root, draft):
+            imported += 1
+    for draft in _scan_markdown_tasks(root, "tasks/generated"):
+        if _import_task_draft(conn, config, root, draft):
+            imported += 1
+    return imported
+
+
+def _plan_persisted_findings(root: Path) -> int:
+    planned_ids = _load_planned_finding_ids(root)
+    planned_count = 0
+    for finding in list_findings(root):
+        if finding.id in planned_ids:
+            continue
+        result = plan_finding(finding)
+        if result.needs_split:
+            continue
+        for task in result.tasks:
+            write_generated_task(root, task)
+            planned_count += 1
+        _mark_finding_planned(root, finding.id, planned_ids)
+    return planned_count
+
+
+def run_discovery_phase(
+    conn: sqlite3.Connection,
+    config: CoordinatorConfig,
+    root: Path,
+) -> tuple[int, int]:
+    if not config.daemon_policy.run_discovery_before_tasks:
+        return 0, 0
+    imported = _import_discovered_tasks(conn, config, root)
+    planned = _plan_persisted_findings(root)
+    if planned:
+        imported += _import_discovered_tasks(conn, config, root)
+    return imported, planned
+
+
+def run_daemon_cycle(
+    conn: sqlite3.Connection,
+    config: CoordinatorConfig,
+    root: Path,
+) -> DaemonCycleResult:
+    stop_reason = circuit_breaker_reason(conn, config.policy)
+    if stop_reason is not None:
+        return DaemonCycleResult(0, 0, 0, 0, stop_reason)
+
+    imported, planned = run_discovery_phase(conn, config, root)
+    candidate = next_ready_task(conn)
+    processed = run_one_ready_task(conn, config, root)
+    failures = 0
+    if processed and candidate is not None:
+        failures = int(get_task(conn, candidate["id"])["state"] == "failed")
+    stop_reason = None if processed else "no ready tasks"
+    return DaemonCycleResult(imported, planned, int(processed), failures, stop_reason)
+
+
+def run_continuous_daemon(
+    conn: sqlite3.Connection,
+    config: CoordinatorConfig,
+    root: Path,
+    *,
+    sleep_fn=time.sleep,
+    monotonic_fn=time.monotonic,
+) -> ContinuousDaemonResult:
+    started_at = monotonic_fn()
+    total_processed = 0
+    total_failures = 0
+    stop_reason = None
+    while True:
+        elapsed = monotonic_fn() - started_at
+        if elapsed >= config.policy.max_daemon_runtime_seconds:
+            stop_reason = "max daemon runtime reached"
+            break
+
+        stop_reason = circuit_breaker_reason(conn, config.policy)
+        if stop_reason is not None:
+            break
+
+        result = run_daemon_cycle(conn, config, root)
+        total_processed += result.tasks_processed
+        total_failures += result.failures
+        if result.stop_reason in {"no ready tasks"} and result.tasks_processed == 0:
+            sleep_fn(config.daemon_policy.idle_sleep_seconds)
+            continue
+        if result.tasks_processed > 0:
+            sleep_fn(config.daemon_policy.loop_interval_seconds)
+            continue
+        if result.stop_reason and result.stop_reason != "no ready tasks":
+            stop_reason = result.stop_reason
+            break
+        sleep_fn(config.daemon_policy.idle_sleep_seconds)
+
+    if stop_reason == "max daemon runtime reached":
+        message = f"stopped: {stop_reason}"
+    elif stop_reason:
+        message = f"stopped: {stop_reason}"
+    elif total_processed == 0:
+        message = "no ready tasks"
+        stop_reason = "no ready tasks"
+    elif total_processed == 1:
+        message = "processed 1 task"
+    else:
+        message = f"processed {total_processed} tasks"
+    return ContinuousDaemonResult(
+        message=message,
+        tasks_processed=total_processed,
+        failures=total_failures,
+        stop_reason=stop_reason,
+    )
 
 
 def run_one_ready_task(

@@ -2,6 +2,7 @@ import argparse
 import shutil
 import sqlite3
 import sys
+import time
 from pathlib import Path
 
 from .config import load_config, try_load_config
@@ -14,12 +15,11 @@ from .db import (
     get_task,
     init_db,
     list_tasks,
-    next_ready_task,
     start_daemon_run,
     task_counts,
     transition_task,
 )
-from .engine import run_one_ready_task
+from .engine import run_continuous_daemon, run_daemon_cycle
 from .locks import acquire_lock, lockfile_path, release_lock
 from .memory import LOOP_MEMORY_RELATIVE_PATH, loop_memory_path
 from .policy import check_task_draft
@@ -232,10 +232,22 @@ def _cmd_task_transition(args: argparse.Namespace, state: str, note: str) -> int
     return 0
 
 
+def _format_daemon_cycle_message(result) -> str:
+    parts: list[str] = []
+    if result.imported_tasks:
+        parts.append(_plural(result.imported_tasks, "imported task"))
+    if result.planned_tasks:
+        parts.append(_plural(result.planned_tasks, "planned task"))
+    if result.tasks_processed:
+        parts.append(_plural(result.tasks_processed, "processed task"))
+    if parts:
+        return ", ".join(parts)
+    if result.stop_reason and result.stop_reason != "no ready tasks":
+        return f"stopped: {result.stop_reason}"
+    return "no ready tasks"
+
+
 def _cmd_daemon(args: argparse.Namespace) -> int:
-    if not args.once:
-        print("daemon requires --once")
-        return 2
     root = Path(args.root)
     config = load_config(root)
 
@@ -249,18 +261,26 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
     tasks_processed = 0
     failures = 0
     stop_reason = None
+    message = "no ready tasks"
     try:
-        stop_reason = circuit_breaker_reason(conn, config.policy)
-        if stop_reason is not None:
-            message = f"stopped: {stop_reason}"
+        if args.once:
+            result = run_daemon_cycle(conn, config, root)
+            tasks_processed = result.tasks_processed
+            failures = result.failures
+            stop_reason = result.stop_reason
+            message = _format_daemon_cycle_message(result)
         else:
-            candidate = next_ready_task(conn)
-            processed = run_one_ready_task(conn, config, root)
-            tasks_processed = int(processed)
-            if processed and candidate is not None:
-                failures = int(get_task(conn, candidate["id"])["state"] == "failed")
-            stop_reason = None if processed else "no ready tasks"
-            message = "processed 1 task" if processed else "no ready tasks"
+            continuous = run_continuous_daemon(
+                conn,
+                config,
+                root,
+                sleep_fn=time.sleep,
+                monotonic_fn=time.monotonic,
+            )
+            tasks_processed = continuous.tasks_processed
+            failures = continuous.failures
+            stop_reason = continuous.stop_reason
+            message = continuous.message
     except Exception as exc:
         failures = 1
         stop_reason = f"daemon error: {type(exc).__name__}: {exc}"
@@ -373,4 +393,3 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     print(f"{args.command}: command is registered")
     return 0
-    finish_daemon_run,
