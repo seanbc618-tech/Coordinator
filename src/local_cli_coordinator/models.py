@@ -19,6 +19,18 @@ TASK_STATES = {
 
 
 @dataclass(frozen=True)
+class Finding:
+    id: str
+    repo: str
+    source: str
+    title: str
+    body: str
+    severity: str
+    evidence: dict[str, str]
+    discovered_at: str
+
+
+@dataclass(frozen=True)
 class TaskDraft:
     title: str
     repo: str
