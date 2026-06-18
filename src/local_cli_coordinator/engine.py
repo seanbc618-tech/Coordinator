@@ -8,8 +8,10 @@ from .db import (
     add_artifact,
     artifact_kinds,
     circuit_breaker_reason,
+    claim_next_ready_task,
     get_task,
     next_ready_task,
+    release_task_lease,
     set_task_branch_and_worktree,
     transition_task,
 )
@@ -144,12 +146,34 @@ def _missing_completion_evidence(
     return sorted(required - artifact_kinds(conn, task_id))
 
 
-def run_one_ready_task(conn: sqlite3.Connection, config: CoordinatorConfig, root: Path) -> bool:
+def run_one_ready_task(
+    conn: sqlite3.Connection,
+    config: CoordinatorConfig,
+    root: Path,
+    agent_id: str | None = None,
+) -> bool:
     if circuit_breaker_reason(conn, config.policy) is not None:
         return False
-    task = next_ready_task(conn)
+    if agent_id is not None:
+        task = claim_next_ready_task(conn, agent_id)
+    else:
+        task = next_ready_task(conn)
     if task is None:
         return False
+    try:
+        return _process_task(conn, config, root, task, agent_id)
+    finally:
+        if agent_id is not None:
+            release_task_lease(conn, task["id"])
+
+
+def _process_task(
+    conn: sqlite3.Connection,
+    config: CoordinatorConfig,
+    root: Path,
+    task: dict,
+    agent_id: str | None,
+) -> bool:
     repo = config.repos.get(task["repo"])
     if repo is None:
         _finish_task(
