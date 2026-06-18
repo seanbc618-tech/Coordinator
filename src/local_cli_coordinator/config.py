@@ -60,6 +60,21 @@ class CoordinatorConfig:
     discovery_sources: dict[str, DiscoverySourceConfig] = field(default_factory=dict)
 
 
+def select_agent_by_role(
+    config: "CoordinatorConfig",
+    role: str,
+    capabilities: list[str] | None = None,
+) -> "AgentConfig | None":
+    """Return the first agent matching *role* and optional *capabilities*."""
+    if not config.agents:
+        return None
+    required = set(capabilities) if capabilities else set()
+    for agent in config.agents.values():
+        if agent.role == role and required.issubset(set(agent.capabilities)):
+            return agent
+    return None
+
+
 SUPPORTED_DISCOVERY_SOURCE_TYPES = frozenset({
     "inbox",
     "git_recent_commits",

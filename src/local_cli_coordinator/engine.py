@@ -3,7 +3,7 @@ import re
 import sqlite3
 
 from .agent import run_agent
-from .config import CoordinatorConfig, RepoConfig
+from .config import CoordinatorConfig, RepoConfig, select_agent_by_role
 from .db import (
     add_artifact,
     artifact_kinds,
@@ -34,15 +34,9 @@ def _slug(text: str) -> str:
 
 
 def _select_agent(config: CoordinatorConfig, capabilities: list[str], role: str = "worker"):
-    if not config.agents:
-        return None
     if not capabilities:
         return None
-    required = set(capabilities)
-    for agent in config.agents.values():
-        if agent.role == role and required.issubset(set(agent.capabilities)):
-            return agent
-    return None
+    return select_agent_by_role(config, role, capabilities)
 
 
 def _read_optional_text(path: Path) -> str | None:

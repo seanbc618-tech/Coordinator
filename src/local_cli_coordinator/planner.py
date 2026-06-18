@@ -4,14 +4,22 @@ The planner enforces the PDF's guidance: findings must be cut into small,
 actionable handoffs before agents start writing code.  Broad or vague findings
 are rejected with a ``needs_split`` reason so an operator or LLM can break
 them down further.
+
+An optional LLM planner agent can propose task drafts; the rule-based guard
+always validates its output before accepting it.
 """
 
 from __future__ import annotations
 
+import json
 import re
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 
+from .config import AgentConfig, CoordinatorConfig, select_agent_by_role
 from .models import Finding, TaskDraft
+from .process import run_command
 
 # Maximum number of acceptance criteria a single task may carry before the
 # planner considers it too broad.
@@ -153,3 +161,181 @@ def plan_findings(findings: list[Finding]) -> PlanResult:
         all_tasks.extend(result.tasks)
         all_reasons.extend(result.needs_split)
     return PlanResult(tasks=all_tasks, needs_split=all_reasons)
+
+
+# ---------------------------------------------------------------------------
+# LLM planner hook
+# ---------------------------------------------------------------------------
+
+_PLANNER_PROMPT_TEMPLATE = """\
+You are a task planning assistant. Given a discovery finding, produce one or
+more small, actionable task drafts as JSONL (one JSON object per line).
+
+Each JSON object must have these fields:
+- title: short imperative description
+- repo: repository id
+- priority: "low", "normal", or "high"
+- capabilities: list of strings (e.g. ["code"])
+- goal: what the task should accomplish
+- acceptance_criteria: list of specific, testable criteria
+
+Rules:
+- Each task must be small enough for a single agent session.
+- Acceptance criteria must be concrete and testable.
+- Do NOT produce broad tasks like "refactor everything".
+- If the finding is too broad, output {{"needs_split": "reason"}} instead.
+
+Finding:
+- id: {finding_id}
+- repo: {repo}
+- source: {source}
+- title: {title}
+- body: {body}
+- severity: {severity}
+- evidence: {evidence}
+"""
+
+
+def _parse_agent_output(output: str) -> list[TaskDraft] | list[str]:
+    """Parse planner agent output into TaskDrafts or split reasons.
+
+    Returns either a list of TaskDraft objects or a list of error/split
+    reason strings.
+    """
+    tasks: list[TaskDraft] = []
+    reasons: list[str] = []
+
+    for line in output.strip().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        if "needs_split" in data:
+            reasons.append(str(data["needs_split"]))
+            continue
+
+        try:
+            task = TaskDraft(
+                title=str(data["title"]),
+                repo=str(data["repo"]),
+                priority=str(data.get("priority", "normal")),
+                capabilities=list(data.get("capabilities", ["code"])),
+                goal=str(data.get("goal", "")),
+                acceptance_criteria=list(data.get("acceptance_criteria", [])),
+            )
+            tasks.append(task)
+        except (KeyError, TypeError, ValueError):
+            continue
+
+    if reasons:
+        return reasons
+    return tasks
+
+
+def _validate_draft(draft: TaskDraft, finding_id: str) -> list[str]:
+    """Apply rule-based guard to a planner-proposed task draft."""
+    reasons: list[str] = []
+
+    if _has_broad_signals(draft.title):
+        reasons.append(
+            f"LLM-proposed task for {finding_id!r} has broad title: {draft.title!r}"
+        )
+
+    if len(draft.acceptance_criteria) > MAX_ACCEPTANCE_CRITERIA:
+        reasons.append(
+            f"LLM-proposed task for {finding_id!r} has "
+            f"{len(draft.acceptance_criteria)} acceptance criteria, "
+            f"which exceeds the limit of {MAX_ACCEPTANCE_CRITERIA}."
+        )
+
+    if not draft.acceptance_criteria:
+        reasons.append(
+            f"LLM-proposed task for {finding_id!r} has no acceptance criteria."
+        )
+
+    return reasons
+
+
+def plan_finding_with_agent(
+    finding: Finding,
+    config: CoordinatorConfig,
+    timeout_seconds: float | None = 60,
+) -> PlanResult:
+    """Plan a finding using a configured planner agent, guarded by rules.
+
+    If no planner agent is configured, falls back to rule-based planning.
+    The agent's output is always validated by the rule-based guard before
+    being accepted.
+    """
+    planner_agent = select_agent_by_role(config, "planner")
+    if planner_agent is None:
+        return plan_finding(finding)
+
+    prompt_text = _PLANNER_PROMPT_TEMPLATE.format(
+        finding_id=finding.id,
+        repo=finding.repo,
+        source=finding.source,
+        title=finding.title,
+        body=finding.body,
+        severity=finding.severity,
+        evidence=finding.evidence,
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        prompt_path = Path(tmp) / "planner_prompt.md"
+        prompt_path.write_text(prompt_text, encoding="utf-8")
+
+        workdir = Path(tmp) / "workdir"
+        workdir.mkdir()
+
+        try:
+            argv = [planner_agent.command, str(prompt_path)]
+            result = run_command(
+                argv,
+                cwd=workdir,
+                timeout_seconds=timeout_seconds,
+            )
+        except (OSError, ValueError):
+            return plan_finding(finding)
+
+        if result.returncode != 0:
+            return plan_finding(finding)
+
+        parsed = _parse_agent_output(result.stdout)
+
+    if isinstance(parsed, list) and parsed and isinstance(parsed[0], str):
+        return PlanResult(tasks=[], needs_split=parsed)  # type: ignore[arg-type]
+
+    drafts: list[TaskDraft] = parsed  # type: ignore[assignment]
+    if not drafts:
+        return plan_finding(finding)
+
+    # Apply rule-based guard to every proposed draft
+    all_tasks: list[TaskDraft] = []
+    all_reasons: list[str] = []
+    for draft in drafts:
+        guard_reasons = _validate_draft(draft, finding.id)
+        if guard_reasons:
+            all_reasons.extend(guard_reasons)
+        else:
+            # Attach source path
+            all_tasks.append(
+                TaskDraft(
+                    title=draft.title,
+                    repo=draft.repo,
+                    priority=draft.priority,
+                    capabilities=draft.capabilities,
+                    goal=draft.goal,
+                    acceptance_criteria=draft.acceptance_criteria,
+                    source_path=f"state/findings/{finding.id}.jsonl",
+                )
+            )
+
+    if all_reasons:
+        return PlanResult(tasks=[], needs_split=all_reasons)
+
+    return PlanResult(tasks=all_tasks, needs_split=[])
