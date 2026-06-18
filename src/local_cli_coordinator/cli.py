@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .config import load_config, try_load_config
 from .db import (
+    active_lease_count,
     circuit_breaker_reason,
     connect,
     create_task,
@@ -19,7 +20,7 @@ from .db import (
     transition_task,
 )
 from .engine import run_one_ready_task
-from .locks import acquire_lock, release_lock
+from .locks import acquire_lock, lockfile_path, release_lock
 from .memory import LOOP_MEMORY_RELATIVE_PATH, loop_memory_path
 from .policy import check_task_draft
 from .readiness import check_loop_readiness
@@ -103,6 +104,8 @@ def _cmd_inbox_scan(args: argparse.Namespace) -> int:
 
 def _cmd_status(args: argparse.Namespace) -> int:
     root = Path(args.root)
+    if getattr(args, "loop", False):
+        return _cmd_status_loop(args)
     conn = _open_db(root, args.db)
     try:
         counts = task_counts(conn)
@@ -115,6 +118,71 @@ def _cmd_status(args: argparse.Namespace) -> int:
         return 0
     for state in sorted(counts):
         print(f"{state}: {counts[state]}")
+    return 0
+
+
+def _cmd_status_loop(args: argparse.Namespace) -> int:
+    root = Path(args.root)
+    config, config_error = try_load_config(root)
+    conn = _open_db(root, args.db)
+    try:
+        counts = task_counts(conn)
+        leases = active_lease_count(conn)
+    finally:
+        conn.close()
+
+    print("Loop Status")
+    print()
+
+    # Readiness
+    print("Readiness:")
+    if config_error is not None:
+        print(f"  config: degraded ({config_error})")
+    else:
+        for check in check_loop_readiness(root, config):
+            print(f"  {check.name}: [{check.status.upper()}] {check.message}")
+    print()
+
+    # Lock
+    lock = lockfile_path(root)
+    if lock.exists():
+        print(f"Lock: {lock}")
+    else:
+        print("Lock: not held")
+    print()
+
+    # Budget / circuit breaker
+    if config is not None:
+        reason = circuit_breaker_reason(conn, config.policy)
+        if reason:
+            print(f"Circuit breaker: {reason}")
+        else:
+            print("Circuit breaker: ok")
+        print(f"  max_tasks_per_day: {config.policy.max_tasks_per_day}")
+        print(f"  max_consecutive_failures: {config.policy.max_consecutive_failures}")
+    else:
+        print("Circuit breaker: no config")
+    print()
+
+    # Active leases
+    print(f"Active leases: {leases}")
+    print()
+
+    # Task counts
+    if counts:
+        print("Tasks:")
+        for state in sorted(counts):
+            print(f"  {state}: {counts[state]}")
+        awaiting = counts.get("awaiting_human", 0)
+        print(f"\nHuman review pending: {awaiting}")
+    else:
+        print("Tasks: none")
+        print("\nHuman review pending: 0")
+
+    # Memory
+    if loop_memory_path(root).exists():
+        print(f"\nLoop memory: {LOOP_MEMORY_RELATIVE_PATH.as_posix()}")
+
     return 0
 
 
@@ -248,7 +316,8 @@ def build_parser() -> argparse.ArgumentParser:
     daemon = subparsers.add_parser("daemon")
     daemon.add_argument("--once", action="store_true")
     daemon.add_argument("--force-lock", action="store_true")
-    subparsers.add_parser("status")
+    status = subparsers.add_parser("status")
+    status.add_argument("--loop", action="store_true")
     subparsers.add_parser("doctor")
 
     inbox = subparsers.add_parser("inbox")
