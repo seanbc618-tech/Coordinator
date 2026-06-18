@@ -14,6 +14,8 @@ from .db import (
     finish_daemon_run,
     get_task,
     init_db,
+    list_task_artifacts,
+    list_task_events,
     list_tasks,
     start_daemon_run,
     task_counts,
@@ -222,6 +224,46 @@ def _cmd_task_show(args: argparse.Namespace) -> int:
         return 1
     finally:
         conn.close()
+    return 0
+
+
+def _cmd_task_events(args: argparse.Namespace) -> int:
+    root = Path(args.root)
+    conn = _open_db(root, args.db)
+    try:
+        try:
+            get_task(conn, args.task_id)
+        except KeyError as exc:
+            print(str(exc))
+            return 1
+        events = list_task_events(conn, args.task_id)
+    finally:
+        conn.close()
+    if not events:
+        print("no events")
+        return 0
+    for event in events:
+        print(f"{event['created_at']}  {event['old_state']} -> {event['new_state']}  {event['note']}")
+    return 0
+
+
+def _cmd_task_artifacts(args: argparse.Namespace) -> int:
+    root = Path(args.root)
+    conn = _open_db(root, args.db)
+    try:
+        try:
+            get_task(conn, args.task_id)
+        except KeyError as exc:
+            print(str(exc))
+            return 1
+        artifacts = list_task_artifacts(conn, args.task_id)
+    finally:
+        conn.close()
+    if not artifacts:
+        print("no artifacts")
+        return 0
+    for artifact in artifacts:
+        print(f"{artifact['kind']}: {artifact['path']}")
     return 0
 
 
@@ -494,6 +536,8 @@ def build_parser() -> argparse.ArgumentParser:
     task_subparsers.add_parser("show").add_argument("task_id")
     task_subparsers.add_parser("retry").add_argument("task_id")
     task_subparsers.add_parser("block").add_argument("task_id")
+    task_subparsers.add_parser("events").add_argument("task_id")
+    task_subparsers.add_parser("artifacts").add_argument("task_id")
 
     agent = subparsers.add_parser("agent")
     agent_subparsers = agent.add_subparsers(dest="agent_command")
@@ -534,6 +578,10 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_task_transition(args, "ready", "manual retry")
     if args.command == "task" and args.task_command == "block":
         return _cmd_task_transition(args, "blocked", "manual block")
+    if args.command == "task" and args.task_command == "events":
+        return _cmd_task_events(args)
+    if args.command == "task" and args.task_command == "artifacts":
+        return _cmd_task_artifacts(args)
     if args.command == "daemon":
         return _cmd_daemon(args)
     if args.command == "logs":

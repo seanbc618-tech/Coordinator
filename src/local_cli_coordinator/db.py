@@ -159,6 +159,23 @@ def artifact_kinds(conn: sqlite3.Connection, task_id: str) -> set[str]:
     return {row["kind"] for row in rows}
 
 
+def list_task_events(conn: sqlite3.Connection, task_id: str) -> list[sqlite3.Row]:
+    """Return ordered state transitions for a task."""
+    return conn.execute(
+        "select old_state, new_state, note, created_at from events "
+        "where task_id = ? order by id",
+        (task_id,),
+    ).fetchall()
+
+
+def list_task_artifacts(conn: sqlite3.Connection, task_id: str) -> list[sqlite3.Row]:
+    """Return artifacts with kind and path for a task."""
+    return conn.execute(
+        "select kind, path from artifacts where task_id = ? order by id",
+        (task_id,),
+    ).fetchall()
+
+
 def start_daemon_run(conn: sqlite3.Connection) -> int:
     cursor = conn.execute("insert into daemon_runs default values")
     conn.commit()
