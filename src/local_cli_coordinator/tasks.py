@@ -81,12 +81,16 @@ def write_generated_task(root: Path, task: TaskDraft) -> Path:
     acceptance = "\n".join(f"- {item}" for item in task.acceptance_criteria)
     capabilities = ", ".join(task.capabilities)
     verification = ", ".join(task.verification_commands)
+    source_line = ""
+    if task.source_path:
+        source_line = f"source: {task.source_path}\n"
     path.write_text(
         f"# Task: {task.title}\n\n"
         f"repo: {task.repo}\n"
         f"priority: {task.priority}\n"
         f"capabilities: [{capabilities}]\n"
-        f"verification: [{verification}]\n\n"
+        f"verification: [{verification}]\n"
+        f"{source_line}\n"
         f"## Goal\n\n{task.goal}\n\n"
         f"## Acceptance Criteria\n\n{acceptance}\n"
     )
