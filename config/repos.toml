@@ -7,3 +7,6 @@ allow_push = false
 merge_policy = "no_push"
 verify_commands = ["python -m unittest"]
 review_policy = "tests_only"
+
+# Supported review_policy values:
+# auto, branch_only, always_human, risky_human, tests_only, full_review

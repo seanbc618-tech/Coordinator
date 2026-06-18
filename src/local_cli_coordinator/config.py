@@ -2,6 +2,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import tomllib
 
+SUPPORTED_REVIEW_POLICIES = frozenset({
+    "auto",
+    "branch_only",
+    "always_human",
+    "risky_human",
+    "tests_only",
+    "full_review",
+})
+
 
 @dataclass(frozen=True)
 class AgentConfig:
@@ -90,6 +99,14 @@ SUPPORTED_DISCOVERY_SOURCE_TYPES = frozenset({
     "ci_command",
     "issue_command",
 })
+
+
+def _validate_review_policy(repo_id: str, review_policy: str) -> str:
+    if review_policy not in SUPPORTED_REVIEW_POLICIES:
+        raise ValueError(
+            f"repo {repo_id!r} has unsupported review_policy {review_policy!r}"
+        )
+    return review_policy
 
 
 def _read_toml(path: Path) -> dict:
@@ -182,7 +199,10 @@ def load_config(root: Path) -> CoordinatorConfig:
                 if raw.get("memory_path") is not None
                 else None
             ),
-            review_policy=str(raw.get("review_policy", "full_review")),
+            review_policy=_validate_review_policy(
+                repo_id,
+                str(raw.get("review_policy", "full_review")),
+            ),
         )
         for repo_id, raw in repos_raw.items()
     }
