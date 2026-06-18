@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import tomllib
 
@@ -45,10 +45,28 @@ class PolicyConfig:
 
 
 @dataclass(frozen=True)
+class DiscoverySourceConfig:
+    id: str
+    type: str
+    repos: dict[str, bool]
+    command: str | None = None
+
+
+@dataclass(frozen=True)
 class CoordinatorConfig:
     agents: dict[str, AgentConfig]
     repos: dict[str, RepoConfig]
     policy: PolicyConfig
+    discovery_sources: dict[str, DiscoverySourceConfig] = field(default_factory=dict)
+
+
+SUPPORTED_DISCOVERY_SOURCE_TYPES = frozenset({
+    "inbox",
+    "git_recent_commits",
+    "command",
+    "ci_command",
+    "issue_command",
+})
 
 
 def _read_toml(path: Path) -> dict:
@@ -56,11 +74,62 @@ def _read_toml(path: Path) -> dict:
         return tomllib.load(handle)
 
 
+def _load_discovery_sources(config_dir: Path) -> dict[str, DiscoverySourceConfig]:
+    path = config_dir / "discovery.toml"
+    if not path.exists():
+        return {}
+
+    sources_raw = _read_toml(path).get("sources", {})
+    if not isinstance(sources_raw, dict):
+        raise ValueError("discovery sources must be a table")
+
+    sources: dict[str, DiscoverySourceConfig] = {}
+    for source_id, raw in sources_raw.items():
+        if not isinstance(raw, dict):
+            raise ValueError(f"discovery source {source_id!r} must be a table")
+
+        source_type = raw.get("type")
+        if (
+            not isinstance(source_type, str)
+            or source_type not in SUPPORTED_DISCOVERY_SOURCE_TYPES
+        ):
+            raise ValueError(
+                f"discovery source {source_id!r} has invalid type {source_type!r}"
+            )
+
+        repos_raw = raw.get("repos", {})
+        if not isinstance(repos_raw, dict):
+            raise ValueError(
+                f"discovery source {source_id!r} repos must be a table"
+            )
+        for repo_id, enabled in repos_raw.items():
+            if not isinstance(enabled, bool):
+                raise ValueError(
+                    f"discovery source {source_id!r} repo {repo_id!r} "
+                    f"must be boolean, got {enabled!r}"
+                )
+
+        command = raw.get("command")
+        if command is not None and not isinstance(command, str):
+            raise ValueError(
+                f"discovery source {source_id!r} command must be a string"
+            )
+
+        sources[source_id] = DiscoverySourceConfig(
+            id=source_id,
+            type=source_type,
+            repos=dict(repos_raw),
+            command=command,
+        )
+    return sources
+
+
 def load_config(root: Path) -> CoordinatorConfig:
     config_dir = root / "config"
     agents_raw = _read_toml(config_dir / "agents.toml").get("agents", {})
     repos_raw = _read_toml(config_dir / "repos.toml").get("repos", {})
     policy_raw = _read_toml(config_dir / "policy.toml")["task_policy"]
+    discovery_sources = _load_discovery_sources(config_dir)
 
     agents = {
         agent_id: AgentConfig(
@@ -110,7 +179,12 @@ def load_config(root: Path) -> CoordinatorConfig:
         max_consecutive_failures=int(policy_raw.get("max_consecutive_failures", 3)),
     )
 
-    return CoordinatorConfig(agents=agents, repos=repos, policy=policy)
+    return CoordinatorConfig(
+        agents=agents,
+        repos=repos,
+        policy=policy,
+        discovery_sources=discovery_sources,
+    )
 
 
 def try_load_config(root: Path) -> tuple[CoordinatorConfig | None, str | None]:
