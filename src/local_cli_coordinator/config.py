@@ -69,11 +69,20 @@ class DiscoverySourceConfig:
 
 
 @dataclass(frozen=True)
+class ConnectorConfig:
+    id: str
+    command: str
+    input_contract: str
+    output_contract: str
+
+
+@dataclass(frozen=True)
 class CoordinatorConfig:
     agents: dict[str, AgentConfig]
     repos: dict[str, RepoConfig]
     policy: PolicyConfig
     discovery_sources: dict[str, DiscoverySourceConfig] = field(default_factory=dict)
+    connectors: dict[str, ConnectorConfig] = field(default_factory=dict)
     daemon_policy: DaemonPolicyConfig = field(default_factory=DaemonPolicyConfig)
 
 
@@ -112,6 +121,33 @@ def _validate_review_policy(repo_id: str, review_policy: str) -> str:
 def _read_toml(path: Path) -> dict:
     with path.open("rb") as handle:
         return tomllib.load(handle)
+
+
+def _load_connectors(config_dir: Path) -> dict[str, ConnectorConfig]:
+    path = config_dir / "connectors.toml"
+    if not path.exists():
+        return {}
+
+    connectors_raw = _read_toml(path).get("connectors", {})
+    if not isinstance(connectors_raw, dict):
+        raise ValueError("connectors must be a table")
+
+    connectors: dict[str, ConnectorConfig] = {}
+    for connector_id, raw in connectors_raw.items():
+        if not isinstance(raw, dict):
+            raise ValueError(f"connector {connector_id!r} must be a table")
+        command = raw.get("command")
+        if not isinstance(command, str) or not command.strip():
+            raise ValueError(f"connector {connector_id!r} command must be a string")
+        input_contract = str(raw.get("input", "json"))
+        output_contract = str(raw.get("output", "json"))
+        connectors[connector_id] = ConnectorConfig(
+            id=connector_id,
+            command=command,
+            input_contract=input_contract,
+            output_contract=output_contract,
+        )
+    return connectors
 
 
 def _load_discovery_sources(config_dir: Path) -> dict[str, DiscoverySourceConfig]:
@@ -172,6 +208,7 @@ def load_config(root: Path) -> CoordinatorConfig:
     policy_raw = policy_doc["task_policy"]
     daemon_raw = policy_doc.get("daemon_policy", {})
     discovery_sources = _load_discovery_sources(config_dir)
+    connectors = _load_connectors(config_dir)
 
     agents = {
         agent_id: AgentConfig(
@@ -235,6 +272,7 @@ def load_config(root: Path) -> CoordinatorConfig:
         repos=repos,
         policy=policy,
         discovery_sources=discovery_sources,
+        connectors=connectors,
         daemon_policy=daemon_policy,
     )
 
