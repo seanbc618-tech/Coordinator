@@ -1,6 +1,12 @@
+import sys
+import tempfile
 import unittest
+from pathlib import Path
 
-from local_cli_coordinator.config import RepoConfig
+from tests.helpers import init_git_repo, run
+from local_cli_coordinator.config import AgentConfig, CoordinatorConfig, PolicyConfig, RepoConfig
+from local_cli_coordinator.db import connect, create_task, get_task, init_db
+from local_cli_coordinator.engine import run_one_ready_task
 from local_cli_coordinator.policy import (
     SUPPORTED_REVIEW_POLICIES,
     allows_auto_merge,
@@ -110,3 +116,102 @@ class ReviewPolicyTests(unittest.TestCase):
                 quality_review_passed=True,
             )
         )
+
+
+class ReviewPolicyEngineTests(unittest.TestCase):
+    def test_engine_pauses_auto_merge_for_always_human(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo_path = root / "repo"
+            init_git_repo(repo_path)
+            remote = root / "remote.git"
+            run("git", "init", "--bare", remote, cwd=root)
+            run("git", "remote", "add", "origin", remote, cwd=repo_path)
+            run("git", "push", "origin", "main", cwd=repo_path)
+
+            pass_review = f'{sys.executable} -c "raise SystemExit(0)"'
+            config = CoordinatorConfig(
+                agents={
+                    "fake": AgentConfig(
+                        id="fake",
+                        command=(
+                            f'{sys.executable} -c "from pathlib import Path; '
+                            "Path('feature.txt').write_text('done')\""
+                        ),
+                        capabilities=["code"],
+                        max_concurrency=1,
+                        role="worker",
+                    ),
+                    "spec": AgentConfig(
+                        id="spec",
+                        command=pass_review,
+                        capabilities=["code"],
+                        max_concurrency=1,
+                        role="spec_reviewer",
+                    ),
+                    "quality": AgentConfig(
+                        id="quality",
+                        command=pass_review,
+                        capabilities=["code"],
+                        max_concurrency=1,
+                        role="quality_reviewer",
+                    ),
+                },
+                repos={
+                    "demo": RepoConfig(
+                        id="demo",
+                        path=repo_path,
+                        default_branch="main",
+                        remote="origin",
+                        branch_prefix="coord/",
+                        allow_push=True,
+                        merge_policy="auto_merge_default_branch",
+                        verify_commands=[
+                            f'{sys.executable} -c "from pathlib import Path; '
+                            "assert Path('feature.txt').read_text() == 'done'\""
+                        ],
+                        review_policy="always_human",
+                    )
+                },
+                policy=PolicyConfig(
+                    require_single_repo=True,
+                    require_acceptance_criteria=True,
+                    require_verification_commands=True,
+                    require_handoff_summary=False,
+                    max_files_touched=3,
+                    max_expected_minutes=30,
+                    max_attempts=3,
+                    split_if_touches_multiple_subsystems=True,
+                    split_if_research_and_code_are_mixed=True,
+                ),
+            )
+
+            conn = connect(root / "coordinator.db")
+            init_db(conn)
+            task_id = create_task(
+                conn,
+                title="Human review gate",
+                repo="demo",
+                source_path="tasks/inbox/human.md",
+                priority="normal",
+                capabilities=["code"],
+                goal="Create feature.txt.",
+                acceptance_criteria=["feature.txt contains done"],
+                verification_commands=[],
+            )
+
+            processed = run_one_ready_task(conn, config, root)
+            task = get_task(conn, task_id)
+            conn.close()
+
+            self.assertTrue(processed)
+            self.assertEqual(task["state"], "awaiting_human")
+            self.assertTrue((root / "tasks" / "review").exists())
+            show_main = run(
+                "git",
+                f"--git-dir={remote}",
+                "show",
+                "main:feature.txt",
+                cwd=root,
+            )
+            self.assertNotEqual(show_main.returncode, 0)

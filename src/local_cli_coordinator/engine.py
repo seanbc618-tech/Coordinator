@@ -22,7 +22,12 @@ from .db import (
 )
 from .discovery import list_findings
 from .planner import plan_finding
-from .policy import check_changed_files, check_task_draft
+from .policy import (
+    allows_auto_merge,
+    check_changed_files,
+    check_task_draft,
+    should_require_human_review,
+)
 from .tasks import parse_task_markdown, scan_inbox, write_generated_task
 from .gitops import (
     collect_changed_files,
@@ -114,6 +119,73 @@ def _review_failure_state(repo: RepoConfig) -> str:
     if repo.merge_policy == "auto_merge_default_branch":
         return "rejected"
     return "awaiting_human"
+
+
+def _reviewer_outcomes_for_policy(
+    repo: RepoConfig,
+    *,
+    spec_review_passed: bool,
+    quality_review_passed: bool,
+) -> tuple[bool, bool]:
+    if repo.review_policy == "tests_only":
+        return True, True
+    return spec_review_passed, quality_review_passed
+
+
+def _pause_for_human_review_before_merge(
+    conn: sqlite3.Connection,
+    root: Path,
+    task: dict,
+    repo: RepoConfig,
+    config: CoordinatorConfig,
+    *,
+    changed_files: list[str],
+    spec_review_passed: bool,
+    quality_review_passed: bool,
+) -> bool:
+    spec_ok, quality_ok = _reviewer_outcomes_for_policy(
+        repo,
+        spec_review_passed=spec_review_passed,
+        quality_review_passed=quality_review_passed,
+    )
+    if allows_auto_merge(
+        repo,
+        changed_files=changed_files,
+        max_files_touched=config.policy.max_files_touched,
+        spec_review_passed=spec_ok,
+        quality_review_passed=quality_ok,
+    ):
+        return False
+
+    _, reasons = should_require_human_review(
+        repo,
+        changed_files=changed_files,
+        max_files_touched=config.policy.max_files_touched,
+        spec_review_passed=spec_ok,
+        quality_review_passed=quality_ok,
+    )
+    note = f"human review required: {'; '.join(reasons)}"
+    _write_review_packet_if_needed(
+        conn,
+        root,
+        task,
+        "awaiting_human",
+        changed_files=changed_files,
+        verifier_result="passed",
+        spec_review_result="passed" if spec_ok else "not run",
+        quality_review_result="passed" if quality_ok else "not run",
+        suggested_action="review packet in tasks/review and approve merge",
+    )
+    _finish_task(
+        conn,
+        root,
+        task["id"],
+        "awaiting_human",
+        note,
+        verifier_result="passed",
+        next_action="review packet in tasks/review and merge manually",
+    )
+    return True
 
 
 def _write_review_packet_if_needed(
@@ -569,6 +641,7 @@ def _process_task(
         return True
 
     spec_review_passed = False
+    quality_review_passed = False
     spec_reviewer = _select_agent(config, capabilities, role="spec_reviewer")
     if spec_reviewer is not None:
         transition_task(conn, task["id"], "reviewing_spec", "running spec review")
@@ -668,6 +741,7 @@ def _process_task(
                 ),
             )
             return True
+        quality_review_passed = True
 
     missing_evidence = _missing_completion_evidence(conn, task["id"], repo)
     if missing_evidence:
@@ -717,6 +791,17 @@ def _process_task(
             )
             return True
         if repo.merge_policy == "auto_merge_default_branch":
+            if _pause_for_human_review_before_merge(
+                conn,
+                root,
+                task,
+                repo,
+                config,
+                changed_files=changed_files,
+                spec_review_passed=spec_review_passed,
+                quality_review_passed=quality_review_passed,
+            ):
+                return True
             transition_task(conn, task["id"], "merging", "merging to default branch")
             try:
                 merge_branch_to_default(repo.path, branch, repo.default_branch, repo.remote)
