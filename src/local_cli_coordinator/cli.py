@@ -19,6 +19,12 @@ from .db import (
     task_counts,
     transition_task,
 )
+from .discovery import (
+    CommandDiscoveryResult,
+    discover_from_command,
+    discover_git_recent_commits,
+    list_findings,
+)
 from .engine import run_continuous_daemon, run_daemon_cycle
 from .locks import acquire_lock, lockfile_path, release_lock
 from .memory import LOOP_MEMORY_RELATIVE_PATH, loop_memory_path
@@ -333,6 +339,71 @@ def _cmd_logs(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_discover(args: argparse.Namespace) -> int:
+    root = Path(args.root)
+    config, config_error = try_load_config(root)
+    if config_error is not None:
+        print(f"error: {config_error}", file=sys.stderr)
+        return 1
+    if not config.discovery_sources:
+        print("no discovery sources configured")
+        return 0
+
+    discovered = 0
+    skipped = 0
+    failed = 0
+
+    for source in config.discovery_sources.values():
+        if source.type == "git_recent_commits":
+            for repo_id, repo_config in config.repos.items():
+                if not source.repos.get(repo_id, False):
+                    skipped += 1
+                    continue
+                try:
+                    findings = discover_git_recent_commits(
+                        root=root,
+                        source_id=source.id,
+                        repo_id=repo_id,
+                        repo_path=repo_config.path,
+                        enabled_repos=source.repos,
+                        persist=True,
+                    )
+                    discovered += len(findings)
+                except Exception as exc:
+                    print(f"error in {source.id}/{repo_id}: {exc}", file=sys.stderr)
+                    failed += 1
+        elif source.type in ("command", "ci_command", "issue_command"):
+            for repo_id in config.repos:
+                if not source.repos.get(repo_id, False):
+                    skipped += 1
+                    continue
+                if source.command is None:
+                    skipped += 1
+                    continue
+                result = discover_from_command(
+                    root=root,
+                    source_id=source.id,
+                    command=source.command,
+                    repo_id=repo_id,
+                    enabled_repos=source.repos,
+                    persist=True,
+                )
+                discovered += len(result.findings)
+                failed += len(result.failures)
+        elif source.type == "inbox":
+            # Inbox is handled by `inbox scan`, not discovery
+            skipped += 1
+        else:
+            skipped += 1
+
+    total = list_findings(root)
+    print(f"discovered: {discovered}")
+    print(f"skipped: {skipped}")
+    print(f"failed: {failed}")
+    print(f"total findings on disk: {len(total)}")
+    return 1 if failed else 0
+
+
 def _cmd_digest(args: argparse.Namespace) -> int:
     from .digest import write_daily_digest
     root = Path(args.root).resolve()
@@ -364,6 +435,8 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument("--loop", action="store_true")
     subparsers.add_parser("doctor")
     subparsers.add_parser("digest")
+    discover = subparsers.add_parser("discover")
+    discover.add_argument("--once", action="store_true")
 
     inbox = subparsers.add_parser("inbox")
     inbox_subparsers = inbox.add_subparsers(dest="inbox_command")
@@ -399,6 +472,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_doctor(args)
     if args.command == "digest":
         return _cmd_digest(args)
+    if args.command == "discover":
+        return _cmd_discover(args)
     if args.command == "inbox" and args.inbox_command == "scan":
         return _cmd_inbox_scan(args)
     if args.command == "status":
