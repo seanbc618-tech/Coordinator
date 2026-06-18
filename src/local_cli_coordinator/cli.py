@@ -240,6 +240,12 @@ def _format_daemon_cycle_message(result) -> str:
         parts.append(_plural(result.planned_tasks, "planned task"))
     if result.tasks_processed:
         parts.append(_plural(result.tasks_processed, "processed task"))
+    if result.failures:
+        parts.append(_plural(result.failures, "failed task"))
+    if result.blocked:
+        parts.append(_plural(result.blocked, "blocked task"))
+    if result.skipped:
+        parts.append(_plural(result.skipped, "skipped task"))
     if parts:
         return ", ".join(parts)
     if result.stop_reason and result.stop_reason != "no ready tasks":

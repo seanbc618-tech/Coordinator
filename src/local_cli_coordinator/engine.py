@@ -163,6 +163,8 @@ class DaemonCycleResult:
     planned_tasks: int
     tasks_processed: int
     failures: int
+    blocked: int
+    skipped: int
     stop_reason: str | None
 
 
@@ -290,16 +292,56 @@ def run_daemon_cycle(
 ) -> DaemonCycleResult:
     stop_reason = circuit_breaker_reason(conn, config.policy)
     if stop_reason is not None:
-        return DaemonCycleResult(0, 0, 0, 0, stop_reason)
+        return DaemonCycleResult(0, 0, 0, 0, 0, 0, stop_reason)
 
     imported, planned = run_discovery_phase(conn, config, root)
-    candidate = next_ready_task(conn)
-    processed = run_one_ready_task(conn, config, root)
+    tasks_processed = 0
     failures = 0
-    if processed and candidate is not None:
-        failures = int(get_task(conn, candidate["id"])["state"] == "failed")
-    stop_reason = None if processed else "no ready tasks"
-    return DaemonCycleResult(imported, planned, int(processed), failures, stop_reason)
+    blocked = 0
+    skipped = 0
+    limit = max(1, config.policy.max_tasks_per_run)
+
+    for _ in range(limit):
+        stop_reason = circuit_breaker_reason(conn, config.policy)
+        if stop_reason is not None:
+            return DaemonCycleResult(
+                imported,
+                planned,
+                tasks_processed,
+                failures,
+                blocked,
+                skipped,
+                stop_reason,
+            )
+
+        candidate = next_ready_task(conn)
+        if candidate is None:
+            break
+
+        if candidate["state"] == "blocked":
+            blocked += 1
+            skipped += 1
+            continue
+
+        processed = run_one_ready_task(conn, config, root)
+        if not processed:
+            skipped += 1
+            break
+
+        tasks_processed += 1
+        if get_task(conn, candidate["id"])["state"] == "failed":
+            failures += 1
+
+    stop_reason = None if tasks_processed else "no ready tasks"
+    return DaemonCycleResult(
+        imported,
+        planned,
+        tasks_processed,
+        failures,
+        blocked,
+        skipped,
+        stop_reason,
+    )
 
 
 def run_continuous_daemon(
