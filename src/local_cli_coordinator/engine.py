@@ -25,6 +25,7 @@ from .policy import check_changed_files
 from .review import run_quality_review, run_spec_review
 from .verify import run_verification
 from .memory import LoopMemoryEntry, append_loop_memory, loop_memory_path
+from .review_inbox import write_review_packet
 
 
 def _slug(text: str) -> str:
@@ -103,6 +104,33 @@ def _review_failure_state(repo: RepoConfig) -> str:
     if repo.merge_policy == "auto_merge_default_branch":
         return "rejected"
     return "awaiting_human"
+
+
+def _write_review_packet_if_needed(
+    conn: sqlite3.Connection,
+    root: Path,
+    task: dict,
+    state: str,
+    *,
+    changed_files: list[str] | None = None,
+    verifier_result: str = "",
+    spec_review_result: str = "",
+    quality_review_result: str = "",
+    suggested_action: str = "review and approve or reject",
+) -> None:
+    """Write a review packet and link it as an artifact when awaiting human."""
+    if state != "awaiting_human":
+        return
+    packet_path = write_review_packet(
+        root,
+        task,
+        changed_files=changed_files,
+        verifier_result=verifier_result,
+        spec_review_result=spec_review_result,
+        quality_review_result=quality_review_result,
+        suggested_action=suggested_action,
+    )
+    add_artifact(conn, task["id"], "review_packet", packet_path)
 
 
 def _missing_completion_evidence(
@@ -279,6 +307,13 @@ def run_one_ready_task(conn: sqlite3.Connection, config: CoordinatorConfig, root
         add_artifact(conn, task["id"], "spec_review_log", spec_review.log_path)
         if not spec_review.passed:
             state = "failed" if spec_review.timed_out else _review_failure_state(repo)
+            _write_review_packet_if_needed(
+                conn, root, task, state,
+                changed_files=changed_files,
+                verifier_result="passed",
+                spec_review_result="failed",
+                suggested_action="address spec review feedback",
+            )
             _finish_task(
                 conn,
                 root,
@@ -329,6 +364,14 @@ def run_one_ready_task(conn: sqlite3.Connection, config: CoordinatorConfig, root
         add_artifact(conn, task["id"], "quality_review_log", quality_review.log_path)
         if not quality_review.passed:
             state = "failed" if quality_review.timed_out else _review_failure_state(repo)
+            _write_review_packet_if_needed(
+                conn, root, task, state,
+                changed_files=changed_files,
+                verifier_result="passed",
+                spec_review_result="passed",
+                quality_review_result="failed",
+                suggested_action="address quality review feedback",
+            )
             _finish_task(
                 conn,
                 root,
@@ -359,6 +402,12 @@ def run_one_ready_task(conn: sqlite3.Connection, config: CoordinatorConfig, root
             state = _review_failure_state(repo)
             next_action = "provide required review evidence"
             verifier_result = "passed"
+        _write_review_packet_if_needed(
+            conn, root, task, state,
+            changed_files=changed_files,
+            verifier_result=verifier_result,
+            suggested_action=f"provide missing evidence: {', '.join(missing_evidence)}",
+        )
         _finish_task(
             conn,
             root,
