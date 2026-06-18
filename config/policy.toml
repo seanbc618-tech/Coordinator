@@ -13,3 +13,8 @@ max_tasks_per_day = 24
 max_consecutive_failures = 3
 split_if_touches_multiple_subsystems = true
 split_if_research_and_code_are_mixed = true
+
+[daemon_policy]
+loop_interval_seconds = 300
+idle_sleep_seconds = 60
+run_discovery_before_tasks = true

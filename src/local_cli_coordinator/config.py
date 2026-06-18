@@ -27,6 +27,13 @@ class RepoConfig:
 
 
 @dataclass(frozen=True)
+class DaemonPolicyConfig:
+    loop_interval_seconds: int = 300
+    idle_sleep_seconds: int = 60
+    run_discovery_before_tasks: bool = True
+
+
+@dataclass(frozen=True)
 class PolicyConfig:
     require_single_repo: bool
     require_acceptance_criteria: bool
@@ -58,6 +65,7 @@ class CoordinatorConfig:
     repos: dict[str, RepoConfig]
     policy: PolicyConfig
     discovery_sources: dict[str, DiscoverySourceConfig] = field(default_factory=dict)
+    daemon_policy: DaemonPolicyConfig = field(default_factory=DaemonPolicyConfig)
 
 
 def select_agent_by_role(
@@ -143,7 +151,9 @@ def load_config(root: Path) -> CoordinatorConfig:
     config_dir = root / "config"
     agents_raw = _read_toml(config_dir / "agents.toml").get("agents", {})
     repos_raw = _read_toml(config_dir / "repos.toml").get("repos", {})
-    policy_raw = _read_toml(config_dir / "policy.toml")["task_policy"]
+    policy_doc = _read_toml(config_dir / "policy.toml")
+    policy_raw = policy_doc["task_policy"]
+    daemon_raw = policy_doc.get("daemon_policy", {})
     discovery_sources = _load_discovery_sources(config_dir)
 
     agents = {
@@ -194,11 +204,18 @@ def load_config(root: Path) -> CoordinatorConfig:
         max_consecutive_failures=int(policy_raw.get("max_consecutive_failures", 3)),
     )
 
+    daemon_policy = DaemonPolicyConfig(
+        loop_interval_seconds=int(daemon_raw.get("loop_interval_seconds", 300)),
+        idle_sleep_seconds=int(daemon_raw.get("idle_sleep_seconds", 60)),
+        run_discovery_before_tasks=bool(daemon_raw.get("run_discovery_before_tasks", True)),
+    )
+
     return CoordinatorConfig(
         agents=agents,
         repos=repos,
         policy=policy,
         discovery_sources=discovery_sources,
+        daemon_policy=daemon_policy,
     )
 
 
