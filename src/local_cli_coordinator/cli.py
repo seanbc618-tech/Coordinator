@@ -333,6 +333,24 @@ def _cmd_logs(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_digest(args: argparse.Namespace) -> int:
+    from .digest import write_daily_digest
+    root = Path(args.root).resolve()
+    db_path = _db_path(root, args.db)
+    if not db_path.exists():
+        print(f"error: {db_path} does not exist. run doctor?", file=sys.stderr)
+        return 1
+
+    try:
+        with _open_db(db_path) as conn:
+            out_path = write_daily_digest(conn, root)
+            print(f"wrote daily digest to {out_path}")
+            return 0
+    except Exception as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="coordinator")
     parser.add_argument("--root", default=".")
@@ -345,6 +363,7 @@ def build_parser() -> argparse.ArgumentParser:
     status = subparsers.add_parser("status")
     status.add_argument("--loop", action="store_true")
     subparsers.add_parser("doctor")
+    subparsers.add_parser("digest")
 
     inbox = subparsers.add_parser("inbox")
     inbox_subparsers = inbox.add_subparsers(dest="inbox_command")
@@ -378,6 +397,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "doctor":
         return _cmd_doctor(args)
+    if args.command == "digest":
+        return _cmd_digest(args)
     if args.command == "inbox" and args.inbox_command == "scan":
         return _cmd_inbox_scan(args)
     if args.command == "status":
