@@ -19,6 +19,7 @@ from .db import (
     task_counts,
     transition_task,
 )
+from .gitops import list_worktrees, remove_worktree, worktree_has_uncommitted_changes
 from .discovery import (
     CommandDiscoveryResult,
     discover_from_command,
@@ -339,6 +340,49 @@ def _cmd_logs(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_cleanup_worktrees(args: argparse.Namespace) -> int:
+    root = Path(args.root)
+    config, config_error = try_load_config(root)
+    if config_error is not None:
+        print(f"error: {config_error}", file=sys.stderr)
+        return 1
+
+    force = getattr(args, "force", False)
+    removed = 0
+    skipped = 0
+    errors = 0
+
+    for repo_id, repo_config in config.repos.items():
+        repo_path = repo_config.path
+        if not repo_path.exists():
+            continue
+        worktrees_root = root / "worktrees" / repo_id
+        all_worktrees = list_worktrees(repo_path)
+        for wt in all_worktrees:
+            wt_path = Path(wt.get("worktree", ""))
+            # Skip the main worktree
+            if wt.get("branch", "") == "":
+                continue
+            # Only manage worktrees under our worktrees root
+            if not (worktrees_root in wt_path.parents):
+                continue
+            has_changes = worktree_has_uncommitted_changes(wt_path)
+            if has_changes and not force:
+                print(f"skip (uncommitted changes): {wt_path}")
+                skipped += 1
+                continue
+            try:
+                remove_worktree(repo_path, wt_path)
+                print(f"removed: {wt_path}")
+                removed += 1
+            except RuntimeError as exc:
+                print(f"error removing {wt_path}: {exc}", file=sys.stderr)
+                errors += 1
+
+    print(f"\nremoved: {removed}, skipped: {skipped}, errors: {errors}")
+    return 1 if errors else 0
+
+
 def _cmd_discover(args: argparse.Namespace) -> int:
     root = Path(args.root)
     config, config_error = try_load_config(root)
@@ -460,6 +504,8 @@ def build_parser() -> argparse.ArgumentParser:
     repo_subparsers = repo.add_subparsers(dest="repo_command")
     repo_subparsers.required = True
     repo_subparsers.add_parser("list")
+    cleanup = repo_subparsers.add_parser("cleanup-worktrees")
+    cleanup.add_argument("--force", action="store_true")
 
     subparsers.add_parser("logs").add_argument("task_id")
     return parser
@@ -474,6 +520,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_digest(args)
     if args.command == "discover":
         return _cmd_discover(args)
+    if args.command == "repo" and args.repo_command == "cleanup-worktrees":
+        return _cmd_cleanup_worktrees(args)
     if args.command == "inbox" and args.inbox_command == "scan":
         return _cmd_inbox_scan(args)
     if args.command == "status":

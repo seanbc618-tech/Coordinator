@@ -104,3 +104,51 @@ def merge_branch_to_default(repo_path: Path, branch_name: str, default_branch: s
     require_success(merge, "merge branch")
     push = git(["push", remote, default_branch], cwd=repo_path)
     require_success(push, "push default branch")
+
+
+def list_worktrees(repo_path: Path) -> list[dict[str, str]]:
+    """List git worktrees with their path, HEAD, and branch info."""
+    result = git(["worktree", "list", "--porcelain"], cwd=repo_path)
+    require_success(result, "list worktrees")
+    worktrees: list[dict[str, str]] = []
+    current: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        if not line:
+            if current:
+                worktrees.append(current)
+                current = {}
+            continue
+        if " " in line:
+            key, value = line.split(" ", 1)
+            current[key] = value
+        else:
+            current[line] = ""
+    if current:
+        worktrees.append(current)
+    return worktrees
+
+
+def worktree_has_uncommitted_changes(worktree_path: Path) -> bool:
+    """Check whether a worktree has uncommitted changes."""
+    result = git(["status", "--porcelain", "-z"], cwd=worktree_path)
+    return result.returncode == 0 and result.stdout.strip() != ""
+
+
+def remove_worktree(repo_path: Path, worktree_path: Path) -> None:
+    """Remove a git worktree."""
+    result = git(["worktree", "remove", str(worktree_path)], cwd=repo_path)
+    require_success(result, f"remove worktree {worktree_path}")
+
+
+def stale_worktrees(repo_path: Path, worktrees_root: Path) -> list[dict[str, str]]:
+    """Identify worktrees whose task directory no longer exists or are stuck."""
+    all_worktrees = list_worktrees(repo_path)
+    stale: list[dict[str, str]] = []
+    for wt in all_worktrees:
+        wt_path = Path(wt.get("worktree", ""))
+        if not wt_path.exists():
+            stale.append(wt)
+        elif worktrees_root in wt_path.parents or wt_path == worktrees_root:
+            # This is a coordinator-managed worktree
+            stale.append(wt)
+    return stale
