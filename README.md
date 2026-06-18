@@ -1,24 +1,180 @@
 # Local CLI Agent Coordinator
 
-A local coordinator for running CLI agents against small, verified tasks.
+A local loop coordinator for running CLI agents against small, verified tasks
+with discovery, independent evaluation, durable memory, budget caps,
+scheduling, and human review points.
 
-## First Version
+## Loop Overview
 
-- Human tasks enter through `tasks/inbox/*.md`.
-- Runtime state is stored in `coordinator.db`.
-- Repositories must be listed in `config/repos.toml`.
-- Agents are configured in `config/agents.toml`.
-- Every task runs in its own git worktree and branch.
-- Verification runs before commit and push.
+The coordinator implements a full loop pipeline:
+
+1. **Discovery** — find work from inbox, recent commits, or configured commands.
+2. **Planning** — cut findings into small, actionable tasks.
+3. **Handoff** — each task runs in an isolated git worktree.
+4. **Verification** — tests run before commit.
+5. **Review** — independent spec and quality reviewers evaluate changes.
+6. **Persistence** — memory, events, and artifacts are stored on disk.
+7. **Scheduling** — the daemon loop runs continuously or on demand.
+8. **Human review** — risky changes pause for human approval.
 
 ## Quick Commands
 
 ```bash
+# Check loop readiness
 PYTHONPATH=src python -m local_cli_coordinator doctor
+
+# Scan task inbox
 PYTHONPATH=src python -m local_cli_coordinator inbox scan
-PYTHONPATH=src python -m local_cli_coordinator status
+
+# Run discovery once
+PYTHONPATH=src python -m local_cli_coordinator discover --once
+
+# Run one daemon cycle
 PYTHONPATH=src python -m local_cli_coordinator daemon --once
+
+# Run continuous daemon loop
+PYTHONPATH=src python -m local_cli_coordinator daemon
+
+# Show task status
+PYTHONPATH=src python -m local_cli_coordinator status
+
+# Show loop status dashboard
+PYTHONPATH=src python -m local_cli_coordinator status --loop
+
+# Generate daily digest
+PYTHONPATH=src python -m local_cli_coordinator digest
+
+# View task events
+PYTHONPATH=src python -m local_cli_coordinator task events <task_id>
+
+# View task artifacts
+PYTHONPATH=src python -m local_cli_coordinator task artifacts <task_id>
+
+# Clean up stale worktrees
+PYTHONPATH=src python -m local_cli_coordinator repo cleanup-worktrees
 ```
+
+## Configuration
+
+### Agents (`config/agents.toml`)
+
+```toml
+[agents.claude]
+command = "claude --print --dangerously-skip-permissions -p {prompt_path}"
+capabilities = ["code"]
+max_concurrency = 1
+role = "worker"
+```
+
+Roles: `worker`, `spec_reviewer`, `quality_reviewer`, `planner`.
+
+### Repositories (`config/repos.toml`)
+
+```toml
+[repos.myproject]
+path = "/path/to/repo"
+default_branch = "main"
+branch_prefix = "coord/"
+allow_push = false
+merge_policy = "no_push"
+verify_commands = ["python -m unittest"]
+review_policy = "full_review"
+```
+
+Review policies: `auto`, `branch_only`, `always_human`, `risky_human`.
+
+### Policy (`config/policy.toml`)
+
+```toml
+[task_policy]
+require_single_repo = true
+require_acceptance_criteria = true
+require_verification_commands = true
+require_handoff_summary = true
+max_files_touched = 5
+max_expected_minutes = 30
+max_attempts = 3
+max_task_runtime_seconds = 1800
+max_daemon_runtime_seconds = 3600
+max_tasks_per_run = 1
+max_tasks_per_day = 24
+max_consecutive_failures = 3
+
+[daemon_policy]
+loop_interval_seconds = 300
+idle_sleep_seconds = 60
+run_discovery_before_tasks = true
+```
+
+### Discovery Sources (`config/discovery.toml`)
+
+```toml
+[sources.recent_commits]
+type = "git_recent_commits"
+[sources.recent_commits.repos]
+myproject = true
+
+[sources.ci_alerts]
+type = "command"
+command = "my-ci-check.sh"
+[sources.ci_alerts.repos]
+myproject = true
+```
+
+Source types: `inbox`, `git_recent_commits`, `command`, `ci_command`, `issue_command`.
+
+## Evaluator Pipeline
+
+The evaluator pipeline enforces the PDF's warning that a generator cannot
+grade its own work:
+
+1. **Verification** — configured test commands run in the worktree.
+2. **Spec review** — a separate reviewer checks acceptance criteria.
+3. **Quality review** — a second reviewer evaluates implementation quality.
+
+Tasks that fail review go to `awaiting_human` (for reviewed repos) or
+`rejected` (for auto-merge repos). A Markdown review packet is written to
+`tasks/review/` with all evidence.
+
+## Budget Caps And Circuit Breakers
+
+The daemon enforces hard limits:
+
+- **max_task_runtime_seconds** — per-task timeout.
+- **max_daemon_runtime_seconds** — per-run timeout.
+- **max_tasks_per_run** — tasks per daemon cycle.
+- **max_tasks_per_day** — daily task cap.
+- **max_consecutive_failures** — stops the loop on repeated failures.
+
+When a cap is reached, the daemon stops and records the reason.
+
+## Memory And Persistence
+
+- **Loop memory** (`state/loop_state.md`) — human-readable log of every
+  processed task with outcome, branch, and next action.
+- **Findings** (`state/findings/*.jsonl`) — discovery results stored as JSONL.
+- **Run ledger** (`coordinator.db`) — daemon run history with counts and
+  stop reasons.
+- **Artifacts** — verifier logs, review logs, diffs, and review packets
+  linked to each task.
+
+## Task Leasing
+
+Ready tasks are claimed with an atomic lease to support parallel execution:
+
+- Each lease has an expiration time (default 30 minutes).
+- Expired leases are automatically retried.
+- Max concurrency is enforced per agent and globally.
+
+## Recovery After Interruption
+
+If a session is interrupted:
+
+1. Check `git status --short` for uncommitted worktree changes.
+2. Run `coordinator status --loop` to see current state.
+3. Check `state/loop_state.md` for the last processed task.
+4. The daemon lockfile (`state/coordinator.lock`) prevents duplicate runs.
+   Use `--force-lock` to override a stale lock.
 
 ## Task Format
 
@@ -39,3 +195,14 @@ Make one focused change.
 - Verification passes.
 - The task stays within the configured file-change limit.
 ```
+
+## Readiness Checklist
+
+Run `coordinator doctor` to check:
+
+- Discovery source configured
+- State file present
+- Evaluator configured
+- Worktree isolation working
+- Budget caps set
+- Human review point configured
