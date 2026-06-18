@@ -7,13 +7,24 @@ restarts and can be inspected by operators.
 from __future__ import annotations
 
 import json
+import subprocess
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .gitops import git
 from .models import Finding
 
 FINDINGS_DIR = Path("state") / "findings"
-CURSORS_DIR = Path("state") / "discovery" / "cursors"
+DISCOVERY_DIR = Path("state") / "discovery"
+CURSORS_DIR = DISCOVERY_DIR / "cursors"
+FAILURES_FILENAME = "failures.jsonl"
+
+
+@dataclass(frozen=True)
+class CommandDiscoveryResult:
+    findings: list[Finding]
+    failures: list[str]
 
 
 def findings_dir(root: Path) -> Path:
@@ -119,6 +130,104 @@ def _finding_id(source_id: str, repo_id: str, commit_hash: str) -> str:
 
 def _commit_evidence(commit_hash: str, subject: str) -> str:
     return f"commit={commit_hash};subject={subject}"
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _failures_path(root: Path) -> Path:
+    return root / DISCOVERY_DIR / FAILURES_FILENAME
+
+
+def log_discovery_failure(root: Path, source_id: str, message: str) -> None:
+    path = _failures_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "source": source_id,
+        "message": message,
+        "logged_at": _utc_now(),
+    }
+    with path.open("a", encoding="utf-8") as handle:
+        line = json.dumps(entry, sort_keys=True, separators=(",", ":"))
+        handle.write(f"{line}\n")
+
+
+def load_discovery_failures(root: Path) -> list[dict[str, str]]:
+    path = _failures_path(root)
+    if not path.is_file():
+        return []
+    failures: list[dict[str, str]] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            payload = json.loads(stripped)
+            if not isinstance(payload, dict):
+                raise ValueError("discovery failure JSONL line must be a JSON object")
+            failures.append({str(key): str(value) for key, value in payload.items()})
+    return failures
+
+
+def _parse_command_findings(stdout: str) -> tuple[list[Finding], list[str]]:
+    findings: list[Finding] = []
+    failures: list[str] = []
+    for line_number, line in enumerate(stdout.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            payload = json.loads(stripped)
+        except json.JSONDecodeError:
+            failures.append(f"invalid JSON on line {line_number}")
+            continue
+        if not isinstance(payload, dict):
+            failures.append(f"invalid JSON on line {line_number}: expected object")
+            continue
+        try:
+            findings.append(Finding.from_dict(payload))
+        except (KeyError, TypeError, ValueError) as exc:
+            failures.append(f"invalid finding on line {line_number}: {exc}")
+    return findings, failures
+
+
+def discover_from_command(
+    *,
+    root: Path,
+    source_id: str,
+    command: str,
+    repo_id: str,
+    enabled_repos: dict[str, bool],
+    persist: bool = False,
+) -> CommandDiscoveryResult:
+    if not enabled_repos.get(repo_id, False):
+        return CommandDiscoveryResult(findings=[], failures=[])
+
+    completed = subprocess.run(
+        command,
+        shell=True,
+        cwd=root,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if completed.returncode != 0:
+        message = f"discovery command failed with exit code {completed.returncode}"
+        stderr = completed.stderr.strip()
+        if stderr:
+            message = f"{message}: {stderr}"
+        log_discovery_failure(root, source_id, message)
+        return CommandDiscoveryResult(findings=[], failures=[message])
+
+    findings, failures = _parse_command_findings(completed.stdout)
+    for message in failures:
+        log_discovery_failure(root, source_id, message)
+    if persist:
+        for finding in findings:
+            save_finding(root, finding)
+    return CommandDiscoveryResult(findings=findings, failures=failures)
 
 
 def discover_git_recent_commits(
