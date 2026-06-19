@@ -1,15 +1,16 @@
 import json
+import sys
 import tempfile
 import textwrap
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from tests.helpers import run_cli
+from tests.helpers import init_git_repo, run_cli
 from local_cli_coordinator.cli import _cmd_daemon
-from local_cli_coordinator.config import load_config
-from local_cli_coordinator.db import connect, init_db, list_tasks
-from local_cli_coordinator.discovery import save_finding
+from local_cli_coordinator.config import DiscoverySourceConfig, load_config
+from local_cli_coordinator.db import connect, get_task, init_db, list_tasks
+from local_cli_coordinator.discovery import list_findings, save_finding
 from local_cli_coordinator.engine import (
     ContinuousDaemonResult,
     run_continuous_daemon,
@@ -89,6 +90,87 @@ class DaemonLoopTests(unittest.TestCase):
             self.assertIn("imported task", result.stdout)
             self.assertFalse((inbox / "loop.md").exists())
             self.assertTrue((root / "tasks" / "accepted" / "loop.md").exists())
+
+    def test_cycle_runs_configured_command_discovery_before_processing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            init_git_repo(repo)
+            write_config(root)
+            (root / "config" / "policy.toml").write_text(textwrap.dedent("""
+                [task_policy]
+                require_single_repo = true
+                require_acceptance_criteria = true
+                require_verification_commands = false
+                require_handoff_summary = false
+                max_files_touched = 3
+                max_expected_minutes = 30
+                max_attempts = 3
+                max_daemon_runtime_seconds = 3600
+                split_if_touches_multiple_subsystems = true
+                split_if_research_and_code_are_mixed = true
+
+                [daemon_policy]
+                loop_interval_seconds = 30
+                idle_sleep_seconds = 5
+                run_discovery_before_tasks = true
+            """).strip())
+            (root / "config" / "repos.toml").write_text(textwrap.dedent(f"""
+                [repos.demo]
+                path = "{repo}"
+                default_branch = "main"
+                remote = "origin"
+                branch_prefix = "coord/"
+                allow_push = false
+                merge_policy = "no_push"
+                verify_commands = ["{sys.executable} -c 'raise SystemExit(0)'"]
+                review_policy = "tests_only"
+            """).strip())
+
+            emit_script = root / "emit_finding.py"
+            emit_script.write_text(textwrap.dedent("""
+                import json
+
+                print(json.dumps({
+                    "id": "finding-daemon-001",
+                    "repo": "demo",
+                    "source": "command",
+                    "title": "Daemon discovery task",
+                    "body": "- Create feature.txt with done.\\n- Verification passes.",
+                    "severity": "info",
+                    "evidence": "source=daemon-cycle",
+                    "discovered_at": "2026-06-19T15:00:00Z",
+                }))
+            """).strip(), encoding="utf-8")
+            (root / "config" / "discovery.toml").write_text(textwrap.dedent(f"""
+                [sources.command]
+                type = "command"
+                command = "{sys.executable} {emit_script}"
+                [sources.command.repos]
+                demo = true
+            """).strip())
+            (root / "config" / "agents.toml").write_text(textwrap.dedent(f"""
+                [agents.fake]
+                command = '''{sys.executable} -c "from pathlib import Path; Path('feature.txt').write_text('done')"'''
+                capabilities = ["code"]
+                max_concurrency = 1
+            """).strip())
+
+            conn = connect(root / "coordinator.db")
+            init_db(conn)
+            try:
+                config = load_config(root)
+                result = run_daemon_cycle(conn, config, root)
+                tasks = list_tasks(conn)
+                task = get_task(conn, tasks[0]["id"])
+            finally:
+                conn.close()
+
+            self.assertEqual(len(list_findings(root)), 1)
+            self.assertGreaterEqual(result.planned_tasks, 1)
+            self.assertGreaterEqual(result.imported_tasks, 1)
+            self.assertEqual(result.tasks_processed, 1)
+            self.assertEqual(task["state"], "done")
 
     def test_cycle_plans_persisted_findings_into_generated_tasks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

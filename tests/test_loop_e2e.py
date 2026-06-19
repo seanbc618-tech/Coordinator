@@ -9,18 +9,17 @@ from local_cli_coordinator.config import (
     AgentConfig,
     CoordinatorConfig,
     DaemonPolicyConfig,
+    DiscoverySourceConfig,
     PolicyConfig,
     RepoConfig,
 )
 from local_cli_coordinator.db import connect, get_task, init_db, list_tasks
-from local_cli_coordinator.discovery import discover_from_command
+from local_cli_coordinator.discovery import list_findings
 from local_cli_coordinator.engine import run_daemon_cycle
 from local_cli_coordinator.memory import loop_memory_path
-from local_cli_coordinator.planner import plan_finding
-from local_cli_coordinator.models import Finding
 
 
-def loop_config(repo_path: Path) -> CoordinatorConfig:
+def loop_config(repo_path: Path, *, discovery_command: str) -> CoordinatorConfig:
     pass_review = f'{sys.executable} -c "raise SystemExit(0)"'
     return CoordinatorConfig(
         agents={
@@ -77,6 +76,14 @@ def loop_config(repo_path: Path) -> CoordinatorConfig:
             split_if_research_and_code_are_mixed=True,
         ),
         daemon_policy=DaemonPolicyConfig(run_discovery_before_tasks=True),
+        discovery_sources={
+            "e2e": DiscoverySourceConfig(
+                id="e2e",
+                type="command",
+                repos={"demo": True},
+                command=discovery_command,
+            ),
+        },
     )
 
 
@@ -103,30 +110,17 @@ class LoopE2ETests(unittest.TestCase):
                 }))
             """).strip(), encoding="utf-8")
 
-            discovery = discover_from_command(
-                root=root,
-                source_id="command",
-                command=f"{sys.executable} {emit_script}",
-                repo_id="demo",
-                enabled_repos={"demo": True},
-                persist=True,
-            )
-            self.assertEqual(discovery.failures, [])
-            self.assertEqual(len(discovery.findings), 1)
-
-            plan = plan_finding(discovery.findings[0])
-            self.assertEqual(plan.needs_split, [])
-            self.assertEqual(len(plan.tasks), 1)
-
             conn = connect(root / "coordinator.db")
             init_db(conn)
-            config = loop_config(repo)
+            config = loop_config(repo, discovery_command=f"{sys.executable} {emit_script}")
             try:
                 cycle = run_daemon_cycle(conn, config, root)
             finally:
                 conn.close()
 
-            self.assertGreaterEqual(cycle.planned_tasks + cycle.imported_tasks, 1)
+            self.assertEqual(len(list_findings(root)), 1)
+            self.assertGreaterEqual(cycle.planned_tasks, 1)
+            self.assertGreaterEqual(cycle.imported_tasks, 1)
             self.assertEqual(cycle.tasks_processed, 1)
 
             conn = connect(root / "coordinator.db")

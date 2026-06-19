@@ -1,3 +1,5 @@
+import multiprocessing
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -110,6 +112,42 @@ class ActiveLeaseCountTests(unittest.TestCase):
             conn.close()
 
         self.assertEqual(count, 2)
+
+
+def _parallel_acquire(db_path: str, task_id: str, agent_id: str, queue) -> None:
+    conn = connect(Path(db_path))
+    init_db(conn)
+    queue.put(acquire_task_lease(conn, task_id, agent_id))
+    conn.close()
+
+
+class ConcurrentLeaseTests(unittest.TestCase):
+    def test_only_one_connection_acquires_task_under_contention(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            conn = _db(root)
+            task_id = _create_ready_task(conn)
+            conn.close()
+
+            queue: multiprocessing.Queue = multiprocessing.Queue()
+            workers = [
+                multiprocessing.Process(
+                    target=_parallel_acquire,
+                    args=(str(root / "coordinator.db"), task_id, "agent-1", queue),
+                ),
+                multiprocessing.Process(
+                    target=_parallel_acquire,
+                    args=(str(root / "coordinator.db"), task_id, "agent-2", queue),
+                ),
+            ]
+            for worker in workers:
+                worker.start()
+            for worker in workers:
+                worker.join()
+
+            results = [queue.get_nowait() for _ in workers]
+
+        self.assertEqual(sum(results), 1)
 
 
 class ClaimNextReadyTaskTests(unittest.TestCase):

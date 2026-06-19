@@ -73,13 +73,13 @@ class MultiTaskRunTests(unittest.TestCase):
 
             calls: list[int] = []
 
-            def counting_run_one_ready_task(conn, cfg, root_path, agent_id=None):
+            def counting_process_task(conn, cfg, root_path, task, agent_id):
                 calls.append(1)
                 return True
 
             with patch(
-                "local_cli_coordinator.engine.run_one_ready_task",
-                side_effect=counting_run_one_ready_task,
+                "local_cli_coordinator.engine._process_task",
+                side_effect=counting_process_task,
             ):
                 result = run_daemon_cycle(conn, config, root)
 

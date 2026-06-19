@@ -259,6 +259,42 @@ def _is_lease_expired(expires_at: str) -> bool:
         return True
 
 
+def _try_acquire_task_lease(
+    conn: sqlite3.Connection,
+    task_id: str,
+    agent_id: str,
+    duration_seconds: int = DEFAULT_LEASE_DURATION_SECONDS,
+) -> bool:
+    now = _utcnow().isoformat()
+    expires_at = _lease_expires_at(duration_seconds)
+    conn.execute(
+        """
+        update task_leases
+        set released_at = current_timestamp
+        where task_id = ?
+          and released_at is null
+          and expires_at <= ?
+        """,
+        (task_id, now),
+    )
+    active = conn.execute(
+        """
+        select id from task_leases
+        where task_id = ?
+          and released_at is null
+          and expires_at > ?
+        """,
+        (task_id, now),
+    ).fetchone()
+    if active is not None:
+        return False
+    conn.execute(
+        "insert into task_leases(task_id, agent_id, expires_at) values (?, ?, ?)",
+        (task_id, agent_id, expires_at),
+    )
+    return True
+
+
 def acquire_task_lease(
     conn: sqlite3.Connection,
     task_id: str,
@@ -270,26 +306,17 @@ def acquire_task_lease(
     Returns True if the lease was acquired, False if the task is already
     leased by another active lease.
     """
-    # Check for an existing active lease
-    row = conn.execute(
-        """
-        select id, expires_at from task_leases
-        where task_id = ? and released_at is null
-        order by id desc limit 1
-        """,
-        (task_id,),
-    ).fetchone()
-
-    if row is not None and not _is_lease_expired(row["expires_at"]):
-        return False  # task is actively leased
-
-    expires_at = _lease_expires_at(duration_seconds)
-    conn.execute(
-        "insert into task_leases(task_id, agent_id, expires_at) values (?, ?, ?)",
-        (task_id, agent_id, expires_at),
-    )
-    conn.commit()
-    return True
+    conn.execute("begin immediate")
+    try:
+        acquired = _try_acquire_task_lease(conn, task_id, agent_id, duration_seconds)
+        conn.commit()
+        return acquired
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        return False
+    except sqlite3.Error:
+        conn.rollback()
+        raise
 
 
 def release_task_lease(conn: sqlite3.Connection, task_id: str) -> None:
@@ -338,21 +365,31 @@ def claim_next_ready_task(
     Returns the claimed task row, or None if no task is available or
     concurrency limits are reached.
     """
-    # Check concurrency limits
-    agent_active = active_lease_count(conn, agent_id)
-    if agent_active >= max_agent_concurrency:
+    conn.execute("begin immediate")
+    try:
+        agent_active = active_lease_count(conn, agent_id)
+        if agent_active >= max_agent_concurrency:
+            conn.commit()
+            return None
+        global_active = active_lease_count(conn)
+        if global_active >= max_global_concurrency:
+            conn.commit()
+            return None
+
+        candidates = conn.execute(
+            "select * from tasks where state = 'ready' order by created_at, id"
+        ).fetchall()
+
+        for task in candidates:
+            try:
+                if _try_acquire_task_lease(conn, task["id"], agent_id, duration_seconds):
+                    conn.commit()
+                    return task
+            except sqlite3.IntegrityError:
+                continue
+
+        conn.commit()
         return None
-    global_active = active_lease_count(conn)
-    if global_active >= max_global_concurrency:
-        return None
-
-    # Find and claim a ready task
-    candidates = conn.execute(
-        "select * from tasks where state = 'ready' order by created_at, id"
-    ).fetchall()
-
-    for task in candidates:
-        if acquire_task_lease(conn, task["id"], agent_id, duration_seconds):
-            return task
-
-    return None
+    except sqlite3.Error:
+        conn.rollback()
+        raise

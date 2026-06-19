@@ -4,10 +4,17 @@ import textwrap
 import unittest
 from pathlib import Path
 
+from local_cli_coordinator.config import (
+    CoordinatorConfig,
+    DiscoverySourceConfig,
+    PolicyConfig,
+    RepoConfig,
+)
 from local_cli_coordinator.discovery import (
     discover_from_command,
     list_findings,
     load_discovery_failures,
+    run_configured_discovery,
 )
 
 
@@ -108,3 +115,63 @@ class CommandDiscoveryTests(unittest.TestCase):
             self.assertEqual(len(enabled.findings), 1)
             self.assertEqual(disabled.findings, [])
             self.assertEqual(disabled.failures, [])
+
+    def test_run_configured_discovery_executes_command_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            script_path = root / "emit_finding.py"
+            script_path.write_text(textwrap.dedent("""
+                import json
+
+                print(json.dumps({
+                    "id": "finding-configured-001",
+                    "repo": "demo",
+                    "source": "ci_scan",
+                    "title": "Configured discovery",
+                    "body": "from config",
+                    "severity": "info",
+                    "evidence": "configured=true",
+                    "discovered_at": "2026-06-19T12:00:00Z",
+                }))
+            """).strip(), encoding="utf-8")
+            config = CoordinatorConfig(
+                agents={},
+                repos={
+                    "demo": RepoConfig(
+                        id="demo",
+                        path=root,
+                        default_branch="main",
+                        remote="origin",
+                        branch_prefix="coord/",
+                        allow_push=False,
+                        merge_policy="no_push",
+                        verify_commands=[],
+                        review_policy="tests_only",
+                    )
+                },
+                policy=PolicyConfig(
+                    require_single_repo=True,
+                    require_acceptance_criteria=True,
+                    require_verification_commands=True,
+                    require_handoff_summary=False,
+                    max_files_touched=3,
+                    max_expected_minutes=30,
+                    max_attempts=3,
+                    split_if_touches_multiple_subsystems=True,
+                    split_if_research_and_code_are_mixed=True,
+                ),
+                discovery_sources={
+                    "ci_scan": DiscoverySourceConfig(
+                        id="ci_scan",
+                        type="command",
+                        repos={"demo": True},
+                        command=f"python3 {script_path}",
+                    ),
+                },
+            )
+
+            result = run_configured_discovery(config, root)
+
+            self.assertEqual(result.discovered, 1)
+            self.assertEqual(result.failures, 0)
+            self.assertEqual(len(list_findings(root)), 1)

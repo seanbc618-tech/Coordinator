@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .config import CoordinatorConfig
 from .gitops import git
 from .models import Finding
 
@@ -25,6 +26,13 @@ FAILURES_FILENAME = "failures.jsonl"
 class CommandDiscoveryResult:
     findings: list[Finding]
     failures: list[str]
+
+
+@dataclass(frozen=True)
+class DiscoveryRunResult:
+    discovered: int
+    failures: int
+    skipped: int
 
 
 def findings_dir(root: Path) -> Path:
@@ -266,6 +274,63 @@ def discover_git_recent_commits(
         for finding in findings:
             save_finding(root, finding)
     return findings
+
+
+def run_configured_discovery(
+    config: CoordinatorConfig,
+    root: Path,
+) -> DiscoveryRunResult:
+    """Execute all enabled discovery sources from configuration."""
+    if not config.discovery_sources:
+        return DiscoveryRunResult(discovered=0, failures=0, skipped=0)
+
+    discovered = 0
+    skipped = 0
+    failures = 0
+
+    for source in config.discovery_sources.values():
+        if source.type == "git_recent_commits":
+            for repo_id, repo_config in config.repos.items():
+                if not source.repos.get(repo_id, False):
+                    skipped += 1
+                    continue
+                try:
+                    findings = discover_git_recent_commits(
+                        root=root,
+                        source_id=source.id,
+                        repo_id=repo_id,
+                        repo_path=repo_config.path,
+                        enabled_repos=source.repos,
+                        persist=True,
+                    )
+                    discovered += len(findings)
+                except Exception as exc:
+                    log_discovery_failure(root, source.id, str(exc))
+                    failures += 1
+        elif source.type in ("command", "ci_command", "issue_command"):
+            for repo_id in config.repos:
+                if not source.repos.get(repo_id, False):
+                    skipped += 1
+                    continue
+                if source.command is None:
+                    skipped += 1
+                    continue
+                result = discover_from_command(
+                    root=root,
+                    source_id=source.id,
+                    command=source.command,
+                    repo_id=repo_id,
+                    enabled_repos=source.repos,
+                    persist=True,
+                )
+                discovered += len(result.findings)
+                failures += len(result.failures)
+        elif source.type == "inbox":
+            skipped += 1
+        else:
+            skipped += 1
+
+    return DiscoveryRunResult(discovered=discovered, failures=failures, skipped=skipped)
 
 
 def delete_finding(root: Path, finding_id: str) -> bool:

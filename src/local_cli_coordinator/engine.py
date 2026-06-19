@@ -15,12 +15,11 @@ from .db import (
     claim_next_ready_task,
     create_task,
     get_task,
-    next_ready_task,
     release_task_lease,
     set_task_branch_and_worktree,
     transition_task,
 )
-from .discovery import list_findings
+from .discovery import list_findings, run_configured_discovery
 from .planner import plan_finding
 from .policy import (
     allows_auto_merge,
@@ -188,6 +187,25 @@ def _pause_for_human_review_before_merge(
     return True
 
 
+def _daemon_claim_limits(
+    config: CoordinatorConfig,
+    agent_id: str | None = None,
+) -> tuple[str, int, int]:
+    if agent_id is not None:
+        agent = config.agents[agent_id]
+        max_global = sum(item.max_concurrency for item in config.agents.values())
+        return agent_id, agent.max_concurrency, max_global
+
+    if not config.agents:
+        return "daemon", 1, 1
+
+    worker = select_agent_by_role(config, "worker")
+    if worker is None:
+        worker = next(iter(config.agents.values()))
+    max_global = sum(item.max_concurrency for item in config.agents.values())
+    return worker.id, worker.max_concurrency, max_global
+
+
 def _write_review_packet_if_needed(
     conn: sqlite3.Connection,
     root: Path,
@@ -205,7 +223,7 @@ def _write_review_packet_if_needed(
         return
     packet_path = write_review_packet(
         root,
-        task,
+        dict(get_task(conn, task["id"])),
         changed_files=changed_files,
         verifier_result=verifier_result,
         spec_review_result=spec_review_result,
@@ -350,6 +368,7 @@ def run_discovery_phase(
 ) -> tuple[int, int]:
     if not config.daemon_policy.run_discovery_before_tasks:
         return 0, 0
+    run_configured_discovery(config, root)
     imported = _import_discovered_tasks(conn, config, root)
     planned = _plan_persisted_findings(root)
     if planned:
@@ -372,6 +391,7 @@ def run_daemon_cycle(
     blocked = 0
     skipped = 0
     limit = max(1, config.policy.max_tasks_per_run)
+    agent_id, max_agent_concurrency, max_global_concurrency = _daemon_claim_limits(config)
 
     for _ in range(limit):
         stop_reason = circuit_breaker_reason(conn, config.policy)
@@ -386,22 +406,32 @@ def run_daemon_cycle(
                 stop_reason,
             )
 
-        candidate = next_ready_task(conn)
-        if candidate is None:
+        task = claim_next_ready_task(
+            conn,
+            agent_id,
+            max_agent_concurrency=max_agent_concurrency,
+            max_global_concurrency=max_global_concurrency,
+        )
+        if task is None:
             break
 
-        if candidate["state"] == "blocked":
+        if task["state"] == "blocked":
+            release_task_lease(conn, task["id"])
             blocked += 1
             skipped += 1
             continue
 
-        processed = run_one_ready_task(conn, config, root)
+        try:
+            processed = _process_task(conn, config, root, dict(task), agent_id)
+        finally:
+            release_task_lease(conn, task["id"])
+
         if not processed:
             skipped += 1
             break
 
         tasks_processed += 1
-        if get_task(conn, candidate["id"])["state"] == "failed":
+        if get_task(conn, task["id"])["state"] == "failed":
             failures += 1
 
     stop_reason = None if tasks_processed else "no ready tasks"
@@ -479,17 +509,22 @@ def run_one_ready_task(
 ) -> bool:
     if circuit_breaker_reason(conn, config.policy) is not None:
         return False
-    if agent_id is not None:
-        task = claim_next_ready_task(conn, agent_id)
-    else:
-        task = next_ready_task(conn)
+    claim_agent_id, max_agent_concurrency, max_global_concurrency = _daemon_claim_limits(
+        config,
+        agent_id,
+    )
+    task = claim_next_ready_task(
+        conn,
+        claim_agent_id,
+        max_agent_concurrency=max_agent_concurrency,
+        max_global_concurrency=max_global_concurrency,
+    )
     if task is None:
         return False
     try:
-        return _process_task(conn, config, root, task, agent_id)
+        return _process_task(conn, config, root, dict(task), claim_agent_id)
     finally:
-        if agent_id is not None:
-            release_task_lease(conn, task["id"])
+        release_task_lease(conn, task["id"])
 
 
 def _process_task(
