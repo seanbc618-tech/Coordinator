@@ -353,6 +353,8 @@ def _format_daemon_cycle_message(result) -> str:
         parts.append(_plural(result.skipped, "skipped task"))
     if result.commander_tasks_admitted:
         parts.append(f"{result.commander_tasks_admitted} commander tasks admitted")
+    if result.commander_status and result.commander_status.startswith("replenishment_error:"):
+        parts.append(result.commander_status)
     if parts:
         return ", ".join(parts)
     if result.stop_reason and result.stop_reason != "no ready tasks":

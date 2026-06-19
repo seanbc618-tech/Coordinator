@@ -1,28 +1,46 @@
 # Codex Commander Final Acceptance Report
 
 > Date: 2026-06-19
-> Status: Accepted
-> Baseline: `d23d139` (pre-Commander loop work)
+> Status: Re-submitted after reintegration
+> Baseline: `69a7eb2` (`codex/loop-readiness-doctor`)
+> Integration branch: `agent/grok/codex-commander-integration`
+
+## Reintegration Summary
+
+Joint acceptance initially failed because Commander work landed on `d23d139` instead of the formal baseline `69a7eb2`, deleting LE-13–LE-33 features (migration 005, discover CLI, task events/artifacts, worktree cleanup, atomic leases, user config).
+
+This delivery rebases onto `69a7eb2`, cherry-picks all 10 Commander commits, resolves conflicts while preserving baseline functionality, and applies acceptance fixes.
+
+| Rejection issue | Resolution |
+|-----------------|------------|
+| Wrong baseline / ~2,150 line deletions | New branch from `69a7eb2`; zero file deletions vs baseline |
+| Non-atomic task lease regression | Baseline `db.py` atomic lease + migration 005 retained |
+| Daemon bypassing lease | Baseline `_claim_next_ready_task(conn, config)` retained |
+| User config reverted to example | `config/repos.toml` Polymarket + `config/agents.toml` Claude/Grok/Pi preserved |
+| Empty verification commands regression | Baseline `_import_task_draft` repo verify inheritance retained |
+| Active goal cannot use chat | Chat allows `draft`, `active`, `paused`, `blocked` goals |
+| Commander exceptions silently swallowed | `replenishment_error:` surfaced in `commander_status` and daemon output |
 
 ## Commit Scope
 
 | Commit | Task | Owner |
 |--------|------|-------|
-| `f97ef65` | Commander response protocol | Grok |
-| `4fa020f` | Goal persistence | Claude Code |
-| `1c160a0` | Admission gate | Grok |
-| `bfa40cd` | Read-only Commander runner | Claude Code |
-| `6fccfba` | Daemon replenishment | Claude Code |
-| `dd2ec5c` | Goal and chat CLI | Claude Code |
-| `9983ecd` | Goal status and durable memory | Grok |
-| `288d3f7` | Retry and safety stops | Grok |
-| `1c217b0` | Two-batch end-to-end test and docs | Claude Code |
-| `1392e69` | Adversarial acceptance fixes and report | Grok |
+| `92c5de8` | Commander response protocol | Grok |
+| `6607ddc` | Goal persistence | Claude Code |
+| `ec003b8` | Admission gate | Grok |
+| `a76edd3` | Read-only Commander runner | Claude Code |
+| `6927ff8` | Daemon replenishment | Claude Code |
+| `3e74af3` | Goal and chat CLI | Claude Code |
+| `c814a57` | Goal status and durable memory | Grok |
+| `e1c41e2` | Retry and safety stops | Grok |
+| `d93eed8` | Two-batch end-to-end test and docs | Claude Code |
+| `27190d6` | Adversarial acceptance fixes and report | Grok |
 
 ## Test Count
 
-- Full suite: **315 tests**, all passing
+- Full suite: **341 tests**, all passing (baseline 266 + Commander 78 − overlap)
 - Commander-focused modules: **78 tests** (including 6 adversarial acceptance tests)
+- Baseline preservation verified: `test_discover_cli`, `test_events_cli`, `test_worktree_cleanup`, `test_task_leases` all pass
 - End-to-end: `tests/test_commander_e2e.py` (two dependent batches)
 
 Commander test modules:
@@ -61,7 +79,7 @@ Production changes for Task 10:
 
 ## No-Goal Smoke
 
-Captured 2026-06-19:
+Captured 2026-06-19 on `agent/grok/codex-commander-integration`:
 
 ```text
 $ coordinator goal status
@@ -102,16 +120,18 @@ No Commander invocation occurred without an active confirmed goal. No managed-re
 | Commander policy configuration | `config/policy.toml` `[commander_policy]` |
 | Two-batch E2E with dependency | `tests/test_commander_e2e.py` |
 | Commander failures isolated from task circuit breaker | Verified in `test_circuit_breaker` |
+| LE-13–LE-33 baseline features preserved | migration 005, discover, events, artifacts, worktree cleanup |
 
 ## Integration Gate
 
 ```bash
-PYTHONPATH=src python3 -m unittest discover -s tests -v   # 315 OK
+PYTHONPATH=src python3 -m unittest discover -s tests -v   # 341 OK
 PYTHONPATH=src python3 -m local_cli_coordinator doctor     # ok
 PYTHONPATH=src python3 -m local_cli_coordinator goal status
 PYTHONPATH=src python3 -m local_cli_coordinator status --loop
 PYTHONPATH=src python3 -m local_cli_coordinator daemon --once
-git diff --check d23d139..HEAD                             # clean
+git diff --check 69a7eb2..HEAD                             # clean
+git diff --name-only 69a7eb2..HEAD --diff-filter=D         # no deletions
 ```
 
-All gates passed on acceptance.
+All gates passed on re-submission.

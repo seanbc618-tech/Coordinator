@@ -466,8 +466,8 @@ def run_daemon_cycle(
         replenishment = maybe_replenish_goal(conn, config, root)
         commander_status = replenishment.status
         commander_admitted = len(replenishment.admitted_task_ids)
-    except Exception:
-        pass  # Don't let commander failures break the daemon
+    except Exception as exc:
+        commander_status = f"replenishment_error:{type(exc).__name__}:{exc}"
 
     tasks_processed = 0
     failures = 0

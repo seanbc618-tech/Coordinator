@@ -69,7 +69,7 @@ run_discovery_before_tasks = true
         result = _cmd_chat(_make_args(self.root))
         self.assertEqual(result, 1)
 
-    def test_chat_start_with_active_goal_is_refused(self) -> None:
+    def test_chat_allows_active_goal_status_commands(self) -> None:
         conn = connect(self.root / "coordinator.db")
         init_db(conn)
         goal_id = create_goal(conn, "Roadmap", "Finish roadmap")
@@ -78,10 +78,10 @@ run_discovery_before_tasks = true
         transition_goal(conn, goal_id, "active")
         conn.close()
 
-        with patch("builtins.print") as mock_print:
-            result = _cmd_chat(_make_args(self.root))
+        with patch("builtins.input", side_effect=["/status", "/quit"]):
+            with patch("builtins.print") as mock_print:
+                result = _cmd_chat(_make_args(self.root))
         self.assertEqual(result, 0)
-        # Should print that goal is active
         printed = " ".join(str(c) for c in mock_print.call_args_list)
         self.assertIn("active", printed.lower())
 
