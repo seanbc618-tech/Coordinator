@@ -3,9 +3,3 @@ type = "inbox"
 
 [sources.inbox.repos]
 polymarket_crypto_threshold = true
-
-[sources.recent_commits]
-type = "git_recent_commits"
-
-[sources.recent_commits.repos]
-polymarket_crypto_threshold = true

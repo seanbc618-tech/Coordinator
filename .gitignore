@@ -5,3 +5,8 @@ coordinator.db
 runs/
 worktrees/
 tmp/
+state/
+tasks/accepted/*.md
+tasks/blocked/*.md
+tasks/generated/*.md
+tasks/review/*.md

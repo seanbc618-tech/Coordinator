@@ -15,6 +15,7 @@ from local_cli_coordinator.engine import (
     ContinuousDaemonResult,
     run_continuous_daemon,
     run_daemon_cycle,
+    run_discovery_phase,
 )
 from local_cli_coordinator.models import Finding
 
@@ -193,14 +194,56 @@ class DaemonLoopTests(unittest.TestCase):
             init_db(conn)
             try:
                 config = load_config(root)
-                result = run_daemon_cycle(conn, config, root)
+                imported, planned = run_discovery_phase(conn, config, root)
+                tasks = list_tasks(conn)
             finally:
                 conn.close()
 
-            self.assertEqual(result.planned_tasks, 1)
-            generated = list((root / "tasks" / "generated").glob("*.md"))
-            self.assertEqual(len(generated), 1)
-            self.assertIn("Fix parser edge case", generated[0].read_text())
+            self.assertEqual(planned, 1)
+            self.assertEqual(imported, 1)
+            self.assertEqual(len(tasks), 1)
+            self.assertEqual(tasks[0]["verification_commands"], "python -m unittest")
+            accepted = list((root / "tasks" / "accepted").glob("*.md"))
+            self.assertEqual(len(accepted), 1)
+            content = accepted[0].read_text()
+            self.assertIn("Fix parser edge case", content)
+
+    def test_discovery_import_inherits_repo_verification_for_existing_task(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_config(root)
+            generated = root / "tasks" / "generated"
+            generated.mkdir(parents=True)
+            (generated / "existing.md").write_text(textwrap.dedent("""
+                # Task: Existing generated task
+
+                repo: demo
+                priority: normal
+                capabilities: [code]
+                verification: []
+
+                ## Goal
+
+                Import an already generated task.
+
+                ## Acceptance Criteria
+
+                - The task is ready.
+            """).strip())
+
+            conn = connect(root / "coordinator.db")
+            init_db(conn)
+            try:
+                config = load_config(root)
+                imported, planned = run_discovery_phase(conn, config, root)
+                tasks = list_tasks(conn)
+            finally:
+                conn.close()
+
+            self.assertEqual(planned, 0)
+            self.assertEqual(imported, 1)
+            self.assertEqual(len(tasks), 1)
+            self.assertEqual(tasks[0]["verification_commands"], "python -m unittest")
 
     def test_continuous_daemon_stops_at_max_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

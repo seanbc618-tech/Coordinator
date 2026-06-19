@@ -1,7 +1,7 @@
 import json
 import shutil
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 import re
 import sqlite3
@@ -369,6 +369,16 @@ def _import_task_draft(
     root: Path,
     draft,
 ) -> bool:
+    repo = config.repos.get(draft.repo)
+    if (
+        config.policy.require_verification_commands
+        and not draft.verification_commands
+        and repo is not None
+    ):
+        draft = replace(
+            draft,
+            verification_commands=list(repo.verify_commands),
+        )
     reasons = list(check_task_draft(draft, config.policy).reasons)
     if draft.repo not in config.repos:
         reasons.append(f"repo is not allowlisted: {draft.repo}")
