@@ -134,9 +134,13 @@ def worktree_has_uncommitted_changes(worktree_path: Path) -> bool:
     return result.returncode == 0 and result.stdout.strip() != ""
 
 
-def remove_worktree(repo_path: Path, worktree_path: Path) -> None:
+def remove_worktree(repo_path: Path, worktree_path: Path, *, force: bool = False) -> None:
     """Remove a git worktree."""
-    result = git(["worktree", "remove", str(worktree_path)], cwd=repo_path)
+    cmd = ["worktree", "remove"]
+    if force:
+        cmd.append("--force")
+    cmd.append(str(worktree_path))
+    result = git(cmd, cwd=repo_path)
     require_success(result, f"remove worktree {worktree_path}")
 
 

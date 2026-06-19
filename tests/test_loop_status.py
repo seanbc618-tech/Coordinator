@@ -1,8 +1,42 @@
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
 from tests.helpers import run_cli
+
+
+def _write_config(root: Path) -> None:
+    config_dir = root / "config"
+    config_dir.mkdir()
+    (config_dir / "agents.toml").write_text(textwrap.dedent("""
+        [agents.fake]
+        command = "python -c 'print(1)'"
+        capabilities = ["code"]
+        max_concurrency = 1
+    """).strip())
+    (config_dir / "repos.toml").write_text(textwrap.dedent("""
+        [repos.demo]
+        path = "/tmp/demo"
+        default_branch = "main"
+        remote = "origin"
+        branch_prefix = "coord/"
+        allow_push = false
+        merge_policy = "no_push"
+        verify_commands = ["python -m unittest"]
+    """).strip())
+    (config_dir / "policy.toml").write_text(textwrap.dedent("""
+        [task_policy]
+        require_single_repo = true
+        require_acceptance_criteria = true
+        require_verification_commands = true
+        require_handoff_summary = false
+        max_files_touched = 3
+        max_expected_minutes = 30
+        max_attempts = 3
+        split_if_touches_multiple_subsystems = true
+        split_if_research_and_code_are_mixed = true
+    """).strip())
 
 
 class LoopStatusTests(unittest.TestCase):
@@ -56,3 +90,33 @@ class LoopStatusTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("Loop Status", result.stdout)
         self.assertIn("no tasks", result.stdout)
+
+    def test_status_loop_with_config_does_not_crash_on_closed_db(self) -> None:
+        """Regression: circuit_breaker_reason() was called after conn.close()."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_config(root)
+            result = run_cli("--root", str(root), "status", "--loop")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Circuit breaker:", result.stdout)
+
+    def test_status_loop_reports_last_run_and_next_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_config(root)
+            result = run_cli("--root", str(root), "status", "--loop")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Last run:", result.stdout)
+        self.assertIn("Next run:", result.stdout)
+
+    def test_status_loop_reports_budget_usage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_config(root)
+            result = run_cli("--root", str(root), "status", "--loop")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("budget:", result.stdout)
+        self.assertIn("tasks today", result.stdout)

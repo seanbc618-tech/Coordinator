@@ -2,7 +2,7 @@
 
 > **Date:** 2026-06-19
 > **Branch:** `codex/loop-readiness-doctor`
-> **Status:** All tasks complete, ready for final commit by Codex
+> **Status:** Repairs in progress — final acceptance NOT yet passed
 
 ---
 
@@ -13,11 +13,11 @@ integration branch. Three agents collaborated across seven delivery waves:
 
 | Agent | Tasks | Count |
 |-------|-------|-------|
-| Claude Code | LE-13, 16, 17, 21, 22, 25, 26, 29, 30, 32, 33 | 11 |
+| Claude Code | LE-13, 16, 17, 18, 21, 22, 25, 26, 29, 30, 32, 33 | 12 |
 | Grok | LE-14, 15, 20, 23, 27, 28, 31 | 7 |
 | Pi Agent | LE-19, 24 | 2 |
 
-Claude also completed Pi's remaining tasks (LE-18, 25, 29, 32) after Pi's
+Claude completed Pi's remaining tasks (LE-18, 25, 29, 32) after Pi's
 session became unavailable.
 
 ## Verification
@@ -52,6 +52,10 @@ session became unavailable.
 | LE-31 | `5091731` | End-to-end loop scenario test |
 | LE-32 | `48644a1` | README loop operations documentation |
 | LE-33 | — | Final verification (this report) |
+
+## Merge Commits
+
+- `e59106c` — Merge branch `agent/pi/le-24-comprehension-digest` into `codex/loop-readiness-doctor`
 
 ## Acceptance Gate Checklist
 

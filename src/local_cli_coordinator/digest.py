@@ -19,8 +19,8 @@ def generate_digest(conn: sqlite3.Connection, date_str: str, root: Path) -> str:
     # Find all tasks updated on this date that are in terminal or blocked states
     rows = conn.execute(
         """
-        select id, title, state, repo, goal 
-        from tasks 
+        select id, title, state, repo, goal
+        from tasks
         where substr(updated_at, 1, 10) = ?
           and state in ('done', 'failed', 'rejected', 'awaiting_human')
         order by state, id
@@ -44,20 +44,20 @@ def generate_digest(conn: sqlite3.Connection, date_str: str, root: Path) -> str:
     for task_id in task_ids:
         artifact = conn.execute(
             """
-            select path from artifacts 
-            where task_id = ? and kind = 'diff' 
+            select path from artifacts
+            where task_id = ? and kind = 'diff'
             order by created_at desc limit 1
             """,
             (task_id,)
         ).fetchone()
-        
+
         if artifact:
             diff_path = Path(artifact["path"])
             if diff_path.is_absolute():
                 actual_path = diff_path
             else:
                 actual_path = root / diff_path
-                
+
             if actual_path.exists():
                 diff_content = actual_path.read_text(errors="replace")
                 files = _parse_changed_files_from_diff(diff_content)
@@ -99,12 +99,12 @@ def write_daily_digest(conn: sqlite3.Connection, root: Path, date_str: str | Non
     """Write the daily digest to state/digests/YYYY-MM-DD.md and return its path."""
     if date_str is None:
         date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        
+
     digest_dir = root / "state" / "digests"
     digest_dir.mkdir(parents=True, exist_ok=True)
-    
+
     out_path = digest_dir / f"{date_str}.md"
     content = generate_digest(conn, date_str, root)
     out_path.write_text(content)
-    
+
     return out_path

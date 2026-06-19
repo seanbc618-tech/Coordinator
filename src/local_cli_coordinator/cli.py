@@ -130,6 +130,21 @@ def _cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _last_daemon_run(conn: sqlite3.Connection) -> sqlite3.Row | None:
+    return conn.execute(
+        "select * from daemon_runs where ended_at is not null "
+        "order by id desc limit 1"
+    ).fetchone()
+
+
+def _daily_budget_used(conn: sqlite3.Connection) -> int:
+    row = conn.execute(
+        "select coalesce(sum(tasks_processed), 0) as total "
+        "from daemon_runs where date(started_at) = date('now')"
+    ).fetchone()
+    return row["total"]
+
+
 def _cmd_status_loop(args: argparse.Namespace) -> int:
     root = Path(args.root)
     config, config_error = try_load_config(root)
@@ -137,6 +152,9 @@ def _cmd_status_loop(args: argparse.Namespace) -> int:
     try:
         counts = task_counts(conn)
         leases = active_lease_count(conn)
+        cb_reason = circuit_breaker_reason(conn, config.policy) if config else None
+        last_run = _last_daemon_run(conn)
+        daily_used = _daily_budget_used(conn)
     finally:
         conn.close()
 
@@ -162,15 +180,24 @@ def _cmd_status_loop(args: argparse.Namespace) -> int:
 
     # Budget / circuit breaker
     if config is not None:
-        reason = circuit_breaker_reason(conn, config.policy)
-        if reason:
-            print(f"Circuit breaker: {reason}")
+        if cb_reason:
+            print(f"Circuit breaker: {cb_reason}")
         else:
             print("Circuit breaker: ok")
-        print(f"  max_tasks_per_day: {config.policy.max_tasks_per_day}")
+        print(f"  budget: {daily_used}/{config.policy.max_tasks_per_day} tasks today")
         print(f"  max_consecutive_failures: {config.policy.max_consecutive_failures}")
     else:
         print("Circuit breaker: no config")
+    print()
+
+    # Last run / next run
+    if last_run is not None:
+        print(f"Last run: {last_run['started_at']}")
+        interval = config.policy.loop_interval_seconds if config else 300
+        print(f"Next run: ~{interval}s after last run")
+    else:
+        print("Last run: none")
+        print("Next run: not scheduled")
     print()
 
     # Active leases
@@ -382,6 +409,17 @@ def _cmd_logs(args: argparse.Namespace) -> int:
     return 0
 
 
+_COMPLETED_TASK_STATES = frozenset({"done", "failed", "rejected"})
+
+
+def _extract_task_id_from_path(wt_path: Path) -> str | None:
+    """Extract task ID from a coordinator-managed worktree path.
+
+    Worktree paths are structured as: <root>/worktrees/<repo_id>/<task_id>
+    """
+    return wt_path.name if wt_path.name.startswith("task-") else None
+
+
 def _cmd_cleanup_worktrees(args: argparse.Namespace) -> int:
     root = Path(args.root)
     config, config_error = try_load_config(root)
@@ -390,36 +428,60 @@ def _cmd_cleanup_worktrees(args: argparse.Namespace) -> int:
         return 1
 
     force = getattr(args, "force", False)
+    conn = _open_db(root, args.db)
     removed = 0
     skipped = 0
     errors = 0
 
-    for repo_id, repo_config in config.repos.items():
-        repo_path = repo_config.path
-        if not repo_path.exists():
-            continue
-        worktrees_root = root / "worktrees" / repo_id
-        all_worktrees = list_worktrees(repo_path)
-        for wt in all_worktrees:
-            wt_path = Path(wt.get("worktree", ""))
-            # Skip the main worktree
-            if wt.get("branch", "") == "":
+    try:
+        for repo_id, repo_config in config.repos.items():
+            repo_path = repo_config.path
+            if not repo_path.exists():
                 continue
-            # Only manage worktrees under our worktrees root
-            if not (worktrees_root in wt_path.parents):
-                continue
-            has_changes = worktree_has_uncommitted_changes(wt_path)
-            if has_changes and not force:
-                print(f"skip (uncommitted changes): {wt_path}")
-                skipped += 1
-                continue
-            try:
-                remove_worktree(repo_path, wt_path)
-                print(f"removed: {wt_path}")
-                removed += 1
-            except RuntimeError as exc:
-                print(f"error removing {wt_path}: {exc}", file=sys.stderr)
-                errors += 1
+            worktrees_root = (root / "worktrees" / repo_id).resolve()
+            all_worktrees = list_worktrees(repo_path)
+            for wt in all_worktrees:
+                wt_path = Path(wt.get("worktree", "")).resolve()
+                # Skip the main worktree
+                if wt.get("branch", "") == "":
+                    continue
+                # Only manage worktrees under our worktrees root
+                if not (worktrees_root in wt_path.parents):
+                    continue
+
+                task_id = _extract_task_id_from_path(wt_path)
+                if task_id is None:
+                    print(f"skip (no task ID): {wt_path}")
+                    skipped += 1
+                    continue
+
+                try:
+                    task = get_task(conn, task_id)
+                except KeyError:
+                    print(f"skip (task not found): {wt_path}")
+                    skipped += 1
+                    continue
+
+                if task["state"] not in _COMPLETED_TASK_STATES:
+                    print(f"skip (task {task['state']}): {wt_path}")
+                    skipped += 1
+                    continue
+
+                has_changes = worktree_has_uncommitted_changes(wt_path)
+                if has_changes and not force:
+                    print(f"skip (uncommitted changes): {wt_path}")
+                    skipped += 1
+                    continue
+
+                try:
+                    remove_worktree(repo_path, wt_path, force=force)
+                    print(f"removed: {wt_path}")
+                    removed += 1
+                except RuntimeError as exc:
+                    print(f"error removing {wt_path}: {exc}", file=sys.stderr)
+                    errors += 1
+    finally:
+        conn.close()
 
     print(f"\nremoved: {removed}, skipped: {skipped}, errors: {errors}")
     return 1 if errors else 0
@@ -498,14 +560,16 @@ def _cmd_digest(args: argparse.Namespace) -> int:
         print(f"error: {db_path} does not exist. run doctor?", file=sys.stderr)
         return 1
 
+    conn = _open_db(root, args.db)
     try:
-        with _open_db(db_path) as conn:
-            out_path = write_daily_digest(conn, root)
-            print(f"wrote daily digest to {out_path}")
-            return 0
+        out_path = write_daily_digest(conn, root)
+        print(f"wrote daily digest to {out_path}")
+        return 0
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    finally:
+        conn.close()
 
 
 def build_parser() -> argparse.ArgumentParser:
