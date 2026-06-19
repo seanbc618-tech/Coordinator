@@ -255,9 +255,17 @@ def maybe_replenish_goal(
             pass
 
     # Run Commander to get next batch
-    result = run_commander(
-        conn, config, root, goal["id"], "replenishment", 30,
-    )
+    try:
+        result = run_commander(
+            conn, config, root, goal["id"], "replenishment", 30,
+        )
+    except ValueError as exc:
+        return ReplenishmentResult(
+            "not_eligible",
+            [],
+            [str(exc)],
+            None,
+        )
 
     if not result.succeeded or result.response is None:
         record_commander_failure(conn, goal["id"])

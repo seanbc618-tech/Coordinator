@@ -112,7 +112,8 @@ def build_commander_context(
         sections.append("")
         sections.append("## Linked tasks")
         for t in tasks:
-            sections.append(f"- [{t['state']}] {t['title']} ({t['id']}): {t.get('rationale', '')}")
+            rationale = t['rationale'] if 'rationale' in t.keys() else ''
+            sections.append(f"- [{t['state']}] {t['title']} ({t['id']}): {rationale}")
 
     if messages:
         sections.append("")

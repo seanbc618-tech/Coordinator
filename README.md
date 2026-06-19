@@ -206,3 +206,81 @@ Run `coordinator doctor` to check:
 - Worktree isolation working
 - Budget caps set
 - Human review point configured
+
+## Commander (Goal-Driven Automation)
+
+The Commander adds a conversational front door for setting long-term goals.
+Once confirmed, it autonomously replenishes the task queue.
+
+### Quick Start
+
+```bash
+# Create a goal (draft)
+coordinator goal "Continue the roadmap while preserving dry-run safety"
+
+# Preview and confirm
+coordinator goal confirm
+
+# Check status
+coordinator goal status
+
+# Pause/resume
+coordinator goal pause
+coordinator goal resume
+```
+
+### Chat REPL
+
+```bash
+coordinator chat
+```
+
+Commands: `/status`, `/start`, `/pause`, `/resume`, `/quit`
+
+### How It Works
+
+1. You describe a goal in natural language.
+2. Commander inspects the repo, roadmap, and current state.
+3. It previews the first batch of small tasks.
+4. You confirm once with `coordinator goal confirm` or `/start` in chat.
+5. The daemon automatically replenishes the queue when tasks run out.
+6. The goal completes when Commander marks it done.
+
+### Configuration
+
+Add a Commander agent to `config/agents.toml`:
+
+```toml
+[agents.codex_commander]
+command = "codex exec --sandbox read-only --ask-for-approval never --ephemeral --output-schema {schema_path} \"Read {prompt_path} and return only the required JSON object.\""
+capabilities = ["code", "tests", "docs", "research"]
+max_concurrency = 1
+role = "commander"
+```
+
+Commander policy in `config/policy.toml`:
+
+```toml
+[commander_policy]
+queue_low_watermark = 1
+max_tasks_per_batch = 3
+max_consecutive_failures = 3
+first_retry_seconds = 60
+second_retry_seconds = 300
+roadmap_context_max_chars = 20000
+```
+
+### Safety Boundaries
+
+- Commander has read-only repository access.
+- It cannot commit, push, merge, or write tools.
+- Proposals involving credentials, live trading, or destructive migrations are rejected.
+- Existing repository merge and human-review policies remain authoritative.
+
+### Status
+
+`coordinator status --loop` shows:
+
+- Goal status (none, draft, active, paused, blocked, completed)
+- Commander replenishment state
+- Task counts by state
