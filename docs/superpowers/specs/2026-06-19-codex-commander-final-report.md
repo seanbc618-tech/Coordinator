@@ -1,7 +1,7 @@
 # Codex Commander Final Acceptance Report
 
 > Date: 2026-06-19
-> Status: Re-submitted after reintegration
+> Status: Accepted after joint verification
 > Baseline: `69a7eb2` (`codex/loop-readiness-doctor`)
 > Integration branch: `agent/grok/codex-commander-integration`
 
@@ -135,3 +135,21 @@ git diff --name-only 69a7eb2..HEAD --diff-filter=D         # no deletions
 ```
 
 All gates passed on re-submission.
+
+## Codex Joint Acceptance
+
+Accepted on 2026-06-19 from `agent/grok/codex-commander-integration` at
+`d882ae7` before this report-only acceptance commit.
+
+- The merge base with `codex/loop-readiness-doctor` is exactly `69a7eb2`.
+- The full suite passed: 341 tests in 16.185 seconds.
+- The 46-test baseline-preservation and Commander-risk subset passed.
+- `doctor`, `goal status`, `status --loop`, and `daemon --once` passed real CLI smoke checks.
+- `git diff --check 69a7eb2..HEAD` was clean, with zero deleted files.
+- Migration `005_atomic_task_leases.sql`, atomic claims, discovery/events,
+  worktree cleanup, repository verification inheritance, and the user's repo and
+  agent configuration are preserved.
+- All 11 implementation and reintegration commits were reviewed for scope; no
+  out-of-scope removal or unrelated repository change was found.
+
+**Decision: ACCEPTED. Codex Commander and the Loop Engineering upgrade are ready.**
