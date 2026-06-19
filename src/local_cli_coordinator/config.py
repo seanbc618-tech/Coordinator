@@ -2,6 +2,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import tomllib
 
+SUPPORTED_AGENT_ROLES = frozenset({
+    "worker",
+    "spec_reviewer",
+    "quality_reviewer",
+    "planner",
+    "commander",
+})
+
 SUPPORTED_REVIEW_POLICIES = frozenset({
     "auto",
     "branch_only",
@@ -210,16 +218,20 @@ def load_config(root: Path) -> CoordinatorConfig:
     discovery_sources = _load_discovery_sources(config_dir)
     connectors = _load_connectors(config_dir)
 
-    agents = {
-        agent_id: AgentConfig(
+    agents = {}
+    for agent_id, raw in agents_raw.items():
+        role = str(raw.get("role", "worker"))
+        if role not in SUPPORTED_AGENT_ROLES:
+            raise ValueError(
+                f"agent {agent_id!r} has unsupported role {role!r}"
+            )
+        agents[agent_id] = AgentConfig(
             id=agent_id,
             command=str(raw["command"]),
             capabilities=list(raw.get("capabilities", [])),
             max_concurrency=int(raw.get("max_concurrency", 1)),
-            role=str(raw.get("role", "worker")),
+            role=role,
         )
-        for agent_id, raw in agents_raw.items()
-    }
 
     repos = {
         repo_id: RepoConfig(

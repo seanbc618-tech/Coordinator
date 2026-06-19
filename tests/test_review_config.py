@@ -8,6 +8,7 @@ from local_cli_coordinator.config import (
     CoordinatorConfig,
     PolicyConfig,
     load_config,
+    select_agent_by_role,
 )
 from local_cli_coordinator.engine import _select_agent
 
@@ -140,3 +141,42 @@ class ReviewConfigTests(unittest.TestCase):
             "spec",
         )
         self.assertIsNone(_select_agent(config, ["code"], role="quality_reviewer"))
+
+    def test_load_config_supports_commander_role(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_base_config(
+                root,
+                """
+                [agents.codex]
+                command = "codex exec {prompt_path}"
+                capabilities = ["code", "tests", "docs", "research"]
+                max_concurrency = 1
+                role = "commander"
+                """,
+            )
+
+            config = load_config(root)
+
+        self.assertEqual(config.agents["codex"].role, "commander")
+        self.assertEqual(
+            select_agent_by_role(config, "commander").id,
+            "codex",
+        )
+
+    def test_load_config_rejects_unsupported_agent_role(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_base_config(
+                root,
+                """
+                [agents.bad]
+                command = "bad {prompt_path}"
+                capabilities = ["code"]
+                max_concurrency = 1
+                role = "supervisor"
+                """,
+            )
+
+            with self.assertRaisesRegex(ValueError, "unsupported role"):
+                load_config(root)
