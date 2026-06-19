@@ -2,7 +2,9 @@ import sqlite3
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-import re
+
+from .commander_memory import _sanitize_text, goal_status_summary
+from .goals import active_goal
 
 
 def _parse_changed_files_from_diff(diff_content: str) -> list[str]:
@@ -16,7 +18,6 @@ def _parse_changed_files_from_diff(diff_content: str) -> list[str]:
 
 def generate_digest(conn: sqlite3.Connection, date_str: str, root: Path) -> str:
     """Generate a markdown comprehension digest for the given date (YYYY-MM-DD)."""
-    # Find all tasks updated on this date that are in terminal or blocked states
     rows = conn.execute(
         """
         select id, title, state, repo, goal
@@ -25,21 +26,20 @@ def generate_digest(conn: sqlite3.Connection, date_str: str, root: Path) -> str:
           and state in ('done', 'failed', 'rejected', 'awaiting_human')
         order by state, id
         """,
-        (date_str,)
+        (date_str,),
     ).fetchall()
 
     tasks_by_state: dict[str, list[sqlite3.Row]] = {
         "done": [],
         "failed": [],
         "rejected": [],
-        "awaiting_human": []
+        "awaiting_human": [],
     }
-    task_ids = []
+    task_ids: list[str] = []
     for row in rows:
         tasks_by_state[row["state"]].append(row)
         task_ids.append(row["id"])
 
-    # Gather top changed files across all these tasks by looking at their latest diff artifact
     file_changes = Counter()
     for task_id in task_ids:
         artifact = conn.execute(
@@ -48,23 +48,32 @@ def generate_digest(conn: sqlite3.Connection, date_str: str, root: Path) -> str:
             where task_id = ? and kind = 'diff'
             order by created_at desc limit 1
             """,
-            (task_id,)
+            (task_id,),
         ).fetchone()
+        if artifact is None:
+            continue
 
-        if artifact:
-            diff_path = Path(artifact["path"])
-            if diff_path.is_absolute():
-                actual_path = diff_path
-            else:
-                actual_path = root / diff_path
+        diff_path = Path(artifact["path"])
+        actual_path = diff_path if diff_path.is_absolute() else root / diff_path
+        if not actual_path.exists():
+            continue
 
-            if actual_path.exists():
-                diff_content = actual_path.read_text(errors="replace")
-                files = _parse_changed_files_from_diff(diff_content)
-                for f in files:
-                    file_changes[f] += 1
+        diff_content = actual_path.read_text(errors="replace")
+        for file_path in _parse_changed_files_from_diff(diff_content):
+            file_changes[file_path] += 1
 
     lines = [f"# Loop Comprehension Digest: {date_str}", ""]
+
+    goal_headline, goal_detail = goal_status_summary(conn)
+    lines.extend([
+        "## Active Goal Progress",
+        goal_headline,
+        goal_detail,
+    ])
+    goal = active_goal(conn)
+    if goal is not None and goal["progress_summary"]:
+        lines.append(f"Progress: {_sanitize_text(goal['progress_summary'])}")
+    lines.append("")
 
     def _render_section(state_name: str, display_name: str) -> None:
         tasks = tasks_by_state[state_name]
@@ -72,11 +81,10 @@ def generate_digest(conn: sqlite3.Connection, date_str: str, root: Path) -> str:
         if not tasks:
             lines.append("No tasks.")
         else:
-            for t in tasks:
-                lines.append(f"- **{t['id']}** ({t['repo']}): {t['title']}")
-                if t['goal']:
-                    # Adding a little padding for goal to make it readable
-                    lines.append(f"  - **Goal:** {t['goal']}")
+            for task in tasks:
+                lines.append(f"- **{task['id']}** ({task['repo']}): {task['title']}")
+                if task["goal"]:
+                    lines.append(f"  - **Goal:** {task['goal']}")
         lines.append("")
 
     _render_section("done", "Completed Tasks")
@@ -89,22 +97,24 @@ def generate_digest(conn: sqlite3.Connection, date_str: str, root: Path) -> str:
         lines.append("No files changed.")
     else:
         for file_path, count in file_changes.most_common(10):
-            lines.append(f"- `{file_path}` (touched by {count} task{'s' if count > 1 else ''})")
+            suffix = "s" if count > 1 else ""
+            lines.append(f"- `{file_path}` (touched by {count} task{suffix})")
     lines.append("")
 
     return "\n".join(lines)
 
 
-def write_daily_digest(conn: sqlite3.Connection, root: Path, date_str: str | None = None) -> Path:
+def write_daily_digest(
+    conn: sqlite3.Connection,
+    root: Path,
+    date_str: str | None = None,
+) -> Path:
     """Write the daily digest to state/digests/YYYY-MM-DD.md and return its path."""
     if date_str is None:
         date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     digest_dir = root / "state" / "digests"
     digest_dir.mkdir(parents=True, exist_ok=True)
-
     out_path = digest_dir / f"{date_str}.md"
-    content = generate_digest(conn, date_str, root)
-    out_path.write_text(content)
-
+    out_path.write_text(generate_digest(conn, date_str, root), encoding="utf-8")
     return out_path

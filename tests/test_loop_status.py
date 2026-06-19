@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from local_cli_coordinator.db import connect, init_db
+from local_cli_coordinator.goals import create_goal, transition_goal
 from tests.helpers import run_cli
 
 
@@ -155,3 +156,32 @@ class LoopStatusTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Last run:", result.stdout)
         self.assertIn("Next run: ~600s after last run", result.stdout)
+
+    def test_empty_active_goal_waits_for_replenishment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_config(root)
+            conn = connect(root / "coordinator.db")
+            init_db(conn)
+            goal_id = create_goal(conn, "Roadmap", "Finish roadmap", [], [], ["demo"])
+            transition_goal(conn, goal_id, "active")
+            conn.close()
+
+            result = run_cli("--root", str(root), "status", "--loop")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Goal: active", result.stdout)
+        self.assertIn("waiting for Commander replenishment", result.stdout)
+
+    def test_no_goal_requests_long_term_goal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_config(root)
+            conn = connect(root / "coordinator.db")
+            init_db(conn)
+            conn.close()
+
+            result = run_cli("--root", str(root), "status", "--loop")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("waiting for a long-term goal", result.stdout)

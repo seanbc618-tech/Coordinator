@@ -39,6 +39,11 @@ from .commander_service import (
 from .engine import run_continuous_daemon, run_daemon_cycle
 from .goals import active_goal
 from .locks import acquire_lock, lockfile_path, release_lock
+from .commander_memory import (
+    COMMANDER_MEMORY_RELATIVE_PATH,
+    commander_memory_path,
+    goal_status_summary,
+)
 from .memory import LOOP_MEMORY_RELATIVE_PATH, loop_memory_path
 from .policy import check_task_draft
 from .readiness import check_loop_readiness
@@ -214,19 +219,9 @@ def _cmd_status_loop(args: argparse.Namespace) -> int:
         print()
 
         # Goal status
-        from .goals import active_goal, linked_task_counts
-
-        goal = active_goal(conn)
-        if goal is None:
-            print("Goal: none (waiting for a long-term goal)")
-        else:
-            goal_counts = linked_task_counts(conn, goal["id"])
-            ready = goal_counts.get("ready", 0)
-            if goal["status"] == "active" and ready == 0:
-                print(f"Goal: {goal['status']} (waiting for Commander replenishment)")
-            else:
-                print(f"Goal: {goal['status']}")
-            print(f"  {goal['title']}")
+        goal_headline, goal_detail = goal_status_summary(conn)
+        print(goal_headline)
+        print(f"  {goal_detail}")
         print()
 
         # Task counts
@@ -241,8 +236,16 @@ def _cmd_status_loop(args: argparse.Namespace) -> int:
             print("\nHuman review pending: 0")
 
         # Memory
+        memory_lines: list[str] = []
         if loop_memory_path(root).exists():
-            print(f"\nLoop memory: {LOOP_MEMORY_RELATIVE_PATH.as_posix()}")
+            memory_lines.append(f"Loop memory: {LOOP_MEMORY_RELATIVE_PATH.as_posix()}")
+        if commander_memory_path(root).exists():
+            memory_lines.append(
+                f"Commander memory: {COMMANDER_MEMORY_RELATIVE_PATH.as_posix()}"
+            )
+        if memory_lines:
+            print()
+            print("\n".join(memory_lines))
     finally:
         conn.close()
     return 0
@@ -490,6 +493,24 @@ def _cmd_chat(args: argparse.Namespace) -> int:
                 print("Goal refinement not yet implemented. Use /start to confirm.")
     finally:
         conn.close()
+    return 0
+
+
+def _cmd_digest(args: argparse.Namespace) -> int:
+    from .digest import write_daily_digest
+
+    root = Path(args.root)
+    db_path = _db_path(root, args.db)
+    if not db_path.exists():
+        print(f"database does not exist: {db_path}", file=sys.stderr)
+        return 1
+
+    conn = _open_db(root, args.db)
+    try:
+        out_path = write_daily_digest(conn, root)
+    finally:
+        conn.close()
+    print(f"wrote daily digest to {out_path}")
     return 0
 
 
