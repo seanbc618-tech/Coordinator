@@ -1,5 +1,23 @@
-[agents.echo]
-command = "python -c \"from pathlib import Path; Path('agent-output.txt').write_text('done')\""
-capabilities = ["code", "tests", "docs", "planner"]
+[agents.claude_worker]
+command = "claude --print --permission-mode auto --no-session-persistence \"Read and execute all instructions in {prompt_path}. Work only in the current worktree.\""
+capabilities = ["code", "tests", "docs", "research"]
 max_concurrency = 1
 role = "worker"
+
+[agents.grok_spec_reviewer]
+command = "grok --prompt-file {prompt_path} --permission-mode plan --no-subagents --no-memory"
+capabilities = ["code", "tests", "docs", "research"]
+max_concurrency = 1
+role = "spec_reviewer"
+
+[agents.pi_quality_reviewer]
+command = "pi --print --no-session --no-approve --tools read,bash,grep,find,ls @{prompt_path}"
+capabilities = ["code", "tests", "docs", "research"]
+max_concurrency = 1
+role = "quality_reviewer"
+
+[agents.codex_planner]
+command = "codex exec --sandbox read-only --ask-for-approval never --ephemeral \"Read {prompt_path} and return exactly the requested planning output.\""
+capabilities = ["code", "tests", "docs", "research"]
+max_concurrency = 1
+role = "planner"
