@@ -141,6 +141,7 @@ class CommanderFailureTests(unittest.TestCase):
         self.assertEqual(goal["status"], "active")
         self.assertEqual(goal["commander_failures"], 1)
         self.assertTrue(goal["commander_retry_after"])
+        self.assertEqual(mock_run.call_args.args[5], 120)
 
     def test_third_failure_pauses(self) -> None:
         for _ in range(3):

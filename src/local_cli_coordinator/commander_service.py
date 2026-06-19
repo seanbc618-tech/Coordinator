@@ -21,6 +21,7 @@ from .commander_runner import (
 from .config import CoordinatorConfig
 from .db import create_task, next_ready_task
 from .goals import (
+    add_commander_message,
     active_goal,
     clear_commander_failures,
     create_goal,
@@ -33,12 +34,15 @@ from .goals import (
     update_goal_progress,
 )
 
+COMMANDER_TIMEOUT_SECONDS = 120
+
 
 @dataclass(frozen=True)
 class GoalPlanPreview:
     goal_id: int
     progress_summary: str
     proposals: list[CommanderTaskProposal]
+    error: str | None = None
 
 
 def create_and_preview_goal(
@@ -67,9 +71,17 @@ def create_and_preview_goal(
     )
 
     # Run Commander to get initial plan
-    result = run_commander(
-        conn, config, root, goal_id, "initial_plan", 30,
-    )
+    try:
+        result = run_commander(
+            conn, config, root, goal_id, "initial_plan", COMMANDER_TIMEOUT_SECONDS,
+        )
+    except (CommanderRunActiveError, ValueError) as exc:
+        return GoalPlanPreview(
+            goal_id=goal_id,
+            progress_summary="Commander preview failed",
+            proposals=[],
+            error=str(exc),
+        )
 
     if not result.succeeded or result.response is None:
         # Still return the goal even if Commander failed
@@ -77,12 +89,14 @@ def create_and_preview_goal(
             goal_id=goal_id,
             progress_summary=result.error or "Commander failed",
             proposals=[],
+            error=result.error or "Commander failed",
         )
 
     return GoalPlanPreview(
         goal_id=goal_id,
         progress_summary=result.response.progress_summary,
         proposals=result.response.tasks,
+        error=None,
     )
 
 
@@ -111,9 +125,49 @@ def confirm_goal(
     run = get_latest_commander_run(conn, goal_id)
     if run is None:
         return "no preview available; create a goal first"
+    if run["status"] != "succeeded":
+        detail = run["error"] or f"status {run['status']}"
+        return f"preview failed; goal remains draft: {detail}"
 
     transition_goal(conn, goal_id, "active")
     return f"goal {goal_id} activated"
+
+
+def send_chat_message(
+    conn: sqlite3.Connection,
+    config: CoordinatorConfig,
+    root: Path,
+    goal_id: int,
+    content: str,
+) -> str:
+    """Send a user message to Commander and return its visible response."""
+    add_commander_message(conn, goal_id, "user", content)
+    try:
+        result = run_commander(
+            conn, config, root, goal_id, "chat", COMMANDER_TIMEOUT_SECONDS,
+        )
+    except CommanderRunActiveError:
+        return "Commander is already running; try again after the current run finishes."
+    except ValueError as exc:
+        return f"Commander unavailable: {exc}"
+
+    if not result.succeeded or result.response is None:
+        message = f"Commander failed: {result.error or 'unknown error'}"
+        add_commander_message(conn, goal_id, "assistant", message)
+        return message
+
+    response = result.response
+    admission = admit_commander_response(conn, config, root, goal_id, response)
+    update_goal_progress(conn, goal_id, response.progress_summary)
+
+    parts = [f"Commander: {response.progress_summary}"]
+    if admission.accepted_task_ids:
+        parts.append(f"admitted {len(admission.accepted_task_ids)} task(s)")
+    if admission.rejection_reasons:
+        parts.append("rejected: " + "; ".join(admission.rejection_reasons))
+    message = " | ".join(parts)
+    add_commander_message(conn, goal_id, "assistant", message)
+    return message
 
 
 def pause_goal(
@@ -259,7 +313,7 @@ def maybe_replenish_goal(
     # Run Commander to get next batch
     try:
         result = run_commander(
-            conn, config, root, goal["id"], "replenishment", 30,
+            conn, config, root, goal["id"], "replenishment", COMMANDER_TIMEOUT_SECONDS,
         )
     except CommanderRunActiveError:
         return ReplenishmentResult("commander_run_active", [], [], None)

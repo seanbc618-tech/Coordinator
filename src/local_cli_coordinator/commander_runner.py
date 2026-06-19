@@ -137,6 +137,16 @@ def build_commander_context(
     for repo_id, repo in config.repos.items():
         sections.append(f"- {repo_id}: {repo.path} (verify: {repo.verify_commands})")
 
+    sections.append("")
+    sections.append("## Worker capability contract")
+    workers = [agent for agent in config.agents.values() if agent.role == "worker"]
+    for worker in workers:
+        sections.append(f"- {worker.id}: {', '.join(worker.capabilities)}")
+    sections.append(
+        "Every proposed task's capabilities must be an exact subset of one worker's "
+        "listed capabilities. Use only these exact capability names."
+    )
+
     # Budget info
     sections.append("")
     sections.append("## Budgets")
@@ -175,6 +185,9 @@ def _render_command_tokens(
 ) -> list[str]:
     """Render template tokens in the agent command."""
     tokens = shlex.split(command)
+    prompt_path = prompt_path.resolve()
+    schema_path = schema_path.resolve()
+    repo_path = repo_path.resolve()
     return [
         token
         .replace("{prompt_path}", str(prompt_path))
@@ -511,7 +524,11 @@ def run_commander(
     duration = time.monotonic() - start_time
 
     raw_output_path = tmp_dir / "raw.txt"
-    raw_output_path.write_text(result.stdout)
+    raw_text = result.stdout
+    if result.stderr:
+        separator = "\n" if raw_text and not raw_text.endswith("\n") else ""
+        raw_text = f"{raw_text}{separator}[stderr]\n{result.stderr}"
+    raw_output_path.write_text(raw_text)
 
     response: CommanderResponse | None = None
     parsed_output_path: Path | None = None
@@ -520,7 +537,10 @@ def run_commander(
     if result.timed_out:
         error = "timeout"
     elif result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
         error = f"exit code {result.returncode}"
+        if detail:
+            error = f"{error}: {detail[-2000:]}"
     else:
         try:
             response = parse_commander_response(result.stdout)

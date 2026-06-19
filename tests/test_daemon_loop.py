@@ -7,12 +7,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tests.helpers import init_git_repo, run_cli
-from local_cli_coordinator.cli import _cmd_daemon
+from local_cli_coordinator.cli import _cmd_daemon, _format_daemon_cycle_message
 from local_cli_coordinator.config import DiscoverySourceConfig, load_config
 from local_cli_coordinator.db import connect, get_task, init_db, list_tasks
 from local_cli_coordinator.discovery import list_findings, save_finding
 from local_cli_coordinator.engine import (
     ContinuousDaemonResult,
+    DaemonCycleResult,
     run_continuous_daemon,
     run_daemon_cycle,
     run_discovery_phase,
@@ -36,6 +37,14 @@ Ship loop import.
 
 - Works.
 """
+
+
+class DaemonMessageTests(unittest.TestCase):
+    def test_all_rejected_commander_batch_is_visible(self) -> None:
+        result = DaemonCycleResult(
+            0, 0, 0, 0, 0, 0, "no ready tasks", 0, "all_rejected",
+        )
+        self.assertIn("commander proposals rejected", _format_daemon_cycle_message(result))
 
 
 def write_config(root: Path, *, max_daemon_runtime_seconds: int = 3600) -> None:

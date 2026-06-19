@@ -23,6 +23,7 @@ from local_cli_coordinator.commander_runner import (
     build_commander_context,
     parse_commander_response,
     run_commander,
+    _render_command_tokens,
 )
 
 _PYTHON = _sys.executable
@@ -73,6 +74,13 @@ def _test_config(tmp_dir: Path, command: str | None = None, repo_path: Path | No
                 capabilities=["code", "tests", "docs", "research"],
                 max_concurrency=1,
                 role="commander",
+            ),
+            "worker": AgentConfig(
+                id="worker",
+                command="echo done",
+                capabilities=["code", "tests", "docs", "research"],
+                max_concurrency=1,
+                role="worker",
             ),
         },
         repos={
@@ -163,6 +171,16 @@ class CommanderRunnerTests(unittest.TestCase):
         self.assertIsNotNone(result.parsed_output_path)
         self.assertTrue(result.parsed_output_path.exists())
 
+    def test_command_template_paths_are_absolute(self) -> None:
+        tokens = _render_command_tokens(
+            "commander {prompt_path} {schema_path} {repo_path}",
+            Path("runs/prompt.md"),
+            Path("runs/schema.json"),
+            Path("repo"),
+        )
+        for token in tokens[1:]:
+            self.assertTrue(Path(token).is_absolute(), token)
+
     def test_runner_refuses_worker_role(self) -> None:
         with self.assertRaisesRegex(ValueError, "commander"):
             run_commander(
@@ -195,14 +213,32 @@ class CommanderRunnerTests(unittest.TestCase):
         self.assertEqual(result.error, "timeout")
 
     def test_runner_handles_nonzero_exit(self) -> None:
-        config = _test_config(self.root, command=f"{_PYTHON} -c 'import sys; sys.exit(1)'", repo_path=self.repo)
+        script = self.root / "failing_commander.py"
+        script.write_text(
+            "import sys\nprint('unsupported option: --old-flag', file=sys.stderr)\nsys.exit(2)\n"
+        )
+        config = _test_config(self.root, command=f"{_PYTHON} {script}", repo_path=self.repo)
         result = run_commander(
             self.conn, config, self.root,
             self.goal_id, "initial_plan", 30,
         )
         self.assertFalse(result.succeeded)
-        self.assertEqual(result.exit_code, 1)
-        self.assertIn("exit code", result.error)
+        self.assertEqual(result.exit_code, 2)
+        self.assertIn("unsupported option: --old-flag", result.error)
+        self.assertIn("unsupported option: --old-flag", result.raw_output_path.read_text())
+
+    def test_nonzero_error_keeps_stderr_tail(self) -> None:
+        script = self.root / "long_failing_commander.py"
+        script.write_text(
+            "import sys\nprint('x' * 1500, file=sys.stderr)\n"
+            "print('ROOT CAUSE AT END', file=sys.stderr)\nsys.exit(1)\n"
+        )
+        config = _test_config(self.root, command=f"{_PYTHON} {script}", repo_path=self.repo)
+        result = run_commander(
+            self.conn, config, self.root,
+            self.goal_id, "initial_plan", 30,
+        )
+        self.assertIn("ROOT CAUSE AT END", result.error)
 
     def test_runner_handles_invalid_json(self) -> None:
         config = _test_config(self.root, command=f"{_PYTHON} -c \"print('not json')\"", repo_path=self.repo)
@@ -390,6 +426,13 @@ class CommanderContextTests(unittest.TestCase):
         )
         self.assertIn("Finish roadmap", context)
         self.assertIn("Roadmap", context)
+
+    def test_context_constrains_proposals_to_worker_capabilities(self) -> None:
+        context = build_commander_context(
+            self.conn, self.config, self.root, self.goal_id,
+        )
+        self.assertIn("worker: code, tests, docs, research", context)
+        self.assertIn("exact subset", context)
 
     def test_context_includes_rejected_fingerprints(self) -> None:
         context = build_commander_context(

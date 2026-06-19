@@ -78,6 +78,8 @@ run_discovery_before_tasks = true
         conn.close()
         self.assertIsNotNone(goal)
         self.assertEqual(goal["status"], "draft")
+        self.assertIn("preview failed", result.stdout.lower())
+        self.assertNotIn("goal confirm", result.stdout.lower())
 
 
 class GoalConfirmTests(unittest.TestCase):
@@ -154,6 +156,23 @@ run_discovery_before_tasks = true
         goal = get_goal(conn, self.goal_id)
         conn.close()
         self.assertEqual(goal["status"], "active")
+
+    def test_goal_confirm_rejects_failed_preview(self) -> None:
+        conn = connect(self.root / "coordinator.db")
+        init_db(conn)
+        from local_cli_coordinator.goals import start_commander_run, finish_commander_run
+        run_id = start_commander_run(conn, self.goal_id, "initial_plan", 1, Path("/tmp/p.md"))
+        finish_commander_run(conn, run_id, status="failed", exit_code=2, error="unsupported option")
+        conn.close()
+
+        result = run_cli("--root", str(self.root), "goal", "confirm")
+        self.assertIn("preview failed", result.stdout.lower())
+
+        conn = connect(self.root / "coordinator.db")
+        init_db(conn)
+        goal = get_goal(conn, self.goal_id)
+        conn.close()
+        self.assertEqual(goal["status"], "draft")
 
 
 class GoalPauseResumeAbandonTests(unittest.TestCase):

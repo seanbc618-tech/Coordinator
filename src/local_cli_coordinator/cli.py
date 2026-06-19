@@ -35,6 +35,7 @@ from .commander_service import (
     goal_status,
     pause_goal,
     resume_goal,
+    send_chat_message,
 )
 from .engine import run_continuous_daemon, run_daemon_cycle
 from .goals import active_goal
@@ -355,6 +356,8 @@ def _format_daemon_cycle_message(result) -> str:
         parts.append(f"{result.commander_tasks_admitted} commander tasks admitted")
     if result.commander_status and result.commander_status.startswith("replenishment_error:"):
         parts.append(result.commander_status)
+    elif result.commander_status == "all_rejected":
+        parts.append("commander proposals rejected by admission policy")
     if parts:
         return ", ".join(parts)
     if result.stop_reason and result.stop_reason != "no ready tasks":
@@ -438,6 +441,10 @@ def _cmd_goal(args: argparse.Namespace) -> int:
                 print("       coordinator goal confirm|status|pause|resume|abandon")
                 return 1
             preview = create_and_preview_goal(conn, config, root, objective)
+            if preview.error:
+                print(f"Goal draft {preview.goal_id}: preview failed: {preview.error}")
+                print("Fix the Commander error, then abandon this draft and create the goal again.")
+                return 1
             print(f"Goal draft {preview.goal_id}: {preview.progress_summary}")
             for i, task in enumerate(preview.proposals, 1):
                 print(f"  {i}. {task.title} ({task.repo})")
@@ -491,8 +498,7 @@ def _cmd_chat(args: argparse.Namespace) -> int:
             elif line == "/resume":
                 print(resume_goal(conn))
             else:
-                # Refine the goal with new input
-                print("Goal refinement not yet implemented. Use /start to confirm.")
+                print(send_chat_message(conn, config, root, goal["id"], line))
     finally:
         conn.close()
     return 0

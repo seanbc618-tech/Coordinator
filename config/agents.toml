@@ -17,13 +17,13 @@ max_concurrency = 1
 role = "quality_reviewer"
 
 [agents.codex_planner]
-command = "codex exec --sandbox read-only --ask-for-approval never --ephemeral \"Read {prompt_path} and return exactly the requested planning output.\""
+command = "codex exec --ignore-user-config --model gpt-5.5 --sandbox read-only --ephemeral \"Read {prompt_path} and return exactly the requested planning output.\""
 capabilities = ["code", "tests", "docs", "research"]
 max_concurrency = 1
 role = "planner"
 
 [agents.codex_commander]
-command = "codex exec --sandbox read-only --ask-for-approval never --ephemeral --output-schema {schema_path} \"Read {prompt_path} and return only the required JSON object.\""
+command = "codex exec --ignore-user-config --model gpt-5.5 --sandbox read-only --ephemeral --output-schema {schema_path} \"Read {prompt_path} and return only the required JSON object.\""
 capabilities = ["code", "tests", "docs", "research"]
 max_concurrency = 1
 role = "commander"

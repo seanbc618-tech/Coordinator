@@ -127,6 +127,26 @@ run_discovery_before_tasks = true
         printed = " ".join(str(c) for c in mock_print.call_args_list)
         self.assertIn("draft", printed.lower())
 
+    def test_chat_sends_plain_text_to_commander(self) -> None:
+        conn = connect(self.root / "coordinator.db")
+        init_db(conn)
+        goal_id = create_goal(conn, "Roadmap", "Finish roadmap")
+        run_id = start_commander_run(conn, goal_id, "initial_plan", 1, Path("/tmp/p.md"))
+        finish_commander_run(conn, run_id, status="succeeded")
+        transition_goal(conn, goal_id, "active")
+        conn.close()
+
+        with patch("builtins.input", side_effect=["你好", "/quit"]):
+            with patch("local_cli_coordinator.cli.send_chat_message", return_value="Commander: 收到") as send:
+                with patch("builtins.print") as mock_print:
+                    result = _cmd_chat(_make_args(self.root))
+
+        self.assertEqual(result, 0)
+        send.assert_called_once()
+        self.assertEqual(send.call_args.args[-1], "你好")
+        printed = " ".join(str(c) for c in mock_print.call_args_list)
+        self.assertIn("Commander: 收到", printed)
+
 
 if __name__ == "__main__":
     unittest.main()
