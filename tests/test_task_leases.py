@@ -4,7 +4,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from local_cli_coordinator.config import AgentConfig, CoordinatorConfig, PolicyConfig
 from local_cli_coordinator.db import (
+    MIGRATIONS_DIR,
     acquire_task_lease,
     active_lease_count,
     claim_next_ready_task,
@@ -13,6 +15,7 @@ from local_cli_coordinator.db import (
     init_db,
     release_task_lease,
 )
+from local_cli_coordinator.engine import _claim_next_ready_task
 
 
 def _db(root: Path):
@@ -119,6 +122,100 @@ def _parallel_acquire(db_path: str, task_id: str, agent_id: str, queue) -> None:
     init_db(conn)
     queue.put(acquire_task_lease(conn, task_id, agent_id))
     conn.close()
+
+
+class LeaseMigrationTests(unittest.TestCase):
+    def test_migration_dedupes_duplicate_active_leases(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            partial_migrations = root / "partial_migrations"
+            partial_migrations.mkdir()
+            for migration in sorted(MIGRATIONS_DIR.glob("00[1-4]_*.sql")):
+                partial_migrations.joinpath(migration.name).write_text(
+                    migration.read_text(encoding="utf-8"),
+                    encoding="utf-8",
+                )
+
+            conn = connect(root / "coordinator.db")
+            init_db(conn, partial_migrations)
+            task_id = _create_ready_task(conn)
+            conn.execute(
+                "insert into task_leases(task_id, agent_id, expires_at) values (?, ?, ?)",
+                (task_id, "agent-1", "2099-01-01T00:00:00+00:00"),
+            )
+            conn.execute(
+                "insert into task_leases(task_id, agent_id, expires_at) values (?, ?, ?)",
+                (task_id, "agent-2", "2099-01-01T00:00:00+00:00"),
+            )
+            conn.commit()
+
+            init_db(conn, MIGRATIONS_DIR)
+            active = conn.execute(
+                "select count(*) as cnt from task_leases where task_id = ? and released_at is null",
+                (task_id,),
+            ).fetchone()["cnt"]
+            conn.close()
+
+        self.assertEqual(active, 1)
+
+
+class CapabilityLeaseTests(unittest.TestCase):
+    def test_claim_records_lease_for_capability_matched_agent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            conn = _db(root)
+            task_id = create_task(
+                conn,
+                title="Docs task",
+                repo="demo",
+                source_path="tasks/inbox/docs.md",
+                priority="normal",
+                capabilities=["docs"],
+                goal="Write docs.",
+                acceptance_criteria=["Done."],
+                verification_commands=[],
+            )
+            config = CoordinatorConfig(
+                agents={
+                    "code-worker": AgentConfig(
+                        id="code-worker",
+                        command="echo",
+                        capabilities=["code"],
+                        max_concurrency=1,
+                        role="worker",
+                    ),
+                    "docs-worker": AgentConfig(
+                        id="docs-worker",
+                        command="echo",
+                        capabilities=["docs"],
+                        max_concurrency=1,
+                        role="worker",
+                    ),
+                },
+                repos={},
+                policy=PolicyConfig(
+                    require_single_repo=True,
+                    require_acceptance_criteria=True,
+                    require_verification_commands=False,
+                    require_handoff_summary=False,
+                    max_files_touched=3,
+                    max_expected_minutes=30,
+                    max_attempts=3,
+                    split_if_touches_multiple_subsystems=True,
+                    split_if_research_and_code_are_mixed=True,
+                ),
+            )
+
+            task, agent_id = _claim_next_ready_task(conn, config)
+            lease = conn.execute(
+                "select agent_id from task_leases where task_id = ? and released_at is null",
+                (task_id,),
+            ).fetchone()
+            conn.close()
+
+        self.assertIsNotNone(task)
+        self.assertEqual(agent_id, "docs-worker")
+        self.assertEqual(lease["agent_id"], "docs-worker")
 
 
 class ConcurrentLeaseTests(unittest.TestCase):

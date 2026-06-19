@@ -3,6 +3,7 @@ import textwrap
 import unittest
 from pathlib import Path
 
+from local_cli_coordinator.db import connect, init_db
 from tests.helpers import run_cli
 
 
@@ -120,3 +121,37 @@ class LoopStatusTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("budget:", result.stdout)
         self.assertIn("tasks today", result.stdout)
+
+    def test_status_loop_uses_daemon_policy_interval_with_last_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_config(root)
+            (root / "config" / "policy.toml").write_text(textwrap.dedent("""
+                [task_policy]
+                require_single_repo = true
+                require_acceptance_criteria = true
+                require_verification_commands = true
+                require_handoff_summary = false
+                max_files_touched = 3
+                max_expected_minutes = 30
+                max_attempts = 3
+                split_if_touches_multiple_subsystems = true
+                split_if_research_and_code_are_mixed = true
+
+                [daemon_policy]
+                loop_interval_seconds = 600
+            """).strip())
+            conn = connect(root / "coordinator.db")
+            init_db(conn)
+            conn.execute(
+                "insert into daemon_runs(started_at, ended_at, tasks_processed, failures) "
+                "values ('2026-06-19T10:00:00Z', '2026-06-19T10:05:00Z', 1, 0)"
+            )
+            conn.commit()
+            conn.close()
+
+            result = run_cli("--root", str(root), "status", "--loop")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Last run:", result.stdout)
+        self.assertIn("Next run: ~600s after last run", result.stdout)

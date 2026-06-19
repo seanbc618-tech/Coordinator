@@ -9,10 +9,11 @@ import sqlite3
 from .agent import run_agent
 from .config import CoordinatorConfig, RepoConfig, select_agent_by_role
 from .db import (
+    _try_acquire_task_lease,
+    active_lease_count,
     add_artifact,
     artifact_kinds,
     circuit_breaker_reason,
-    claim_next_ready_task,
     create_task,
     get_task,
     release_task_lease,
@@ -187,23 +188,81 @@ def _pause_for_human_review_before_merge(
     return True
 
 
-def _daemon_claim_limits(
-    config: CoordinatorConfig,
-    agent_id: str | None = None,
-) -> tuple[str, int, int]:
-    if agent_id is not None:
-        agent = config.agents[agent_id]
-        max_global = sum(item.max_concurrency for item in config.agents.values())
-        return agent_id, agent.max_concurrency, max_global
-
+def _fallback_claim_agent_id(config: CoordinatorConfig) -> str:
     if not config.agents:
-        return "daemon", 1, 1
-
+        return "daemon"
     worker = select_agent_by_role(config, "worker")
-    if worker is None:
-        worker = next(iter(config.agents.values()))
-    max_global = sum(item.max_concurrency for item in config.agents.values())
-    return worker.id, worker.max_concurrency, max_global
+    if worker is not None:
+        return worker.id
+    return next(iter(config.agents.values())).id
+
+
+def _claim_next_ready_task(
+    conn: sqlite3.Connection,
+    config: CoordinatorConfig,
+    *,
+    forced_agent_id: str | None = None,
+) -> tuple[dict | None, str | None]:
+    if not config.agents:
+        max_global = 1
+    else:
+        max_global = sum(item.max_concurrency for item in config.agents.values())
+
+    conn.execute("begin immediate")
+    try:
+        if active_lease_count(conn) >= max_global:
+            conn.commit()
+            return None, None
+
+        candidates = conn.execute(
+            "select * from tasks where state = 'ready' order by created_at, id"
+        ).fetchall()
+
+        for task in candidates:
+            capabilities = [part for part in task["capabilities"].split(",") if part]
+            if forced_agent_id is not None:
+                agent = config.agents.get(forced_agent_id)
+                if agent is None:
+                    conn.commit()
+                    return None, None
+                if capabilities and not set(capabilities).issubset(set(agent.capabilities)):
+                    continue
+            else:
+                agent = _select_agent(config, capabilities)
+            if agent is None:
+                continue
+            if active_lease_count(conn, agent.id) >= agent.max_concurrency:
+                continue
+            try:
+                if _try_acquire_task_lease(conn, task["id"], agent.id):
+                    conn.commit()
+                    return dict(task), agent.id
+            except sqlite3.IntegrityError:
+                continue
+
+        if forced_agent_id is not None:
+            conn.commit()
+            return None, None
+
+        fallback_id = _fallback_claim_agent_id(config)
+        for task in candidates:
+            capabilities = [part for part in task["capabilities"].split(",") if part]
+            if _select_agent(config, capabilities) is not None:
+                continue
+            if active_lease_count(conn) >= max_global:
+                break
+            try:
+                if _try_acquire_task_lease(conn, task["id"], fallback_id):
+                    conn.commit()
+                    return dict(task), fallback_id
+            except sqlite3.IntegrityError:
+                continue
+
+        conn.commit()
+        return None, None
+    except sqlite3.Error:
+        conn.rollback()
+        raise
 
 
 def _write_review_packet_if_needed(
@@ -391,7 +450,6 @@ def run_daemon_cycle(
     blocked = 0
     skipped = 0
     limit = max(1, config.policy.max_tasks_per_run)
-    agent_id, max_agent_concurrency, max_global_concurrency = _daemon_claim_limits(config)
 
     for _ in range(limit):
         stop_reason = circuit_breaker_reason(conn, config.policy)
@@ -406,13 +464,8 @@ def run_daemon_cycle(
                 stop_reason,
             )
 
-        task = claim_next_ready_task(
-            conn,
-            agent_id,
-            max_agent_concurrency=max_agent_concurrency,
-            max_global_concurrency=max_global_concurrency,
-        )
-        if task is None:
+        task, agent_id = _claim_next_ready_task(conn, config)
+        if task is None or agent_id is None:
             break
 
         if task["state"] == "blocked":
@@ -422,7 +475,7 @@ def run_daemon_cycle(
             continue
 
         try:
-            processed = _process_task(conn, config, root, dict(task), agent_id)
+            processed = _process_task(conn, config, root, task, agent_id)
         finally:
             release_task_lease(conn, task["id"])
 
@@ -509,20 +562,15 @@ def run_one_ready_task(
 ) -> bool:
     if circuit_breaker_reason(conn, config.policy) is not None:
         return False
-    claim_agent_id, max_agent_concurrency, max_global_concurrency = _daemon_claim_limits(
-        config,
-        agent_id,
-    )
-    task = claim_next_ready_task(
+    task, claim_agent_id = _claim_next_ready_task(
         conn,
-        claim_agent_id,
-        max_agent_concurrency=max_agent_concurrency,
-        max_global_concurrency=max_global_concurrency,
+        config,
+        forced_agent_id=agent_id,
     )
-    if task is None:
+    if task is None or claim_agent_id is None:
         return False
     try:
-        return _process_task(conn, config, root, dict(task), claim_agent_id)
+        return _process_task(conn, config, root, task, claim_agent_id)
     finally:
         release_task_lease(conn, task["id"])
 

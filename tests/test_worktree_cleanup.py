@@ -124,14 +124,37 @@ class WorktreeCleanupTests(unittest.TestCase):
             self.assertIn("skip (uncommitted changes)", result.stdout)
             self.assertIn("removed: 0", result.stdout)
 
-    def test_cleanup_force_removes_completed_dirty_worktree(self) -> None:
-        """--force removes a completed task's dirty worktree."""
+    def test_cleanup_skips_failed_task_worktree_even_with_force(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             repo = root / "repo"
             init_git_repo(repo)
             _write_config(root, repo)
-            _init_db_with_task(root, "task-dirty2", "failed")
+            _init_db_with_task(root, "task-failed1", "failed")
+
+            worktrees_root = root / "worktrees" / "demo"
+            create_worktree(
+                repo_path=repo,
+                worktrees_root=worktrees_root,
+                task_id="task-failed1",
+                branch_name="coord/task-failed1",
+            )
+
+            result = run_cli(
+                "--root", str(root), "repo", "cleanup-worktrees", "--force"
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("skip (task failed)", result.stdout)
+            self.assertIn("removed: 0", result.stdout)
+
+    def test_cleanup_force_removes_completed_dirty_worktree(self) -> None:
+        """--force removes a done task's dirty worktree."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            init_git_repo(repo)
+            _write_config(root, repo)
+            _init_db_with_task(root, "task-dirty2", "done")
 
             worktrees_root = root / "worktrees" / "demo"
             wt_path = create_worktree(

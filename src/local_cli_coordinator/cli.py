@@ -193,7 +193,7 @@ def _cmd_status_loop(args: argparse.Namespace) -> int:
     # Last run / next run
     if last_run is not None:
         print(f"Last run: {last_run['started_at']}")
-        interval = config.policy.loop_interval_seconds if config else 300
+        interval = config.daemon_policy.loop_interval_seconds if config else 300
         print(f"Next run: ~{interval}s after last run")
     else:
         print("Last run: none")
@@ -409,7 +409,7 @@ def _cmd_logs(args: argparse.Namespace) -> int:
     return 0
 
 
-_COMPLETED_TASK_STATES = frozenset({"done", "failed", "rejected"})
+_CLEANUP_ELIGIBLE_TASK_STATES = frozenset({"done"})
 
 
 def _extract_task_id_from_path(wt_path: Path) -> str | None:
@@ -462,7 +462,7 @@ def _cmd_cleanup_worktrees(args: argparse.Namespace) -> int:
                     skipped += 1
                     continue
 
-                if task["state"] not in _COMPLETED_TASK_STATES:
+                if task["state"] not in _CLEANUP_ELIGIBLE_TASK_STATES:
                     print(f"skip (task {task['state']}): {wt_path}")
                     skipped += 1
                     continue
