@@ -232,6 +232,25 @@ def list_commander_runs(
 # Task-goal links
 # ---------------------------------------------------------------------------
 
+def insert_task_goal_link(
+    conn: sqlite3.Connection,
+    goal_id: int,
+    task_id: str,
+    batch_id: str = "",
+    proposal_fingerprint: str = "",
+    rationale: str = "",
+) -> int:
+    """Link a task to a goal without committing (for transactional admission)."""
+    cursor = conn.execute(
+        """
+        insert into task_goal_links(goal_id, task_id, batch_id, proposal_fingerprint, rationale)
+        values (?, ?, ?, ?, ?)
+        """,
+        (goal_id, task_id, batch_id, proposal_fingerprint, rationale),
+    )
+    return cursor.lastrowid
+
+
 def link_task_to_goal(
     conn: sqlite3.Connection,
     goal_id: int,
@@ -241,15 +260,16 @@ def link_task_to_goal(
     rationale: str = "",
 ) -> int:
     """Link a task to a goal."""
-    cursor = conn.execute(
-        """
-        insert into task_goal_links(goal_id, task_id, batch_id, proposal_fingerprint, rationale)
-        values (?, ?, ?, ?, ?)
-        """,
-        (goal_id, task_id, batch_id, proposal_fingerprint, rationale),
+    link_id = insert_task_goal_link(
+        conn,
+        goal_id,
+        task_id,
+        batch_id,
+        proposal_fingerprint,
+        rationale,
     )
     conn.commit()
-    return cursor.lastrowid
+    return link_id
 
 
 def goal_for_task(conn: sqlite3.Connection, task_id: str) -> sqlite3.Row | None:
