@@ -155,70 +155,87 @@ def _cmd_status_loop(args: argparse.Namespace) -> int:
         cb_reason = circuit_breaker_reason(conn, config.policy) if config else None
         last_run = _last_daemon_run(conn)
         daily_used = _daily_budget_used(conn)
+
+        print("Loop Status")
+        print()
+
+        # Readiness
+        print("Readiness:")
+        if config_error is not None:
+            print(f"  config: degraded ({config_error})")
+        else:
+            for check in check_loop_readiness(root, config):
+                print(f"  {check.name}: [{check.status.upper()}] {check.message}")
+        print()
+
+        # Lock
+        lock = lockfile_path(root)
+        if lock.exists():
+            print(f"Lock: {lock}")
+        else:
+            print("Lock: not held")
+        print()
+
+        # Budget / circuit breaker
+        if config is not None:
+            if cb_reason:
+                print(f"Circuit breaker: {cb_reason}")
+            else:
+                print("Circuit breaker: ok")
+            print(
+                f"  budget: {daily_used}/{config.policy.max_tasks_per_day} tasks today"
+            )
+            print(f"  max_consecutive_failures: {config.policy.max_consecutive_failures}")
+        else:
+            print("Circuit breaker: no config")
+        print()
+
+        # Last run / next run
+        if last_run is not None:
+            print(f"Last run: {last_run['started_at']}")
+            interval = config.daemon_policy.loop_interval_seconds if config else 300
+            print(f"Next run: ~{interval}s after last run")
+        else:
+            print("Last run: none")
+            print("Next run: not scheduled")
+        print()
+
+        # Active leases
+        print(f"Active leases: {leases}")
+        print()
+
+        # Goal status
+        from .goals import active_goal, linked_task_counts
+
+        goal = active_goal(conn)
+        if goal is None:
+            print("Goal: none (waiting for a long-term goal)")
+        else:
+            goal_counts = linked_task_counts(conn, goal["id"])
+            ready = goal_counts.get("ready", 0)
+            if goal["status"] == "active" and ready == 0:
+                print(f"Goal: {goal['status']} (waiting for Commander replenishment)")
+            else:
+                print(f"Goal: {goal['status']}")
+            print(f"  {goal['title']}")
+        print()
+
+        # Task counts
+        if counts:
+            print("Tasks:")
+            for state in sorted(counts):
+                print(f"  {state}: {counts[state]}")
+            awaiting = counts.get("awaiting_human", 0)
+            print(f"\nHuman review pending: {awaiting}")
+        else:
+            print("Tasks: none")
+            print("\nHuman review pending: 0")
+
+        # Memory
+        if loop_memory_path(root).exists():
+            print(f"\nLoop memory: {LOOP_MEMORY_RELATIVE_PATH.as_posix()}")
     finally:
         conn.close()
-
-    print("Loop Status")
-    print()
-
-    # Readiness
-    print("Readiness:")
-    if config_error is not None:
-        print(f"  config: degraded ({config_error})")
-    else:
-        for check in check_loop_readiness(root, config):
-            print(f"  {check.name}: [{check.status.upper()}] {check.message}")
-    print()
-
-    # Lock
-    lock = lockfile_path(root)
-    if lock.exists():
-        print(f"Lock: {lock}")
-    else:
-        print("Lock: not held")
-    print()
-
-    # Budget / circuit breaker
-    if config is not None:
-        if cb_reason:
-            print(f"Circuit breaker: {cb_reason}")
-        else:
-            print("Circuit breaker: ok")
-        print(f"  budget: {daily_used}/{config.policy.max_tasks_per_day} tasks today")
-        print(f"  max_consecutive_failures: {config.policy.max_consecutive_failures}")
-    else:
-        print("Circuit breaker: no config")
-    print()
-
-    # Last run / next run
-    if last_run is not None:
-        print(f"Last run: {last_run['started_at']}")
-        interval = config.daemon_policy.loop_interval_seconds if config else 300
-        print(f"Next run: ~{interval}s after last run")
-    else:
-        print("Last run: none")
-        print("Next run: not scheduled")
-    print()
-
-    # Active leases
-    print(f"Active leases: {leases}")
-    print()
-
-    # Task counts
-    if counts:
-        print("Tasks:")
-        for state in sorted(counts):
-            print(f"  {state}: {counts[state]}")
-        awaiting = counts.get("awaiting_human", 0)
-        print(f"\nHuman review pending: {awaiting}")
-    else:
-        print("Tasks: none")
-        print("\nHuman review pending: 0")
-
-    # Memory
-    if loop_memory_path(root).exists():
-        print(f"\nLoop memory: {LOOP_MEMORY_RELATIVE_PATH.as_posix()}")
-
     return 0
 
 
@@ -322,6 +339,8 @@ def _format_daemon_cycle_message(result) -> str:
         parts.append(_plural(result.blocked, "blocked task"))
     if result.skipped:
         parts.append(_plural(result.skipped, "skipped task"))
+    if result.commander_tasks_admitted:
+        parts.append(f"{result.commander_tasks_admitted} commander tasks admitted")
     if parts:
         return ", ".join(parts)
     if result.stop_reason and result.stop_reason != "no ready tasks":

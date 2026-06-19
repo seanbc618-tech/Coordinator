@@ -315,6 +315,8 @@ class DaemonCycleResult:
     blocked: int
     skipped: int
     stop_reason: str | None
+    commander_tasks_admitted: int = 0
+    commander_status: str | None = None
 
 
 @dataclass(frozen=True)
@@ -455,6 +457,18 @@ def run_daemon_cycle(
         return DaemonCycleResult(0, 0, 0, 0, 0, 0, stop_reason)
 
     imported, planned = run_discovery_phase(conn, config, root)
+
+    # Replenish goal queue if needed
+    commander_admitted = 0
+    commander_status = None
+    try:
+        from .commander_service import maybe_replenish_goal
+        replenishment = maybe_replenish_goal(conn, config, root)
+        commander_status = replenishment.status
+        commander_admitted = len(replenishment.admitted_task_ids)
+    except Exception:
+        pass  # Don't let commander failures break the daemon
+
     tasks_processed = 0
     failures = 0
     blocked = 0
@@ -472,6 +486,8 @@ def run_daemon_cycle(
                 blocked,
                 skipped,
                 stop_reason,
+                commander_admitted,
+                commander_status,
             )
 
         task, agent_id = _claim_next_ready_task(conn, config)
@@ -506,6 +522,8 @@ def run_daemon_cycle(
         blocked,
         skipped,
         stop_reason,
+        commander_admitted,
+        commander_status,
     )
 
 
