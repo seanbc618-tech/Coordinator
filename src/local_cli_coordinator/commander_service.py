@@ -13,6 +13,7 @@ from pathlib import Path
 from .commander_policy import admit_commander_response, batch_is_high_risk_only
 from .commander_runner import (
     CommanderResponse,
+    CommanderRunActiveError,
     CommanderTaskProposal,
     classify_commander_failure,
     run_commander,
@@ -26,6 +27,7 @@ from .goals import (
     get_goal,
     link_task_to_goal,
     linked_task_counts,
+    linked_tasks_all_terminal,
     record_commander_failure,
     transition_goal,
     update_goal_progress,
@@ -259,6 +261,8 @@ def maybe_replenish_goal(
         result = run_commander(
             conn, config, root, goal["id"], "replenishment", 30,
         )
+    except CommanderRunActiveError:
+        return ReplenishmentResult("commander_run_active", [], [], None)
     except ValueError as exc:
         return ReplenishmentResult(
             "not_eligible",
@@ -319,7 +323,10 @@ def maybe_replenish_goal(
         clear_commander_failures(conn, goal["id"])
         update_goal_progress(conn, goal["id"], result.response.progress_summary)
 
-    if result.response.goal_status == "completed":
+    if (
+        result.response.goal_status == "completed"
+        and linked_tasks_all_terminal(conn, goal["id"])
+    ):
         transition_goal(
             conn,
             goal["id"],

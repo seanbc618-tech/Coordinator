@@ -149,15 +149,45 @@ def start_commander_run(
     prompt_path: Path,
 ) -> int:
     """Record the start of a commander run. Returns the run id."""
-    cursor = conn.execute(
-        """
-        insert into commander_runs(goal_id, trigger, schema_version, prompt_path, status)
-        values (?, ?, ?, ?, 'running')
-        """,
-        (goal_id, trigger, schema_version, str(prompt_path)),
+    run_id = acquire_commander_run_slot(
+        conn,
+        goal_id,
+        trigger,
+        schema_version,
+        prompt_path,
     )
-    conn.commit()
-    return cursor.lastrowid
+    if run_id is None:
+        raise RuntimeError("commander run already active")
+    return run_id
+
+
+def acquire_commander_run_slot(
+    conn: sqlite3.Connection,
+    goal_id: int,
+    trigger: str,
+    schema_version: int,
+    prompt_path: Path,
+) -> int | None:
+    """Atomically claim a Commander run slot, or return None if one is active."""
+    interrupt_stale_commander_runs(conn, goal_id)
+    conn.execute("begin immediate")
+    try:
+        if has_live_commander_run(conn, goal_id):
+            conn.rollback()
+            return None
+        cursor = conn.execute(
+            """
+            insert into commander_runs(goal_id, trigger, schema_version, prompt_path, status)
+            values (?, ?, ?, ?, 'running')
+            """,
+            (goal_id, trigger, schema_version, str(prompt_path)),
+        )
+        run_id = cursor.lastrowid
+        conn.commit()
+        return run_id
+    except sqlite3.Error:
+        conn.rollback()
+        raise
 
 
 def finish_commander_run(
@@ -300,6 +330,46 @@ def list_linked_tasks(
         """,
         (goal_id,),
     ).fetchall()
+
+
+TERMINAL_LINKED_TASK_STATES = frozenset({"done", "failed", "rejected"})
+
+
+def has_live_commander_run(conn: sqlite3.Connection, goal_id: int) -> bool:
+    """Return True when a Commander run is still marked running."""
+    row = conn.execute(
+        """
+        select 1 from commander_runs
+        where goal_id = ? and status = 'running'
+        limit 1
+        """,
+        (goal_id,),
+    ).fetchone()
+    return row is not None
+
+
+def interrupt_stale_commander_runs(conn: sqlite3.Connection, goal_id: int) -> int:
+    """Mark leftover running Commander runs as interrupted."""
+    cursor = conn.execute(
+        """
+        update commander_runs
+        set status = 'interrupted',
+            error = 'superseded by restart',
+            completed_at = current_timestamp
+        where goal_id = ? and status = 'running'
+        """,
+        (goal_id,),
+    )
+    conn.commit()
+    return cursor.rowcount
+
+
+def linked_tasks_all_terminal(conn: sqlite3.Connection, goal_id: int) -> bool:
+    """Return True when every linked task is in a terminal state."""
+    counts = linked_task_counts(conn, goal_id)
+    if not counts:
+        return True
+    return all(state in TERMINAL_LINKED_TASK_STATES for state in counts)
 
 
 def linked_task_counts(conn: sqlite3.Connection, goal_id: int) -> dict[str, int]:

@@ -15,12 +15,12 @@ from pathlib import Path
 
 from .config import CoordinatorConfig, select_agent_by_role
 from .goals import (
+    acquire_commander_run_slot,
     finish_commander_run,
     get_goal,
     list_commander_messages,
     list_commander_runs,
     list_linked_tasks,
-    start_commander_run,
 )
 from .process import run_command
 
@@ -29,6 +29,10 @@ COMMANDER_GOAL_STATUSES = frozenset({"active", "blocked", "completed"})
 MAX_CONTEXT_CHARS = 20_000
 MAX_LINKED_TASKS = 20
 MAX_MESSAGES = 5
+
+
+class CommanderRunActiveError(RuntimeError):
+    """Raised when another Commander run is already active for the goal."""
 
 
 @dataclass(frozen=True)
@@ -350,6 +354,52 @@ def _artifact_dir(root: Path, goal_id: int, run_id: int) -> Path:
     return root / "runs" / "commander" / str(goal_id) / str(run_id)
 
 
+def _finish_commander_attempt(
+    conn: sqlite3.Connection,
+    *,
+    run_id_db: int,
+    root: Path,
+    goal_id: int,
+    tmp_dir: Path,
+    prompt_path: Path,
+    raw_output_path: Path,
+    parsed_output_path: Path | None,
+    response: CommanderResponse | None,
+    exit_code: int,
+    timed_out: bool,
+    error: str | None,
+    duration: float,
+) -> tuple[Path, Path, Path | None]:
+    import shutil
+
+    art_dir = _artifact_dir(root, goal_id, run_id_db)
+    art_dir.mkdir(parents=True, exist_ok=True)
+    for item in tmp_dir.iterdir():
+        shutil.move(str(item), str(art_dir / item.name))
+    if tmp_dir.exists():
+        tmp_dir.rmdir()
+
+    prompt_path = art_dir / "prompt.md"
+    raw_output_path = art_dir / "raw.txt"
+    if parsed_output_path is not None:
+        parsed_output_path = art_dir / "parsed.json"
+
+    finish_commander_run(
+        conn,
+        run_id_db,
+        status="succeeded" if response is not None else "failed",
+        exit_code=exit_code,
+        timed_out=timed_out,
+        raw_output_path=str(raw_output_path),
+        parsed_output_path=str(parsed_output_path) if parsed_output_path else "",
+        progress_summary=response.progress_summary if response else "",
+        stop_reason=response.stop_reason or "" if response else "",
+        error=error or "",
+        duration_seconds=duration,
+    )
+    return prompt_path, raw_output_path, parsed_output_path
+
+
 def run_commander(
     conn: sqlite3.Connection,
     config: CoordinatorConfig,
@@ -367,22 +417,16 @@ def run_commander(
     if agent is None:
         raise ValueError("no agent configured with 'commander' role")
 
-    # Build artifacts directory (use a temp run_id placeholder)
-    # We need the artifacts dir before starting the run so we can write the prompt
-    # Use a temporary directory name, then rename after getting the real run_id
     tmp_dir = root / "runs" / "commander" / str(goal_id) / "_pending"
     tmp_dir.mkdir(parents=True, exist_ok=True)
 
-    # Build and write prompt
     context = build_commander_context(conn, config, root, goal_id, rejected_fingerprints)
     prompt_path = tmp_dir / "prompt.md"
     prompt_path.write_text(context)
 
-    # Write schema
     schema_path = tmp_dir / "schema.json"
     schema_path.write_text(json.dumps(commander_response_schema(), indent=2))
 
-    # Determine repo path (use first repo or root)
     goal = get_goal(conn, goal_id)
     repo_ids = json.loads(goal["repo_ids"])
     if repo_ids and repo_ids[0] in config.repos:
@@ -390,37 +434,85 @@ def run_commander(
     else:
         repo_path = root
 
-    # Render command
+    run_id_db = acquire_commander_run_slot(
+        conn,
+        goal_id,
+        trigger,
+        COMMANDER_SCHEMA_VERSION,
+        prompt_path,
+    )
+    if run_id_db is None:
+        raise CommanderRunActiveError("commander run already active")
+
     try:
         argv = _render_command_tokens(agent.command, prompt_path, schema_path, repo_path)
     except ValueError as exc:
-        run_id_db = start_commander_run(conn, goal_id, trigger, COMMANDER_SCHEMA_VERSION, prompt_path)
-        finish_commander_run(conn, run_id_db, status="error", error=str(exc))
+        raw_output_path = tmp_dir / "raw.txt"
+        raw_output_path.write_text("")
+        prompt_path, raw_output_path, _ = _finish_commander_attempt(
+            conn,
+            run_id_db=run_id_db,
+            root=root,
+            goal_id=goal_id,
+            tmp_dir=tmp_dir,
+            prompt_path=prompt_path,
+            raw_output_path=raw_output_path,
+            parsed_output_path=None,
+            response=None,
+            exit_code=1,
+            timed_out=False,
+            error=str(exc),
+            duration=0.0,
+        )
         return CommanderRunResult(
-            succeeded=False, response=None, run_id=run_id_db,
-            prompt_path=prompt_path, raw_output_path=tmp_dir / "raw.txt",
-            parsed_output_path=None, exit_code=1, timed_out=False, error=str(exc),
+            succeeded=False,
+            response=None,
+            run_id=run_id_db,
+            prompt_path=prompt_path,
+            raw_output_path=raw_output_path,
+            parsed_output_path=None,
+            exit_code=1,
+            timed_out=False,
+            error=str(exc),
         )
 
     if not argv:
-        run_id_db = start_commander_run(conn, goal_id, trigger, COMMANDER_SCHEMA_VERSION, prompt_path)
-        finish_commander_run(conn, run_id_db, status="error", error="empty command")
+        raw_output_path = tmp_dir / "raw.txt"
+        raw_output_path.write_text("")
+        prompt_path, raw_output_path, _ = _finish_commander_attempt(
+            conn,
+            run_id_db=run_id_db,
+            root=root,
+            goal_id=goal_id,
+            tmp_dir=tmp_dir,
+            prompt_path=prompt_path,
+            raw_output_path=raw_output_path,
+            parsed_output_path=None,
+            response=None,
+            exit_code=1,
+            timed_out=False,
+            error="empty command",
+            duration=0.0,
+        )
         return CommanderRunResult(
-            succeeded=False, response=None, run_id=run_id_db,
-            prompt_path=prompt_path, raw_output_path=tmp_dir / "raw.txt",
-            parsed_output_path=None, exit_code=1, timed_out=False, error="empty command",
+            succeeded=False,
+            response=None,
+            run_id=run_id_db,
+            prompt_path=prompt_path,
+            raw_output_path=raw_output_path,
+            parsed_output_path=None,
+            exit_code=1,
+            timed_out=False,
+            error="empty command",
         )
 
-    # Run the agent
     start_time = time.monotonic()
     result = run_command(argv, cwd=repo_path, timeout_seconds=timeout_seconds)
     duration = time.monotonic() - start_time
 
-    # Write raw output
     raw_output_path = tmp_dir / "raw.txt"
     raw_output_path.write_text(result.stdout)
 
-    # Parse response
     response: CommanderResponse | None = None
     parsed_output_path: Path | None = None
     error: str | None = None
@@ -457,35 +549,20 @@ def run_commander(
         except ValueError as exc:
             error = f"parse error: {exc}"
 
-    # Record run and move artifacts to final location
-    run_id_db = start_commander_run(conn, goal_id, trigger, COMMANDER_SCHEMA_VERSION, prompt_path)
-    art_dir = _artifact_dir(root, goal_id, run_id_db)
-    art_dir.mkdir(parents=True, exist_ok=True)
-
-    # Move artifacts from tmp to final location
-    import shutil
-    for item in tmp_dir.iterdir():
-        dest = art_dir / item.name
-        shutil.move(str(item), str(dest))
-    tmp_dir.rmdir()
-
-    # Update paths to final location
-    prompt_path = art_dir / "prompt.md"
-    raw_output_path = art_dir / "raw.txt"
-    if parsed_output_path:
-        parsed_output_path = art_dir / "parsed.json"
-
-    finish_commander_run(
-        conn, run_id_db,
-        status="succeeded" if response is not None else "failed",
+    prompt_path, raw_output_path, parsed_output_path = _finish_commander_attempt(
+        conn,
+        run_id_db=run_id_db,
+        root=root,
+        goal_id=goal_id,
+        tmp_dir=tmp_dir,
+        prompt_path=prompt_path,
+        raw_output_path=raw_output_path,
+        parsed_output_path=parsed_output_path,
+        response=response,
         exit_code=result.returncode,
         timed_out=result.timed_out,
-        raw_output_path=str(raw_output_path),
-        parsed_output_path=str(parsed_output_path) if parsed_output_path else "",
-        progress_summary=response.progress_summary if response else "",
-        stop_reason=response.stop_reason or "" if response else "",
-        error=error or "",
-        duration_seconds=duration,
+        error=error,
+        duration=duration,
     )
 
     return CommanderRunResult(
