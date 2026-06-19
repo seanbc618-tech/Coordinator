@@ -28,7 +28,16 @@ from .discovery import (
     discover_git_recent_commits,
     list_findings,
 )
+from .commander_service import (
+    abandon_goal,
+    confirm_goal,
+    create_and_preview_goal,
+    goal_status,
+    pause_goal,
+    resume_goal,
+)
 from .engine import run_continuous_daemon, run_daemon_cycle
+from .goals import active_goal
 from .locks import acquire_lock, lockfile_path, release_lock
 from .memory import LOOP_MEMORY_RELATIVE_PATH, loop_memory_path
 from .policy import check_task_draft
@@ -400,6 +409,90 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_goal(args: argparse.Namespace) -> int:
+    root = Path(args.root)
+    config = load_config(root)
+    conn = _open_db(root, args.db)
+    try:
+        subcommand = args.goal_subcommand
+        if subcommand == "confirm":
+            print(confirm_goal(conn, config, root))
+        elif subcommand == "status":
+            print(goal_status(conn))
+        elif subcommand == "pause":
+            print(pause_goal(conn))
+        elif subcommand == "resume":
+            print(resume_goal(conn))
+        elif subcommand == "abandon":
+            print(abandon_goal(conn))
+        else:
+            # Treat as objective text
+            objective = " ".join(args.goal_args)
+            if not objective:
+                print("usage: coordinator goal <objective text>")
+                print("       coordinator goal confirm|status|pause|resume|abandon")
+                return 1
+            preview = create_and_preview_goal(conn, config, root, objective)
+            print(f"Goal draft {preview.goal_id}: {preview.progress_summary}")
+            for i, task in enumerate(preview.proposals, 1):
+                print(f"  {i}. {task.title} ({task.repo})")
+            print(f"\nRun 'coordinator goal confirm' to activate.")
+    finally:
+        conn.close()
+    return 0
+
+
+def _cmd_chat(args: argparse.Namespace) -> int:
+    root = Path(args.root)
+    config = load_config(root)
+    conn = _open_db(root, args.db)
+    try:
+        goal = active_goal(conn)
+        if goal is None:
+            print("No goal. Create one first with: coordinator goal <objective>")
+            return 1
+        if goal["status"] in {"completed", "failed", "abandoned"}:
+            print(f"Goal is {goal['status']}. Chat is unavailable for terminal goals.")
+            return 1
+
+        print(f"Goal: {goal['title']} ({goal['status']})")
+        if goal["status"] == "draft":
+            print("Commands: /status, /start, /pause, /resume, /quit")
+        else:
+            print("Commands: /status, /pause, /resume, /quit")
+        print()
+        while True:
+            try:
+                line = input("> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
+            if not line:
+                continue
+            if line == "/quit":
+                break
+            elif line == "/status":
+                print(goal_status(conn))
+            elif line == "/start":
+                if goal["status"] != "draft":
+                    print("Goal is already active. Use /status, /pause, or /resume.")
+                    continue
+                result = confirm_goal(conn, config, root)
+                print(result)
+                if "activated" in result:
+                    break
+            elif line == "/pause":
+                print(pause_goal(conn))
+            elif line == "/resume":
+                print(resume_goal(conn))
+            else:
+                # Refine the goal with new input
+                print("Goal refinement not yet implemented. Use /start to confirm.")
+    finally:
+        conn.close()
+    return 0
+
+
 def _cmd_logs(args: argparse.Namespace) -> int:
     root = Path(args.root)
     conn = _open_db(root, args.db)
@@ -634,6 +727,13 @@ def build_parser() -> argparse.ArgumentParser:
     cleanup = repo_subparsers.add_parser("cleanup-worktrees")
     cleanup.add_argument("--force", action="store_true")
 
+    # Goal command with nargs="*"
+    goal = subparsers.add_parser("goal")
+    goal.add_argument("goal_args", nargs="*", default=[])
+
+    # Chat command
+    subparsers.add_parser("chat")
+
     subparsers.add_parser("logs").add_argument("task_id")
     return parser
 
@@ -667,6 +767,16 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_task_artifacts(args)
     if args.command == "daemon":
         return _cmd_daemon(args)
+    if args.command == "goal":
+        # Parse subcommand from first arg
+        if args.goal_args and args.goal_args[0] in ("confirm", "status", "pause", "resume", "abandon"):
+            args.goal_subcommand = args.goal_args[0]
+            args.goal_args = args.goal_args[1:]
+        else:
+            args.goal_subcommand = None
+        return _cmd_goal(args)
+    if args.command == "chat":
+        return _cmd_chat(args)
     if args.command == "logs":
         return _cmd_logs(args)
     if args.command is None:
