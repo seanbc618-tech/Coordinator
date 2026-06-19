@@ -1,6 +1,14 @@
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+GOAL_STATES = frozenset({
+    "draft", "active", "paused", "blocked",
+    "completed", "failed", "abandoned",
+})
+NONTERMINAL_GOAL_STATES = frozenset({
+    "draft", "active", "paused", "blocked",
+})
+
 TASK_STATES = {
     "inbox",
     "planned",
