@@ -324,22 +324,38 @@ def linked_task_counts(conn: sqlite3.Connection, goal_id: int) -> dict[str, int]
 def record_commander_failure(
     conn: sqlite3.Connection,
     goal_id: int,
+    *,
+    max_failures: int = 3,
 ) -> None:
-    """Increment the failure count and set retry time."""
+    """Increment the failure count, schedule retry, and pause after the limit."""
     goal = get_goal(conn, goal_id)
     failures = goal["commander_failures"] + 1
-    # Backoff: 60s after first, 300s after second+
     retry_seconds = 60 if failures == 1 else 300
-    conn.execute(
-        """
-        update goals
-        set commander_failures = ?,
-            commander_retry_after = datetime('now', '+' || ? || ' seconds'),
-            updated_at = current_timestamp
-        where id = ?
-        """,
-        (failures, retry_seconds, goal_id),
-    )
+    if failures >= max_failures:
+        conn.execute(
+            """
+            update goals
+            set commander_failures = ?,
+                commander_retry_after = '',
+                status = 'paused',
+                stop_reason = 'commander failure limit reached',
+                paused_at = current_timestamp,
+                updated_at = current_timestamp
+            where id = ?
+            """,
+            (failures, goal_id),
+        )
+    else:
+        conn.execute(
+            """
+            update goals
+            set commander_failures = ?,
+                commander_retry_after = datetime('now', '+' || ? || ' seconds'),
+                updated_at = current_timestamp
+            where id = ?
+            """,
+            (failures, retry_seconds, goal_id),
+        )
     conn.commit()
 
 

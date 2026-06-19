@@ -10,9 +10,11 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
+from .commander_policy import admit_commander_response, batch_is_high_risk_only
 from .commander_runner import (
     CommanderResponse,
     CommanderTaskProposal,
+    classify_commander_failure,
     run_commander,
 )
 from .config import CoordinatorConfig
@@ -146,7 +148,11 @@ def resume_goal(
     if goal["status"] != "paused":
         return f"goal is {goal['status']}, not paused"
 
-    transition_goal(conn, goal_id, "active")
+    prior_reason = goal["stop_reason"] or goal["progress_summary"]
+    clear_commander_failures(conn, goal_id)
+    transition_goal(conn, goal_id, "active", stop_reason="")
+    if prior_reason:
+        return f"goal {goal_id} resumed (prior reason: {prior_reason})"
     return f"goal {goal_id} resumed"
 
 
@@ -198,6 +204,8 @@ def goal_status(conn: sqlite3.Connection) -> str:
 
     if goal["commander_failures"] > 0:
         lines.append(f"  Commander failures: {goal['commander_failures']}")
+    if goal["commander_retry_after"]:
+        lines.append(f"  Commander retry after: {goal['commander_retry_after']}")
 
     return "\n".join(lines)
 
@@ -253,6 +261,22 @@ def maybe_replenish_goal(
 
     if not result.succeeded or result.response is None:
         record_commander_failure(conn, goal["id"])
+        refreshed = get_goal(conn, goal["id"])
+        failure_kind = classify_commander_failure(result)
+        if refreshed["status"] == "paused":
+            return ReplenishmentResult(
+                "paused_after_failures",
+                [],
+                [f"commander {failure_kind} failure"],
+                result.run_id,
+            )
+        if failure_kind == "timeout":
+            return ReplenishmentResult(
+                "retry_scheduled",
+                [],
+                [result.error or "timeout"],
+                result.run_id,
+            )
         return ReplenishmentResult(
             "commander_failed",
             [],
@@ -260,30 +284,45 @@ def maybe_replenish_goal(
             result.run_id,
         )
 
-    # Admit proposals
-    admitted_ids = []
-    rejected_reasons = []
+    if batch_is_high_risk_only(conn, config, goal["id"], result.response):
+        stop_reason = "blocked: high-risk Commander batch requires human review"
+        transition_goal(
+            conn,
+            goal["id"],
+            "blocked",
+            stop_reason=stop_reason,
+        )
+        return ReplenishmentResult(
+            "blocked_high_risk",
+            [],
+            [stop_reason],
+            result.run_id,
+        )
 
-    for task_proposal in result.response.tasks:
-        try:
-            task_id = _admit_task_proposal(conn, config, goal["id"], task_proposal)
-            admitted_ids.append(task_id)
-        except ValueError as exc:
-            rejected_reasons.append(str(exc))
+    admission = admit_commander_response(
+        conn,
+        config,
+        root,
+        goal["id"],
+        result.response,
+    )
 
-    if admitted_ids:
+    if admission.accepted_task_ids:
         clear_commander_failures(conn, goal["id"])
         update_goal_progress(conn, goal["id"], result.response.progress_summary)
 
-    # Check if goal should be completed
     if result.response.goal_status == "completed":
-        transition_goal(conn, goal["id"], "completed",
-                       stop_reason=result.response.stop_reason or "completed by Commander")
+        transition_goal(
+            conn,
+            goal["id"],
+            "completed",
+            stop_reason=result.response.stop_reason or "completed by Commander",
+        )
 
     return ReplenishmentResult(
-        "admitted" if admitted_ids else "all_rejected",
-        admitted_ids,
-        rejected_reasons,
+        "admitted" if admission.accepted_task_ids else "all_rejected",
+        admission.accepted_task_ids,
+        admission.rejection_reasons,
         result.run_id,
     )
 

@@ -498,3 +498,17 @@ def run_commander(
         timed_out=result.timed_out,
         error=error,
     )
+
+
+def classify_commander_failure(result: CommanderRunResult) -> str:
+    """Classify a failed Commander run for retry and safety policy."""
+    if result.timed_out:
+        return "timeout"
+    error = (result.error or "").lower()
+    if "429" in error or "quota" in error or "rate" in error or "rate-limit" in error:
+        return "quota"
+    if "parse" in error or "protocol" in error or "schema" in error:
+        return "protocol"
+    if result.exit_code not in (0, None):
+        return "process"
+    return "unknown"

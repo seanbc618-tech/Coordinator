@@ -14,6 +14,8 @@ from .goals import get_goal, insert_task_goal_link
 from .models import TaskDraft
 from .policy import check_task_draft
 
+MAX_COMMANDER_FAILURES = 3
+
 _HIGH_RISK_SIGNALS = (
     "credential",
     "secret",
@@ -99,6 +101,25 @@ def _title_exists_for_goal(
         (goal_id, title.strip()),
     ).fetchone()
     return row is not None
+
+
+def is_high_risk_rejection(reason: str) -> bool:
+    return "high-risk" in reason.lower()
+
+
+def batch_is_high_risk_only(
+    conn: sqlite3.Connection,
+    config: CoordinatorConfig,
+    goal_id: int,
+    response: CommanderResponse,
+) -> bool:
+    if not response.tasks:
+        return False
+    for proposal in response.tasks:
+        reasons = proposal_rejection_reasons(conn, config, goal_id, proposal)
+        if not reasons or not all(is_high_risk_rejection(reason) for reason in reasons):
+            return False
+    return True
 
 
 def proposal_rejection_reasons(

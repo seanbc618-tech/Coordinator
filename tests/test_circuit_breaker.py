@@ -14,9 +14,12 @@ from local_cli_coordinator.db import (
     init_db,
     start_daemon_run,
 )
+from local_cli_coordinator.commander_service import maybe_replenish_goal
 from local_cli_coordinator.engine import run_one_ready_task
+from local_cli_coordinator.goals import create_goal, get_goal, transition_goal
 from tests.helpers import run_cli
 from tests.test_cli_commands import write_config
+from tests.test_commander_replenishment import _test_config
 
 
 def policy(**overrides) -> PolicyConfig:
@@ -148,6 +151,23 @@ class CircuitBreakerTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("stopped: daily task limit reached", result.stdout)
+
+    def test_commander_failures_do_not_trip_task_circuit_breaker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            conn = connect(root / "coordinator.db")
+            init_db(conn)
+            goal_id = create_goal(conn, "Roadmap", "Finish roadmap", repo_ids=["demo"])
+            transition_goal(conn, goal_id, "active")
+            config = _test_config(root, command="python3 -c 'import sys; sys.exit(1)'")
+
+            maybe_replenish_goal(conn, config, root)
+            reason = circuit_breaker_reason(conn, config.policy)
+            goal = get_goal(conn, goal_id)
+            conn.close()
+
+        self.assertIsNone(reason)
+        self.assertEqual(goal["commander_failures"], 1)
 
     def test_daemon_exception_still_finishes_run_ledger(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
