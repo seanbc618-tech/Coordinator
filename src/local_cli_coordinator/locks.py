@@ -27,6 +27,49 @@ def lockfile_path(root: Path) -> Path:
     return root / "state" / LOCKFILE_NAME
 
 
+def acquire_lock_at(lock_path: Path, *, force: bool = False) -> LockInfo | str:
+    """Attempt to acquire a lock at an explicit path."""
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+    existing = _read_lock(lock_path)
+    if existing is not None:
+        if _is_stale(existing.pid):
+            pass
+        elif force:
+            pass
+        else:
+            return (
+                f"daemon is already running (pid {existing.pid}, "
+                f"acquired at {existing.acquired_at}). "
+                f"Use --force-lock to override."
+            )
+
+    info = LockInfo(
+        pid=os.getpid(),
+        acquired_at=datetime.now(timezone.utc).isoformat(),
+    )
+    lock_path.write_text(
+        json.dumps({"pid": info.pid, "acquired_at": info.acquired_at}, indent=2)
+        + "\n",
+        encoding="utf-8",
+    )
+    return info
+
+
+def release_lock_at(lock_path: Path) -> bool:
+    """Release a lock at an explicit path when held by the current process."""
+    existing = _read_lock(lock_path)
+    if existing is None:
+        return False
+    if existing.pid != os.getpid():
+        return False
+    try:
+        lock_path.unlink()
+        return True
+    except OSError:
+        return False
+
+
 def _read_lock(path: Path) -> LockInfo | None:
     """Read and return lock info from an existing lockfile, or None."""
     if not path.exists():
@@ -56,34 +99,7 @@ def acquire_lock(root: Path, *, force: bool = False) -> LockInfo | str:
     Returns a :class:`LockInfo` on success, or a human-readable error string
     on failure.  If *force* is True, a stale or existing lock is overwritten.
     """
-    path = lockfile_path(root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    existing = _read_lock(path)
-    if existing is not None:
-        if _is_stale(existing.pid):
-            # Stale lock — safe to overwrite
-            pass
-        elif force:
-            # Forced takeover
-            pass
-        else:
-            return (
-                f"daemon is already running (pid {existing.pid}, "
-                f"acquired at {existing.acquired_at}). "
-                f"Use --force-lock to override."
-            )
-
-    info = LockInfo(
-        pid=os.getpid(),
-        acquired_at=datetime.now(timezone.utc).isoformat(),
-    )
-    path.write_text(
-        json.dumps({"pid": info.pid, "acquired_at": info.acquired_at}, indent=2)
-        + "\n",
-        encoding="utf-8",
-    )
-    return info
+    return acquire_lock_at(lockfile_path(root), force=force)
 
 
 def release_lock(root: Path) -> bool:
@@ -92,14 +108,4 @@ def release_lock(root: Path) -> bool:
     Returns True if the lock was removed, False if it didn't exist or was
     held by a different process.
     """
-    path = lockfile_path(root)
-    existing = _read_lock(path)
-    if existing is None:
-        return False
-    if existing.pid != os.getpid():
-        return False
-    try:
-        path.unlink()
-        return True
-    except OSError:
-        return False
+    return release_lock_at(lockfile_path(root))
