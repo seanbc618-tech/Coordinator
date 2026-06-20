@@ -73,7 +73,7 @@ class MultiTaskRunTests(unittest.TestCase):
 
             calls: list[int] = []
 
-            def counting_process_task(conn, cfg, root_path, task, agent_id):
+            def counting_process_task(conn, cfg, root_path, task, agent_id, **kwargs):
                 calls.append(1)
                 return True
 

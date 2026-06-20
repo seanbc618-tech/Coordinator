@@ -39,6 +39,7 @@ from .commander_service import (
 )
 from .engine import run_continuous_daemon, run_daemon_cycle
 from .goals import active_goal
+from .reporting import ConsoleReporter, NullReporter
 from .locks import acquire_lock, lockfile_path, release_lock
 from .commander_memory import (
     COMMANDER_MEMORY_RELATIVE_PATH,
@@ -374,6 +375,8 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
         print(lock_result, file=sys.stderr)
         return 1
 
+    reporter = NullReporter() if getattr(args, "quiet", False) else ConsoleReporter()
+
     conn = _open_db(root, args.db)
     run_id = start_daemon_run(conn)
     tasks_processed = 0
@@ -382,7 +385,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
     message = "no ready tasks"
     try:
         if args.once:
-            result = run_daemon_cycle(conn, config, root)
+            result = run_daemon_cycle(conn, config, root, reporter=reporter)
             tasks_processed = result.tasks_processed
             failures = result.failures
             stop_reason = result.stop_reason
@@ -394,6 +397,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
                 root,
                 sleep_fn=time.sleep,
                 monotonic_fn=time.monotonic,
+                reporter=reporter,
             )
             tasks_processed = continuous.tasks_processed
             failures = continuous.failures
@@ -722,6 +726,7 @@ def build_parser() -> argparse.ArgumentParser:
     daemon = subparsers.add_parser("daemon")
     daemon.add_argument("--once", action="store_true")
     daemon.add_argument("--force-lock", action="store_true")
+    daemon.add_argument("--quiet", action="store_true")
     status = subparsers.add_parser("status")
     status.add_argument("--loop", action="store_true")
     subparsers.add_parser("doctor")

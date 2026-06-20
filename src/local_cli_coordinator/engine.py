@@ -8,6 +8,7 @@ import sqlite3
 
 from .agent import run_agent
 from .config import CoordinatorConfig, RepoConfig, select_agent_by_role
+from .reporting import NULL_REPORTER, ExecutionEvent, Reporter
 from .db import (
     _try_acquire_task_lease,
     active_lease_count,
@@ -462,11 +463,14 @@ def run_daemon_cycle(
     conn: sqlite3.Connection,
     config: CoordinatorConfig,
     root: Path,
+    *,
+    reporter: Reporter = NULL_REPORTER,
 ) -> DaemonCycleResult:
     stop_reason = circuit_breaker_reason(conn, config.policy)
     if stop_reason is not None:
         return DaemonCycleResult(0, 0, 0, 0, 0, 0, stop_reason)
 
+    reporter.emit(ExecutionEvent(kind="cycle_started", stage="engine"))
     imported, planned = run_discovery_phase(conn, config, root)
 
     # Replenish goal queue if needed
@@ -512,7 +516,7 @@ def run_daemon_cycle(
             continue
 
         try:
-            processed = _process_task(conn, config, root, task, agent_id)
+            processed = _process_task(conn, config, root, task, agent_id, reporter=reporter)
         finally:
             release_task_lease(conn, task["id"])
 
@@ -545,6 +549,7 @@ def run_continuous_daemon(
     *,
     sleep_fn=time.sleep,
     monotonic_fn=time.monotonic,
+    reporter: Reporter = NULL_REPORTER,
 ) -> ContinuousDaemonResult:
     started_at = monotonic_fn()
     total_processed = 0
@@ -560,7 +565,7 @@ def run_continuous_daemon(
         if stop_reason is not None:
             break
 
-        result = run_daemon_cycle(conn, config, root)
+        result = run_daemon_cycle(conn, config, root, reporter=reporter)
         total_processed += result.tasks_processed
         total_failures += result.failures
         if result.stop_reason in {"no ready tasks"} and result.tasks_processed == 0:
@@ -598,6 +603,8 @@ def run_one_ready_task(
     config: CoordinatorConfig,
     root: Path,
     agent_id: str | None = None,
+    *,
+    reporter: Reporter = NULL_REPORTER,
 ) -> bool:
     if circuit_breaker_reason(conn, config.policy) is not None:
         return False
@@ -609,7 +616,7 @@ def run_one_ready_task(
     if task is None or claim_agent_id is None:
         return False
     try:
-        return _process_task(conn, config, root, task, claim_agent_id)
+        return _process_task(conn, config, root, task, claim_agent_id, reporter=reporter)
     finally:
         release_task_lease(conn, task["id"])
 
@@ -620,6 +627,8 @@ def _process_task(
     root: Path,
     task: dict,
     agent_id: str | None,
+    *,
+    reporter: Reporter = NULL_REPORTER,
 ) -> bool:
     repo = config.repos.get(task["repo"])
     if repo is None:
@@ -662,6 +671,12 @@ def _process_task(
     run_dir = root / "runs" / task["id"]
 
     transition_task(conn, task["id"], "running", f"assigned to {agent.id}")
+    reporter.emit(ExecutionEvent(
+        kind="task_started",
+        stage="engine",
+        task_id=task["id"],
+        actor=agent.id,
+    ))
     try:
         registered_worktree = Path(task["worktree_path"]).resolve() if task["worktree_path"] else None
         if registered_worktree is not None and registered_worktree.is_dir():
@@ -705,6 +720,8 @@ def _process_task(
         worktree,
         run_dir,
         timeout_seconds=config.policy.max_task_runtime_seconds,
+        reporter=reporter,
+        task_id=task["id"],
     )
     add_artifact(conn, task["id"], "agent_log", agent_result.log_path)
     if agent_result.exit_code != 0 or agent_result.timed_out:
@@ -760,6 +777,8 @@ def _process_task(
         worktree,
         run_dir,
         timeout_seconds=config.policy.max_task_runtime_seconds,
+        reporter=reporter,
+        task_id=task["id"],
     )
     add_artifact(conn, task["id"], "verifier_log", verification.log_path)
     if not verification.passed:
@@ -792,6 +811,8 @@ def _process_task(
             worktree,
             run_dir,
             timeout_seconds=config.policy.max_task_runtime_seconds,
+            reporter=reporter,
+            task_id=task["id"],
         )
         add_artifact(conn, task["id"], "spec_review_log", spec_review.log_path)
         if not spec_review.passed:
@@ -849,6 +870,8 @@ def _process_task(
             worktree,
             run_dir,
             timeout_seconds=config.policy.max_task_runtime_seconds,
+            reporter=reporter,
+            task_id=task["id"],
         )
         add_artifact(conn, task["id"], "quality_review_log", quality_review.log_path)
         if not quality_review.passed:
