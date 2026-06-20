@@ -27,6 +27,7 @@ class AgentConfig:
     capabilities: list[str]
     max_concurrency: int
     role: str = "worker"
+    fallback_agents: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -106,6 +107,43 @@ def select_agent_by_role(
     for agent in config.agents.values():
         if agent.role == role and required.issubset(set(agent.capabilities)):
             return agent
+    return None
+
+
+def select_fallback_agent(
+    config: "CoordinatorConfig",
+    primary_id: str,
+    capabilities: list[str],
+    unavailable_ids: set[str] | None = None,
+) -> "AgentConfig | None":
+    """Return the first eligible fallback agent for *primary_id*.
+
+    Selection criteria:
+    - Listed in primary's fallback_agents
+    - Different from primary
+    - Worker role (not reviewer/planner/commander)
+    - Has all required capabilities
+    - Not in unavailable_ids
+    Returns None if no eligible fallback exists.
+    """
+    primary = config.agents.get(primary_id)
+    if primary is None:
+        return None
+    unavailable = unavailable_ids or set()
+    required = set(capabilities)
+    for fallback_id in primary.fallback_agents:
+        if fallback_id == primary_id:
+            continue
+        if fallback_id in unavailable:
+            continue
+        candidate = config.agents.get(fallback_id)
+        if candidate is None:
+            continue
+        if candidate.role != "worker":
+            continue
+        if not required.issubset(set(candidate.capabilities)):
+            continue
+        return candidate
     return None
 
 
@@ -231,6 +269,7 @@ def load_config(root: Path) -> CoordinatorConfig:
             capabilities=list(raw.get("capabilities", [])),
             max_concurrency=int(raw.get("max_concurrency", 1)),
             role=role,
+            fallback_agents=tuple(raw.get("fallback_agents", [])),
         )
 
     repos = {
