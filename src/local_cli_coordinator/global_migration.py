@@ -4,10 +4,13 @@ Copies database, config, runs, and tasks from a legacy single-root
 installation to the global runtime directory structure.
 
 Safety guarantees:
-- Staging is created on the same filesystem as the target.
-- Promote uses rename chain: old→backup, staging→live (both atomic on same fs).
-- A migration journal records progress so interrupted migrations can be
-  completed or rolled back on next run.
+- Each target directory gets its own staging in the same parent directory,
+  so rename is always same-filesystem (atomic).
+- Promote uses rename chain: old→backup, staging→live (both atomic).
+- A migration journal records progress; interrupted migrations can be
+  resumed or rolled back on next run. Journal source is validated on resume.
+- Journal is written atomically (tmpfile+fsync+os.replace).
+- Corrupt journal halts migration and requires manual recovery.
 - dry_run operates on a temporary DB copy, never touches the source.
 - Never deletes the source.
 """
@@ -39,24 +42,41 @@ class MigrationResult:
 _MARKER_FILE = ".migrated"
 _JOURNAL_FILE = ".migration-journal.json"
 
+# Each target gets its own staging dir in its parent, guaranteeing same-fs rename.
+_STAGING_PREFIX = ".coord-staging-"
+_BACKUP_PREFIX = "backup-"
+
+_KNOWN_PATHS = (
+    "coordinator.db",
+    "config",
+    "runs",
+    "state",
+    "tasks",
+)
+
+
+# ---------------------------------------------------------------------------
+# Hashing
+# ---------------------------------------------------------------------------
 
 def _database_hash(path: Path) -> str:
-    """SHA-256 hex digest of the database file."""
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+# ---------------------------------------------------------------------------
+# Marker
+# ---------------------------------------------------------------------------
+
 def _write_marker(paths: RuntimePaths, source: Path, db_hash: str) -> None:
-    """Write a migration marker with provenance."""
     marker = paths.data_dir / _MARKER_FILE
-    marker.write_text(
+    _atomic_write(marker, (
         f"source: {source}\n"
         f"database_hash: {db_hash}\n"
         f"completed_at: {datetime.now(timezone.utc).isoformat()}\n"
-    )
+    ))
 
 
 def _read_marker(paths: RuntimePaths) -> dict[str, str] | None:
-    """Read migration marker if it exists."""
     marker = paths.data_dir / _MARKER_FILE
     if not marker.exists():
         return None
@@ -68,8 +88,49 @@ def _read_marker(paths: RuntimePaths) -> dict[str, str] | None:
     return result
 
 
+# ---------------------------------------------------------------------------
+# Atomic file write (tmpfile + fsync + rename)
+# ---------------------------------------------------------------------------
+
+def _atomic_write(path: Path, content: str) -> None:
+    """Write content to path atomically via tmpfile+fsync+os.replace."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(
+        dir=str(path.parent),
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    )
+    try:
+        os.write(fd, content.encode("utf-8"))
+        os.fsync(fd)
+        os.close(fd)
+        os.replace(tmp, str(path))
+    except Exception:
+        os.close(fd) if not _fd_closed(fd) else None
+        _unlink_ignore(tmp)
+        raise
+
+
+def _fd_closed(fd: int) -> bool:
+    try:
+        os.fstat(fd)
+        return False
+    except OSError:
+        return True
+
+
+def _unlink_ignore(path: str) -> None:
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Journal
+# ---------------------------------------------------------------------------
+
 def _journal_path(paths: RuntimePaths) -> Path:
-    """Journal lives alongside the target directories."""
     return paths.data_dir.parent / _JOURNAL_FILE
 
 
@@ -80,50 +141,69 @@ def _write_journal(
     backup_path: str | None,
     existed_before: dict[str, bool],
     completed_steps: list[str],
-    staging_root: str,
+    staging_map: dict[str, str],
 ) -> None:
-    """Write a crash-recovery journal."""
     data = {
         "source": source,
         "backup_path": backup_path,
         "existed_before": existed_before,
         "completed_steps": completed_steps,
-        "staging_root": staging_root,
+        "staging_map": staging_map,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
-    jp = _journal_path(paths)
-    jp.parent.mkdir(parents=True, exist_ok=True)
-    jp.write_text(json.dumps(data, indent=2) + "\n")
+    _atomic_write(_journal_path(paths), json.dumps(data, indent=2) + "\n")
 
 
 def _read_journal(paths: RuntimePaths) -> dict | None:
-    """Read an existing journal, or None."""
     jp = _journal_path(paths)
     if not jp.exists():
         return None
     try:
-        return json.loads(jp.read_text())
-    except (json.JSONDecodeError, OSError):
-        return None
+        data = json.loads(jp.read_text())
+        if not isinstance(data, dict):
+            raise ValueError("journal is not a dict")
+        if "source" not in data:
+            raise ValueError("journal missing source")
+        return data
+    except (json.JSONDecodeError, ValueError, OSError) as exc:
+        # Corrupt journal — halt, don't silently ignore
+        raise RuntimeError(
+            f"Migration journal is corrupt ({exc}). "
+            f"Delete {_journal_path(paths)} and retry, or restore from backup."
+        ) from exc
 
 
 def _clear_journal(paths: RuntimePaths) -> None:
-    """Remove the journal after successful completion."""
     jp = _journal_path(paths)
     jp.unlink(missing_ok=True)
 
 
-_KNOWN_PATHS = (
-    "coordinator.db",
-    "config",
-    "runs",
-    "state",
-    "tasks",
-)
+# ---------------------------------------------------------------------------
+# Per-directory staging helpers
+# ---------------------------------------------------------------------------
 
+def _staging_dir_for(target: Path) -> Path:
+    """Return a staging directory in the same parent as target."""
+    return target.parent / f"{_STAGING_PREFIX}{target.name}"
+
+
+def _backup_dir_for(target: Path, timestamp: str) -> Path:
+    return target.parent / f"{_BACKUP_PREFIX}{timestamp}" / target.name
+
+
+def _cleanup_staging(paths: RuntimePaths) -> None:
+    """Remove any leftover staging directories."""
+    for directory in [paths.config_dir, paths.data_dir, paths.state_dir]:
+        staging = _staging_dir_for(directory)
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Copy
+# ---------------------------------------------------------------------------
 
 def _copy_known_paths(source: Path, dest_root: Path, paths: RuntimePaths) -> None:
-    """Copy known legacy paths into a destination root directory."""
     for name in _KNOWN_PATHS:
         src = source / name
         if not src.exists():
@@ -151,8 +231,60 @@ def _copy_known_paths(source: Path, dest_root: Path, paths: RuntimePaths) -> Non
             shutil.copy2(src, dst)
 
 
+def _copy_to_per_target_staging(source: Path, paths: RuntimePaths) -> None:
+    """Copy known paths into per-target staging directories.
+
+    Layout: staging dir directly contains the content that will become
+    the live directory after rename.
+      - config staging: .coord-staging-config/ ← source/config/*
+      - data staging:   .coord-staging-data/   ← coordinator.db, runs/, tasks/
+      - state staging:  .coord-staging-state/  ← source/state/*
+    """
+    data_staging = _staging_dir_for(paths.data_dir)
+    config_staging = _staging_dir_for(paths.config_dir)
+    state_staging = _staging_dir_for(paths.state_dir)
+
+    for name in _KNOWN_PATHS:
+        src = source / name
+        if not src.exists():
+            continue
+
+        if name == "coordinator.db":
+            dst = data_staging / "coordinator.db"
+        elif name == "config":
+            # Copy contents of config/ into config_staging/
+            dst = config_staging  # will be handled as directory copy
+            if dst.exists():
+                shutil.rmtree(dst)
+            shutil.copytree(src, dst)
+            continue
+        elif name == "runs":
+            dst = data_staging / "runs"
+        elif name == "state":
+            dst = state_staging
+            if dst.exists():
+                shutil.rmtree(dst)
+            shutil.copytree(src, dst)
+            continue
+        elif name == "tasks":
+            dst = data_staging / "tasks"
+        else:
+            continue
+
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if src.is_dir():
+            if dst.exists():
+                shutil.rmtree(dst)
+            shutil.copytree(src, dst)
+        else:
+            shutil.copy2(src, dst)
+
+
+# ---------------------------------------------------------------------------
+# Validation
+# ---------------------------------------------------------------------------
+
 def _validate_database_copy(db_path: Path) -> None:
-    """Open a database copy and run migrations to validate."""
     conn = connect(db_path)
     try:
         init_db(conn)
@@ -160,60 +292,66 @@ def _validate_database_copy(db_path: Path) -> None:
         conn.close()
 
 
-def _validate_staged_database(staging: Path) -> None:
-    """Open the staged database and run migrations to validate."""
-    db_path = staging / "data" / "coordinator.db"
+def _validate_staged_database(paths: RuntimePaths) -> None:
+    staging = _staging_dir_for(paths.data_dir)
+    db_path = staging / "coordinator.db"
     if not db_path.exists():
         return
     _validate_database_copy(db_path)
 
 
+# ---------------------------------------------------------------------------
+# Atomic rename
+# ---------------------------------------------------------------------------
+
 def _atomic_rename(src: Path, dst: Path) -> None:
-    """Rename src to dst atomically. Raises OSError on cross-filesystem."""
     os.rename(str(src), str(dst))
 
 
+# ---------------------------------------------------------------------------
+# Promote with per-target rename chain
+# ---------------------------------------------------------------------------
+
 def _promote_with_rename_chain(
-    staging_root: Path,
     paths: RuntimePaths,
-    backup_root: Path,
+    backup_timestamp: str,
     existed_before: dict[str, bool],
     journal: dict,
 ) -> None:
-    """Promote staged dirs using a rename chain.
+    """Promote each target using rename chain: old→backup, staging→live.
 
-    For each directory:
-      1. If live exists: rename live → backup (atomic)
-      2. Rename staging → live (atomic)
-
-    On EXDEV (cross-filesystem), falls back to copy+remove.
+    Each staging dir is in the same parent as its target, so rename is
+    always same-filesystem (atomic). Only EXDEV falls back to copy.
     """
-    steps = [
-        ("config", paths.config_dir, staging_root / "config"),
-        ("data", paths.data_dir, staging_root / "data"),
-        ("state", paths.state_dir, staging_root / "state"),
+    targets = [
+        ("config", paths.config_dir),
+        ("data", paths.data_dir),
+        ("state", paths.state_dir),
     ]
 
     completed = list(journal.get("completed_steps", []))
+    staging_map = journal.get("staging_map", {})
 
-    # Ensure backup root exists before any rename into it
-    backup_root.mkdir(parents=True, exist_ok=True)
-
-    for label, live_dir, staged_dir in steps:
+    for label, live_dir in targets:
         step_key = f"promote:{label}"
-
         if step_key in completed:
-            continue  # Already done (crash recovery)
-
-        if not staged_dir.exists():
             continue
 
-        # Ensure parent exists
+        staging = _staging_dir_for(live_dir)
+        if not staging.exists():
+            continue
+
+        # Ensure staging has content (the copy step puts content under
+        # staging/<label>/ for dirs, or staging/<file> for DB)
+        staging_content = staging / label if (staging / label).is_dir() else staging
+        if not any(staging.iterdir()):
+            continue
+
         live_dir.parent.mkdir(parents=True, exist_ok=True)
 
         if live_dir.exists():
-            # Step 1: rename live → backup
-            backup_dir = backup_root / label
+            backup_dir = _backup_dir_for(live_dir, backup_timestamp)
+            backup_dir.parent.mkdir(parents=True, exist_ok=True)
             try:
                 _atomic_rename(live_dir, backup_dir)
             except OSError as exc:
@@ -223,13 +361,16 @@ def _promote_with_rename_chain(
                 else:
                     raise
 
-        # Step 2: rename staging → live
+        # Rename staging → live
+        # For dirs: staging/config → config_dir
+        # For data: staging is a sibling of data_dir, we need to rename
+        # staging itself to become the live dir
         try:
-            _atomic_rename(staged_dir, live_dir)
+            _atomic_rename(staging, live_dir)
         except OSError as exc:
             if exc.errno == errno.EXDEV:
-                shutil.copytree(staged_dir, live_dir)
-                shutil.rmtree(staged_dir)
+                shutil.copytree(staging, live_dir)
+                shutil.rmtree(staging)
             else:
                 raise
 
@@ -238,12 +379,47 @@ def _promote_with_rename_chain(
         _write_journal(
             paths,
             source=journal["source"],
-            backup_path=str(backup_root),
+            backup_path=journal.get("backup_path"),
             existed_before=journal["existed_before"],
             completed_steps=completed,
-            staging_root=str(staging_root),
+            staging_map=staging_map,
         )
 
+
+# ---------------------------------------------------------------------------
+# Rollback
+# ---------------------------------------------------------------------------
+
+def _rollback(
+    paths: RuntimePaths,
+    existed_before: dict[str, bool],
+    backup_timestamp: str | None,
+) -> None:
+    for label, directory in [
+        ("config", paths.config_dir),
+        ("data", paths.data_dir),
+        ("state", paths.state_dir),
+    ]:
+        if backup_timestamp is not None:
+            backup_dir = _backup_dir_for(directory, backup_timestamp)
+            if backup_dir.exists():
+                if directory.exists():
+                    shutil.rmtree(directory)
+                try:
+                    _atomic_rename(backup_dir, directory)
+                except OSError:
+                    shutil.copytree(backup_dir, directory)
+                continue
+
+        if directory.exists() and not existed_before.get(label, False):
+            shutil.rmtree(directory)
+
+    _cleanup_staging(paths)
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 def migrate_legacy_root(
     source: Path,
@@ -251,24 +427,10 @@ def migrate_legacy_root(
     *,
     dry_run: bool = False,
 ) -> MigrationResult:
-    """Migrate a legacy Coordinator root to global paths.
-
-    Args:
-        source: Legacy root directory containing coordinator.db, config/, etc.
-        paths: Target global runtime paths.
-        dry_run: If True, validate a temp copy of the DB without writing.
-
-    Returns:
-        MigrationResult with status and optional backup path.
-
-    Raises:
-        FileNotFoundError: If source does not exist.
-    """
     source = Path(source).resolve()
     if not source.exists():
         raise FileNotFoundError(f"legacy root not found: {source}")
 
-    # Check if already migrated from the same source
     marker = _read_marker(paths)
     if marker is not None and marker.get("source") == str(source):
         return MigrationResult(status="already_migrated")
@@ -280,20 +442,22 @@ def migrate_legacy_root(
 
 
 def _dry_run_validate(source: Path) -> MigrationResult:
-    """Validate migration without writing: copy DB to temp, run init_db,
-    assert source hash unchanged."""
+    """Validate: copy DB to temp, run init_db, assert source hash unchanged."""
     src_db = source / "coordinator.db"
     if not src_db.exists():
+        # No DB to validate — check source has at least one known path
+        has_any = any((source / name).exists() for name in _KNOWN_PATHS)
+        if not has_any:
+            return MigrationResult(status="dry_run")
+        # Has content but no DB — still valid (config-only migration)
         return MigrationResult(status="dry_run")
 
     source_hash = _database_hash(src_db)
-
     tmp_dir = Path(tempfile.mkdtemp(prefix="coord-dryrun-"))
     try:
         tmp_db = tmp_dir / "coordinator.db"
         shutil.copy2(src_db, tmp_db)
         _validate_database_copy(tmp_db)
-
         assert _database_hash(src_db) == source_hash, (
             "source database was modified during dry_run"
         )
@@ -304,10 +468,6 @@ def _dry_run_validate(source: Path) -> MigrationResult:
 
 
 def _migrate_write(source: Path, paths: RuntimePaths) -> MigrationResult:
-    """Perform the actual migration with staging, rename-chain promote,
-    journal-based crash recovery, and rollback."""
-
-    # Check for incomplete previous migration
     existing_journal = _read_journal(paths)
     if existing_journal is not None:
         return _resume_migration(source, paths, existing_journal)
@@ -318,44 +478,39 @@ def _migrate_write(source: Path, paths: RuntimePaths) -> MigrationResult:
         "state": paths.state_dir.exists(),
     }
 
-    # Create staging on same filesystem as target (for atomic rename)
-    staging_parent = paths.data_dir.parent
-    staging_parent.mkdir(parents=True, exist_ok=True)
-    staging_root = Path(tempfile.mkdtemp(
-        prefix="coord-migrate-",
-        dir=staging_parent,
-    ))
+    backup_timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
-    backup_root = paths.data_dir.parent / (
-        "backup-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    )
+    # Create per-target staging dirs (same filesystem as each target)
+    for directory in [paths.config_dir, paths.data_dir, paths.state_dir]:
+        staging = _staging_dir_for(directory)
+        staging.mkdir(parents=True, exist_ok=True)
 
     journal = {
         "source": str(source),
-        "backup_path": str(backup_root),
+        "backup_path": backup_timestamp,
         "existed_before": existed_before,
         "completed_steps": [],
-        "staging_root": str(staging_root),
+        "staging_map": {},
     }
 
     try:
-        # Phase 1: Copy to staging
-        _copy_known_paths(source, staging_root, paths)
-        _validate_staged_database(staging_root)
+        # Phase 1: Copy to per-target staging
+        _copy_to_per_target_staging(source, paths)
+        _validate_staged_database(paths)
 
         # Phase 2: Write journal before touching live dirs
         _write_journal(
             paths,
             source=str(source),
-            backup_path=str(backup_root),
+            backup_path=backup_timestamp,
             existed_before=existed_before,
             completed_steps=[],
-            staging_root=str(staging_root),
+            staging_map={},
         )
 
-        # Phase 3: Rename-chain promote (atomic per directory)
+        # Phase 3: Rename-chain promote
         _promote_with_rename_chain(
-            staging_root, paths, backup_root, existed_before, journal
+            paths, backup_timestamp, existed_before, journal
         )
 
         # Phase 4: Write marker and clean up
@@ -365,15 +520,17 @@ def _migrate_write(source: Path, paths: RuntimePaths) -> MigrationResult:
         _write_marker(paths, source, db_hash)
         _clear_journal(paths)
 
-        return MigrationResult(status="migrated", backup_path=backup_root)
+        return MigrationResult(
+            status="migrated",
+            backup_path=paths.data_dir.parent / f"{_BACKUP_PREFIX}{backup_timestamp}",
+        )
 
     except Exception:
-        _rollback(paths, existed_before, backup_root)
+        _rollback(paths, existed_before, backup_timestamp)
         _clear_journal(paths)
         raise
     finally:
-        if staging_root.exists():
-            shutil.rmtree(staging_root, ignore_errors=True)
+        _cleanup_staging(paths)
 
 
 def _resume_migration(
@@ -381,68 +538,46 @@ def _resume_migration(
     paths: RuntimePaths,
     journal: dict,
 ) -> MigrationResult:
-    """Resume an interrupted migration using the journal."""
-    staging_root = Path(journal["staging_root"])
-    backup_path = Path(journal["backup_path"]) if journal.get("backup_path") else None
+    # Validate journal source matches requested source
+    journal_source = journal.get("source", "")
+    if journal_source != str(source):
+        raise RuntimeError(
+            f"Migration journal was started from a different source: "
+            f"{journal_source!r} != {source!r}. "
+            f"Delete {_journal_path(paths)} to start fresh."
+        )
+
+    backup_timestamp = journal.get("backup_path", "")
     existed_before = journal.get("existed_before", {})
 
-    # If staging is gone, we can't resume — clean up and start over
-    if not staging_root.exists():
+    # Check staging dirs still exist
+    has_staging = any(
+        _staging_dir_for(d).exists()
+        for d in [paths.config_dir, paths.data_dir, paths.state_dir]
+    )
+    if not has_staging:
         _clear_journal(paths)
         return _migrate_write(source, paths)
 
     try:
-        # Continue the rename chain from where we left off
         _promote_with_rename_chain(
-            staging_root, paths, backup_path or Path(), existed_before, journal
+            paths, backup_timestamp, existed_before, journal
         )
 
-        # Write marker and clean up
         db_hash = ""
         if paths.database.exists():
             db_hash = _database_hash(paths.database)
         _write_marker(paths, source, db_hash)
         _clear_journal(paths)
 
-        return MigrationResult(status="migrated", backup_path=backup_path)
+        return MigrationResult(
+            status="migrated",
+            backup_path=paths.data_dir.parent / f"{_BACKUP_PREFIX}{backup_timestamp}",
+        )
 
     except Exception:
-        _rollback(paths, existed_before, backup_path)
+        _rollback(paths, existed_before, backup_timestamp)
         _clear_journal(paths)
         raise
     finally:
-        if staging_root.exists():
-            shutil.rmtree(staging_root, ignore_errors=True)
-
-
-def _rollback(
-    paths: RuntimePaths,
-    existed_before: dict[str, bool],
-    backup_path: Path | None,
-) -> None:
-    """Rollback: restore from backup or delete newly-created directories.
-
-    Only touches directories that were modified by the migration.
-    Pre-existing directories that weren't renamed away are left alone.
-    """
-    for label, directory in [
-        ("config", paths.config_dir),
-        ("data", paths.data_dir),
-        ("state", paths.state_dir),
-    ]:
-        # If backup exists, restore from it (renamed-away dir)
-        if backup_path is not None:
-            backup_dir = backup_path / label
-            if backup_dir.exists():
-                if directory.exists():
-                    shutil.rmtree(directory)
-                # Rename back (atomic on same fs)
-                try:
-                    _atomic_rename(backup_dir, directory)
-                except OSError:
-                    shutil.copytree(backup_dir, directory)
-                continue
-
-        # No backup: only delete dirs that were newly created
-        if directory.exists() and not existed_before.get(label, False):
-            shutil.rmtree(directory)
+        _cleanup_staging(paths)
