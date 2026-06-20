@@ -225,6 +225,98 @@ Run `coordinator doctor` to check:
 - Budget caps set
 - Human review point configured
 
+## Global Runtime Paths
+
+The Coordinator stores its state in XDG-compliant directories:
+
+| Data | Default | XDG Override |
+|---|---|---|
+| Config | `~/.config/coordinator/` | `$XDG_CONFIG_HOME/coordinator/` |
+| Database | `~/.local/share/coordinator/coordinator.db` | `$XDG_DATA_HOME/coordinator/` |
+| Socket | `~/.local/state/coordinator/coordinator.sock` | `$XDG_STATE_HOME/coordinator/` |
+
+For testing, set `COORDINATOR_HOME` to place all three directories under one
+root:
+
+```bash
+export COORDINATOR_HOME=/tmp/coordinator-test
+```
+
+## Supervisor
+
+The Supervisor is a single-instance daemon that serves the Coordinator protocol
+over a Unix socket.
+
+```bash
+# Start in foreground (required for now)
+coordinator supervisor start --foreground
+
+# Check if running
+coordinator supervisor status
+
+# Graceful shutdown
+coordinator supervisor stop
+```
+
+A second `supervisor start` is rejected while one is running. The lock file
+uses `O_CREAT|O_EXCL` for atomic acquisition.
+
+## Project Registration
+
+Register Git repositories as Coordinator projects:
+
+```bash
+# Inspect without registering
+coordinator project inspect /path/to/repo
+
+# Register (requires --yes)
+coordinator project add /path/to/repo --yes
+```
+
+Project registration is idempotent and requires explicit confirmation.
+
+## Legacy Migration
+
+Migrate from a single-root Coordinator installation to global paths:
+
+```bash
+# Dry run (validates without writing)
+coordinator migrate --source /path/to/legacy --dry-run
+
+# Full migration
+coordinator migrate --source /path/to/legacy --yes
+```
+
+Migration safety:
+- Copies to a staging directory first; validates the database before touching
+  live directories.
+- Backs up all three target dirs (config, data, state) before overwrite.
+- On failure, restores from backup and deletes newly-created directories.
+- Never deletes the source.
+
+## Single Fallback Recovery
+
+When a worker agent gets stuck requesting interactive approval instead of
+implementing, the Coordinator automatically hands the task to a different
+compatible agent exactly once.
+
+The classifier detects patterns like "should I proceed?", "may I continue?",
+"would you like me to?" in agent output. If the first worker left no changes
+in the worktree, the task is handed to the configured fallback agent.
+
+Configuration in `config/agents.toml`:
+
+```toml
+[agents.claude_worker]
+fallback_agents = ["grok_worker"]
+
+[agents.grok_worker]
+fallback_agents = ["claude_worker"]
+```
+
+At most one fallback attempt per task. If both agents are blocked, the task
+moves to `awaiting_human`.
+
 ## Commander (Goal-Driven Automation)
 
 The Commander adds a conversational front door for setting long-term goals.
