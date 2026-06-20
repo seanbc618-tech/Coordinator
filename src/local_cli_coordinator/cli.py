@@ -2,6 +2,7 @@ import argparse
 import shutil
 import sqlite3
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -725,15 +726,101 @@ def _cmd_supervisor_start(args: argparse.Namespace) -> int:
         print("Use --foreground to start the Supervisor in the foreground.")
         print("Background daemon mode is not yet implemented.")
         return 1
-    from .supervisor_server import SupervisorServer, SupervisorServerError
 
-    server = SupervisorServer(paths)
+    from .supervisor_server import SupervisorServer, SupervisorServerError
+    from .supervisor_events import EventBroker
+    from .supervisor_capacity import SharedCapacity
+    from .supervisor_methods import SupervisorMethods
+    from .supervisor_scheduler import FairProjectScheduler
+    from .supervisor import MultiProjectSupervisor
+    from .db import connect, init_db
+
+    # Discover registered projects
+    conn = connect(paths.database)
+    init_db(conn)
+    project_ids = [
+        row["project_id"]
+        for row in conn.execute("select distinct project_id from tasks").fetchall()
+    ]
+    conn.close()
+
+    if not project_ids:
+        project_ids = ["legacy-default"]
+
+    # Assemble shared components
+    broker = EventBroker()
+    capacity = SharedCapacity()
+    methods = SupervisorMethods(broker=broker)
+    scheduler = FairProjectScheduler(project_ids)
+
+    sup = MultiProjectSupervisor(
+        paths=paths,
+        scheduler=scheduler,
+        broker=broker,
+        capacity=capacity,
+        methods=methods,
+    )
+
+    # Build handler that delegates to methods + system commands
+    from .supervisor_protocol import RequestEnvelope, ResponseEnvelope, PROTOCOL_VERSION
+
+    def handler(request: RequestEnvelope) -> ResponseEnvelope:
+        if request.method == "system.ping":
+            return ResponseEnvelope(
+                protocol_version=PROTOCOL_VERSION,
+                request_id=request.request_id,
+                ok=True,
+                result={"pong": True, **sup.status()},
+                error=None,
+            )
+        if request.method == "system.shutdown":
+            sup.request_shutdown()
+            server.request_shutdown()
+            return ResponseEnvelope(
+                protocol_version=PROTOCOL_VERSION,
+                request_id=request.request_id,
+                ok=True,
+                result={"shutting_down": True},
+                error=None,
+            )
+        conn = connect(paths.database)
+        init_db(conn)
+        try:
+            return methods.handle(conn, request)
+        finally:
+            conn.close()
+
+    try:
+        server = SupervisorServer(paths, handler=handler)
+    except SupervisorServerError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
     print(f"Supervisor listening on {paths.socket}")
+    print(f"Projects: {', '.join(project_ids)}")
+
+    # Tick loop in a background thread
+    import time
+
+    def tick_loop():
+        while not sup.is_shutdown_requested():
+            try:
+                sup.tick()
+            except Exception:
+                pass
+            time.sleep(1)
+
+    tick_thread = threading.Thread(target=tick_loop, daemon=True)
+    tick_thread.start()
+
     try:
         server.serve_forever()
     except SupervisorServerError as exc:
         print(str(exc), file=sys.stderr)
         return 1
+    finally:
+        sup.request_shutdown()
+
     return 0
 
 

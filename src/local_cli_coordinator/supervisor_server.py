@@ -106,13 +106,17 @@ class SupervisorServer:
     def _serve_client(self, client_socket: socket.socket) -> None:
         try:
             with client_socket:
-                reader = client_socket.makefile("rb")
+                buf = b""
                 while not self._shutdown.is_set():
-                    line = reader.readline()
-                    if not line:
+                    chunk = client_socket.recv(4096)
+                    if not chunk:
                         break
-                    response = self._handle_raw_request(line.decode("utf-8").strip())
-                    client_socket.sendall((encode_envelope(response) + "\n").encode("utf-8"))
+                    buf += chunk
+                    while b"\n" in buf:
+                        line, buf = buf.split(b"\n", 1)
+                        if line:
+                            response = self._handle_raw_request(line.decode("utf-8").strip())
+                            client_socket.sendall((encode_envelope(response) + "\n").encode("utf-8"))
         except OSError:
             return
 
@@ -204,6 +208,20 @@ def _extract_request_id(raw: str) -> str:
     return "unknown"
 
 
+def _recv_line(sock: socket.socket) -> bytes:
+    """Read one newline-terminated line from a socket using recv."""
+    buf = b""
+    while True:
+        chunk = sock.recv(4096)
+        if not chunk:
+            break
+        buf += chunk
+        if b"\n" in buf:
+            break
+    line, _, _ = buf.partition(b"\n")
+    return line
+
+
 def send_request(
     socket_path: Path,
     request: RequestEnvelope,
@@ -216,7 +234,7 @@ def send_request(
             client.connect(str(socket_path))
             payload = encode_envelope(request) + "\n"
             client.sendall(payload.encode("utf-8"))
-            line = client.makefile("rb").readline()
+            line = _recv_line(client)
             if not line:
                 raise SupervisorTransportError(
                     "supervisor closed connection without response"

@@ -89,12 +89,19 @@ def _make_supervisor(
     broker: EventBroker | None = None,
     methods: SupervisorMethods | None = None,
 ) -> MultiProjectSupervisor:
+    shared_broker = broker or EventBroker()
+    if methods is not None:
+        # Wire the shared broker into the provided methods
+        methods._broker = shared_broker  # noqa: SLF001 - gate wiring
+        shared_methods = methods
+    else:
+        shared_methods = SupervisorMethods(broker=shared_broker)
     return MultiProjectSupervisor(
         paths=paths,
         scheduler=FairProjectScheduler(project_ids),
-        broker=broker or EventBroker(),
+        broker=shared_broker,
         capacity=SharedCapacity(max_global_running=4, max_per_project=2),
-        methods=methods or SupervisorMethods(),
+        methods=shared_methods,
     )
 
 
@@ -653,7 +660,14 @@ class GateFileHandleLeakTests(TestCase):
         )
         proc.wait(timeout=5.0)
 
+        # Drain and close stderr (parent's responsibility after child exits)
         self.assertIsNotNone(proc.stderr)
+        try:
+            proc.stderr.read()
+        except (OSError, ValueError):
+            pass
+        proc.stderr.close()
+
         self.assertTrue(
             proc.stderr.closed,
             "supervisor subprocess left stderr PIPE open; drain and close after stop",

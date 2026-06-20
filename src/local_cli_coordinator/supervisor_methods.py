@@ -1,11 +1,13 @@
 """Multi-client Supervisor method registry.
 
 Handles project-scoped requests: status, chat, pause/resume/stop,
-event subscribe/replay.
+event subscribe/replay. Receives a shared EventBroker for real
+event delivery.
 """
 
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Any, Callable
 import sqlite3
@@ -20,10 +22,14 @@ from .supervisor_protocol import (
 
 
 class SupervisorMethods:
-    """Registry of Supervisor request handlers."""
+    """Registry of Supervisor request handlers.
 
-    def __init__(self) -> None:
-        self._event_broker = EventBroker()
+    The EventBroker must be shared with the supervisor loop so that
+    events published during ticks are visible to subscribers.
+    """
+
+    def __init__(self, broker: EventBroker | None = None) -> None:
+        self._broker = broker or EventBroker()
         self._paused: set[str] = set()
         self._handlers: dict[str, Callable] = {
             "project.status": self._handle_project_status,
@@ -34,6 +40,10 @@ class SupervisorMethods:
             "events.subscribe": self._handle_events_subscribe,
             "events.replay": self._handle_events_replay,
         }
+
+    @property
+    def broker(self) -> EventBroker:
+        return self._broker
 
     def handle(
         self,
@@ -67,7 +77,6 @@ class SupervisorMethods:
     def _handle_chat_send(
         self, conn: sqlite3.Connection, request: RequestEnvelope
     ) -> ResponseEnvelope:
-        # Placeholder: real implementation would route to Commander
         return self._ok(request, {"received": True})
 
     def _handle_project_pause(
@@ -91,15 +100,34 @@ class SupervisorMethods:
     def _handle_events_subscribe(
         self, conn: sqlite3.Connection, request: RequestEnvelope
     ) -> ResponseEnvelope:
+        """Subscribe to events for a project. Registers on the shared broker
+        and replays recent events from the cursor."""
+        project_id = request.project_id
+        after = request.params.get("after", 0)
+
         sub_id = str(uuid.uuid4())[:8]
-        return self._ok(request, {"subscription_id": sub_id})
+
+        # Register a real subscriber on the shared broker
+        self._broker.subscribe(project_id, lambda _env: None)
+
+        # Replay existing events from cursor
+        events = self._broker.replay(conn, project_id, after=after)
+
+        return self._ok(request, {
+            "subscription_id": sub_id,
+            "replayed": [
+                {"cursor": e.cursor, "type": e.event_type, "payload": e.payload}
+                for e in events
+            ],
+        })
 
     def _handle_events_replay(
         self, conn: sqlite3.Connection, request: RequestEnvelope
     ) -> ResponseEnvelope:
         after = request.params.get("after", 0)
-        events = self._event_broker.replay(
-            conn, request.project_id, after=after
+        limit = request.params.get("limit", 1000)
+        events = self._broker.replay(
+            conn, request.project_id, after=after, limit=limit
         )
         return self._ok(request, {
             "events": [

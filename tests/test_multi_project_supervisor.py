@@ -95,6 +95,13 @@ class MultiProjectSupervisorCliTest(TestCase):
                     p.wait(timeout=2)
                 except subprocess.TimeoutExpired:
                     p.kill()
+            # Drain and close stderr to avoid ResourceWarning
+            if p.stderr:
+                try:
+                    p.stderr.read()
+                except (OSError, ValueError):
+                    pass
+                p.stderr.close()
         self._tmpdir.cleanup()
 
     def _run(self, *args: str) -> subprocess.CompletedProcess[str]:
@@ -126,7 +133,8 @@ class MultiProjectSupervisorCliTest(TestCase):
                 return proc
             if proc.poll() is not None:
                 stderr = proc.stderr.read() if proc.stderr else ""
-                proc.stderr.close() if proc.stderr else None
+                if proc.stderr:
+                    proc.stderr.close()
                 self.fail(f"supervisor exited: {stderr}")
             time.sleep(0.05)
         self.fail("supervisor did not start")
