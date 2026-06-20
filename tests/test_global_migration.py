@@ -1,5 +1,6 @@
 """Tests for safe legacy state migration."""
 
+import subprocess
 import tempfile
 from pathlib import Path
 from unittest import TestCase
@@ -215,6 +216,124 @@ class MigrateLegacyRootTest(TestCase):
             migrate_legacy_root(self.legacy, self.paths)
 
         self.assertTrue(len(calls) >= 2)
+
+    # --- crash recovery ---
+
+    def test_marker_written_journal_not_cleared_recovers(self) -> None:
+        """Simulate crash after marker write but before journal cleanup.
+
+        Next call should detect marker+journal agree, clean up, return
+        already_migrated.
+        """
+        import json
+        import local_cli_coordinator.global_migration as gm
+
+        # Do a normal migration
+        migrate_legacy_root(self.legacy, self.paths)
+
+        # Verify clean state
+        self.assertFalse(_journal_path(self.paths).exists())
+        self.assertTrue((self.paths.data_dir / ".migrated").exists())
+
+        # Simulate crash: write a journal that matches the marker
+        marker = (self.paths.data_dir / ".migrated").read_text()
+        source_line = [l for l in marker.splitlines() if l.startswith("source:")]
+        marker_source = source_line[0].split(":", 1)[1].strip()
+
+        journal_data = {
+            "source": marker_source,
+            "backup_path": "backup-test",
+            "existed_before": {"config": True, "data": True, "state": True},
+            "completed_steps": ["promote:config", "promote:data", "promote:state"],
+            "staging_map": {},
+            "timestamp": "2026-01-01T00:00:00Z",
+        }
+        _journal_path(self.paths).write_text(json.dumps(journal_data))
+
+        # Also create a leftover staging dir
+        staging = self.paths.data_dir.parent / ".coord-staging-data"
+        staging.mkdir(parents=True, exist_ok=True)
+        (staging / "marker.txt").write_text("leftover")
+
+        # Next call should recover
+        result = migrate_legacy_root(self.legacy, self.paths)
+        self.assertEqual(result.status, "already_migrated")
+
+        # Journal and staging should be cleaned up
+        self.assertFalse(_journal_path(self.paths).exists())
+        self.assertFalse(staging.exists())
+
+
+class MigrateCliIntegrationTest(TestCase):
+    """Subprocess integration tests for coordinator migrate."""
+
+    def setUp(self) -> None:
+        import os
+        import sys
+        from tests.helpers import ROOT, SRC
+
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.home = Path(self._tmpdir.name) / "home"
+        self.legacy = Path(self._tmpdir.name) / "legacy"
+        self.legacy.mkdir()
+
+        # Create minimal legacy
+        db = connect(self.legacy / "coordinator.db")
+        init_db(db)
+        db.close()
+        (self.legacy / "config").mkdir()
+        (self.legacy / "config" / "agents.toml").write_text("[agents]\n")
+
+        self._env = os.environ.copy()
+        self._env["PYTHONPATH"] = str(SRC)
+        self._env["COORDINATOR_HOME"] = str(self.home)
+        self._root = ROOT
+
+    def tearDown(self) -> None:
+        self._tmpdir.cleanup()
+
+    def _run(self, *args: str) -> subprocess.CompletedProcess[str]:
+        import subprocess
+        import sys
+        return subprocess.run(
+            [sys.executable, "-m", "local_cli_coordinator", *args],
+            cwd=self._root,
+            env=self._env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+    def test_migrate_yes(self) -> None:
+        result = self._run("migrate", "--source", str(self.legacy), "--yes")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("migrated", result.stdout)
+
+    def test_migrate_dry_run(self) -> None:
+        result = self._run("migrate", "--source", str(self.legacy), "--dry-run")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("dry_run", result.stdout)
+
+    def test_migrate_refuses_without_yes(self) -> None:
+        result = self._run("migrate", "--source", str(self.legacy))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Refusing", result.stdout)
+
+    def test_migrate_missing_source(self) -> None:
+        result = self._run("migrate", "--source", "/nonexistent", "--yes")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("not found", result.stderr)
+
+    def test_migrate_idempotent(self) -> None:
+        r1 = self._run("migrate", "--source", str(self.legacy), "--yes")
+        self.assertEqual(r1.returncode, 0)
+        r2 = self._run("migrate", "--source", str(self.legacy), "--yes")
+        self.assertEqual(r2.returncode, 0)
+        self.assertIn("already_migrated", r2.stdout)
+
+
+import subprocess as _subprocess
 
 
 def _hash_file(path: Path) -> str:

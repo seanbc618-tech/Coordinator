@@ -431,10 +431,38 @@ def migrate_legacy_root(
     if not source.exists():
         raise FileNotFoundError(f"legacy root not found: {source}")
 
+    # Reconcile journal and marker before deciding
+    journal = _read_journal(paths)  # None if no journal; raises on corrupt
     marker = _read_marker(paths)
-    if marker is not None and marker.get("source") == str(source):
+
+    marker_source = marker.get("source") if marker else None
+    journal_source = journal.get("source") if journal else None
+    requested = str(source)
+
+    # Case 1: marker + journal + requested all agree → fully migrated,
+    # journal wasn't cleaned (crash after marker, before cleanup).
+    if marker_source == requested and journal_source == requested:
+        _clear_journal(paths)
+        _cleanup_staging(paths)
         return MigrationResult(status="already_migrated")
 
+    # Case 2: marker matches, no journal → already migrated cleanly
+    if marker_source == requested and journal is None:
+        return MigrationResult(status="already_migrated")
+
+    # Case 3: journal exists for this source but no marker → incomplete
+    if journal_source == requested and marker_source != requested:
+        return _resume_migration(source, paths, journal)
+
+    # Case 4: journal exists for a different source → conflict
+    if journal_source is not None and journal_source != requested:
+        raise RuntimeError(
+            f"Migration journal was started from a different source: "
+            f"{journal_source!r} != {requested!r}. "
+            f"Delete {_journal_path(paths)} to start fresh."
+        )
+
+    # Case 5: no marker, no journal → fresh migration
     if dry_run:
         return _dry_run_validate(source)
 
@@ -538,15 +566,7 @@ def _resume_migration(
     paths: RuntimePaths,
     journal: dict,
 ) -> MigrationResult:
-    # Validate journal source matches requested source
-    journal_source = journal.get("source", "")
-    if journal_source != str(source):
-        raise RuntimeError(
-            f"Migration journal was started from a different source: "
-            f"{journal_source!r} != {source!r}. "
-            f"Delete {_journal_path(paths)} to start fresh."
-        )
-
+    # Source validation already done by caller
     backup_timestamp = journal.get("backup_path", "")
     existed_before = journal.get("existed_before", {})
 
