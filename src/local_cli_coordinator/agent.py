@@ -17,6 +17,8 @@ class AgentRunResult:
 
 
 def _render_token(token: str, prompt_path: Path, worktree_path: Path) -> str:
+    prompt_path = prompt_path.resolve()
+    worktree_path = worktree_path.resolve()
     return (
         token.replace("{prompt_path}", str(prompt_path))
         .replace("{worktree_path}", str(worktree_path))
@@ -55,6 +57,9 @@ def run_agent(
     run_dir: Path,
     timeout_seconds: float | None = None,
 ) -> AgentRunResult:
+    prompt_path = prompt_path.resolve()
+    worktree_path = worktree_path.resolve()
+    run_dir = run_dir.resolve()
     run_dir.mkdir(parents=True, exist_ok=True)
     log_path = run_dir / "agent.log"
     exit_code = 127

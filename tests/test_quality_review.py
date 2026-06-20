@@ -11,6 +11,7 @@ from local_cli_coordinator.config import (
 )
 from local_cli_coordinator.db import connect, create_task, get_task, init_db
 from local_cli_coordinator.engine import run_one_ready_task
+from local_cli_coordinator.review import write_quality_review_prompt
 from tests.helpers import init_git_repo
 
 
@@ -130,6 +131,22 @@ def create_feature_task(conn) -> str:
 
 
 class QualityReviewTests(unittest.TestCase):
+    def test_quality_review_prompt_uses_absolute_artifact_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = root / "runs" / "task"
+            run_dir.mkdir(parents=True)
+            diff_path = Path("runs/task/diff.patch")
+            verifier_path = Path("runs/task/verifier.log")
+            repo = reviewer_config(root, None, None).repos["demo"]
+            task = {"title": "Review task", "repo": "demo"}
+            prompt = write_quality_review_prompt(
+                task, ["feature.txt"], diff_path, verifier_path, repo, run_dir,
+            )
+            content = prompt.read_text()
+            self.assertIn(str(diff_path.resolve()), content)
+            self.assertIn(str(verifier_path.resolve()), content)
+
     def test_quality_review_runs_after_spec_review_passes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

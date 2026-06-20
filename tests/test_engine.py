@@ -2,10 +2,11 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from tests.helpers import init_git_repo, run
 from local_cli_coordinator.config import AgentConfig, CoordinatorConfig, PolicyConfig, RepoConfig
-from local_cli_coordinator.db import connect, create_task, get_task, init_db
+from local_cli_coordinator.db import connect, create_task, get_task, init_db, transition_task
 from local_cli_coordinator.engine import run_one_ready_task
 
 
@@ -57,6 +58,35 @@ def latest_event_note(conn, task_id: str) -> str:
 
 
 class EngineTests(unittest.TestCase):
+    def test_records_merge_base_failure_without_crashing_daemon(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            init_git_repo(repo)
+            conn = connect(root / "coordinator.db")
+            init_db(conn)
+            task_id = create_task(
+                conn,
+                title="Broken branch history",
+                repo="demo",
+                source_path="tasks/inbox/broken.md",
+                priority="normal",
+                capabilities=["code"],
+                goal="Exercise merge-base failure handling.",
+                acceptance_criteria=["Failure is recorded."],
+                verification_commands=[],
+            )
+
+            with patch(
+                "local_cli_coordinator.engine.merge_base",
+                side_effect=RuntimeError("unrelated histories"),
+            ):
+                processed = run_one_ready_task(conn, test_config(repo), root)
+
+            self.assertTrue(processed)
+            self.assertEqual(get_task(conn, task_id)["state"], "failed")
+            self.assertIn("merge-base lookup failed", latest_event_note(conn, task_id))
+
     def test_runs_agent_verifies_and_commits(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -83,6 +113,92 @@ class EngineTests(unittest.TestCase):
             self.assertEqual(task["state"], "done")
             self.assertTrue(task["branch"].startswith("coord/"))
             self.assertTrue(Path(task["worktree_path"]).exists())
+
+    def test_accepts_changes_committed_by_agent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            init_git_repo(repo)
+            script = root / "committing_agent.py"
+            script.write_text(
+                "from pathlib import Path\nimport subprocess\n"
+                "Path('feature.txt').write_text('done\\n')\n"
+                "subprocess.run(['git', 'add', 'feature.txt'], check=True)\n"
+                "subprocess.run(['git', 'commit', '-m', 'agent commit'], check=True)\n"
+            )
+            conn = connect(root / "coordinator.db")
+            init_db(conn)
+            task_id = create_task(
+                conn,
+                title="Committed feature",
+                repo="demo",
+                source_path="tasks/inbox/feature.md",
+                priority="normal",
+                capabilities=["code"],
+                goal="Create feature.txt.",
+                acceptance_criteria=["feature.txt contains done"],
+                verification_commands=[f"{sys.executable} -c \"from pathlib import Path; assert Path('feature.txt').read_text() == 'done\\\\n'\""],
+            )
+            base = test_config(repo)
+            agents = {
+                "committer": AgentConfig(
+                    id="committer",
+                    command=f"{sys.executable} {script}",
+                    capabilities=["code"],
+                    max_concurrency=1,
+                )
+            }
+            config = CoordinatorConfig(agents=agents, repos=base.repos, policy=base.policy)
+
+            self.assertTrue(run_one_ready_task(conn, config, root))
+            self.assertEqual(get_task(conn, task_id)["state"], "done")
+
+    def test_retry_reuses_existing_worktree(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            init_git_repo(repo)
+            conn = connect(root / "coordinator.db")
+            init_db(conn)
+            task_id = create_task(
+                conn,
+                title="Retry feature",
+                repo="demo",
+                source_path="tasks/inbox/retry.md",
+                priority="normal",
+                capabilities=["code"],
+                goal="Create feature.txt.",
+                acceptance_criteria=["feature.txt exists"],
+                verification_commands=[],
+            )
+            base = test_config(repo)
+            failing_agents = {
+                "worker": AgentConfig(
+                    id="worker",
+                    command=f"{sys.executable} -c \"raise SystemExit(1)\"",
+                    capabilities=["code"],
+                    max_concurrency=1,
+                )
+            }
+            failing = CoordinatorConfig(agents=failing_agents, repos=base.repos, policy=base.policy)
+            self.assertTrue(run_one_ready_task(conn, failing, root))
+            existing = Path(get_task(conn, task_id)["worktree_path"])
+            self.assertTrue(existing.exists())
+
+            transition_task(conn, task_id, "ready", "manual retry")
+            succeeding_agents = {
+                "worker": AgentConfig(
+                    id="worker",
+                    command=f"{sys.executable} -c \"from pathlib import Path; Path('feature.txt').write_text('done')\"",
+                    capabilities=["code"],
+                    max_concurrency=1,
+                )
+            }
+            succeeding = CoordinatorConfig(agents=succeeding_agents, repos=base.repos, policy=base.policy)
+
+            self.assertTrue(run_one_ready_task(conn, succeeding, root))
+            self.assertEqual(get_task(conn, task_id)["state"], "done")
+            self.assertEqual(Path(get_task(conn, task_id)["worktree_path"]), existing)
 
     def test_blocks_task_when_repo_is_not_configured(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

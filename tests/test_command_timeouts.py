@@ -283,7 +283,12 @@ class CommandTimeoutTests(unittest.TestCase):
 
             with (
                 patch("local_cli_coordinator.engine.create_worktree", return_value=worktree),
+                patch("local_cli_coordinator.engine.merge_base", return_value="base-commit"),
                 patch("local_cli_coordinator.engine.collect_changed_files", return_value=["feature.py"]),
+                patch(
+                    "local_cli_coordinator.engine.collect_changed_files_since",
+                    return_value=["feature.py"],
+                ),
                 patch("local_cli_coordinator.engine.diff_patch", return_value="diff"),
                 patch("local_cli_coordinator.engine.run_agent", return_value=agent_result) as runner,
                 patch("local_cli_coordinator.engine.run_verification", return_value=verifier_result) as verifier,

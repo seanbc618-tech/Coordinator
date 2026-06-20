@@ -11,6 +11,7 @@ from local_cli_coordinator.config import (
 )
 from local_cli_coordinator.db import connect, create_task, get_task, init_db
 from local_cli_coordinator.engine import run_one_ready_task
+from local_cli_coordinator.review import write_spec_review_prompt
 from tests.helpers import init_git_repo
 
 
@@ -76,6 +77,21 @@ def create_feature_task(conn) -> str:
 
 
 class SpecReviewTests(unittest.TestCase):
+    def test_spec_review_prompt_uses_absolute_diff_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = root / "runs" / "task"
+            run_dir.mkdir(parents=True)
+            diff_path = Path("runs/task/diff.patch")
+            task = {
+                "title": "Review task",
+                "repo": "demo",
+                "goal": "Review it",
+                "acceptance_criteria": "It passes",
+            }
+            prompt = write_spec_review_prompt(task, ["feature.txt"], diff_path, run_dir)
+            self.assertIn(str(diff_path.resolve()), prompt.read_text())
+
     def test_engine_runs_spec_reviewer_after_verification_passes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

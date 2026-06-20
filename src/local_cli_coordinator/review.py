@@ -27,7 +27,7 @@ def write_spec_review_prompt(task, changed_files: list[str], diff_path: Path, ru
         f"## Goal\n\n{task['goal']}\n\n"
         f"## Acceptance Criteria\n\n{task['acceptance_criteria']}\n\n"
         f"## Changed Files\n\n{_format_changed_files(changed_files)}\n\n"
-        f"## Diff\n\n{diff_path}\n"
+        f"## Diff\n\n{diff_path.resolve()}\n"
     )
     return prompt_path
 
@@ -70,8 +70,8 @@ def write_quality_review_prompt(
         f"# Quality Review: {task['title']}\n\n"
         f"Repo: {task['repo']}\n\n"
         f"## Changed Files\n\n{_format_changed_files(changed_files)}\n\n"
-        f"## Diff\n\n{diff_path}\n\n"
-        f"## Verifier Log\n\n{verifier_log_path}\n\n"
+        f"## Diff\n\n{diff_path.resolve()}\n\n"
+        f"## Verifier Log\n\n{verifier_log_path.resolve()}\n\n"
         "## Repo Policy\n\n"
         f"allow_push: {repo.allow_push}\n"
         f"merge_policy: {repo.merge_policy}\n"

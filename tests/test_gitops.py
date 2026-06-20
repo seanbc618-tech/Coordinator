@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import os
 from pathlib import Path
 
 from tests.helpers import init_git_repo, run
@@ -7,6 +8,28 @@ from local_cli_coordinator.gitops import collect_changed_files, create_worktree,
 
 
 class GitOpsTests(unittest.TestCase):
+    def test_create_worktree_resolves_relative_roots_before_git_call(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            original_cwd = Path.cwd()
+            root = Path(tmp)
+            try:
+                os.chdir(root)
+                repo = Path("repo")
+                init_git_repo(repo)
+
+                worktree = create_worktree(
+                    repo_path=repo,
+                    worktrees_root=Path("worktrees"),
+                    task_id="task-relative",
+                    branch_name="coord/task-relative",
+                )
+
+                self.assertTrue(worktree.is_absolute())
+                self.assertEqual(worktree.parent, (root / "worktrees").resolve())
+                self.assertTrue(is_git_repo(worktree))
+            finally:
+                os.chdir(original_cwd)
+
     def test_create_worktree_and_collect_changes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

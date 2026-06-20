@@ -120,6 +120,10 @@ class PromptContextTests(unittest.TestCase):
         self.assertIn("- task: prior", prompt)
         self.assertIn("## Repo Memory", prompt)
         self.assertIn("Prefer focused tests.", prompt)
+        self.assertIn("## Required Verification", prompt)
+        self.assertIn("assert Path('feature.txt').read_text() == 'done'", prompt)
+        self.assertIn("execute every command exactly as written", prompt)
+        self.assertIn("Do not substitute", prompt)
 
     def test_prompt_ignores_missing_memory_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

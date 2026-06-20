@@ -30,7 +30,8 @@ def create_worktree(
     task_id: str,
     branch_name: str,
 ) -> Path:
-    worktree_path = worktrees_root / task_id
+    repo_path = repo_path.resolve()
+    worktree_path = (worktrees_root / task_id).resolve()
     worktree_path.parent.mkdir(parents=True, exist_ok=True)
     result = git(["worktree", "add", "-b", branch_name, str(worktree_path)], cwd=repo_path)
     require_success(result, "create worktree")
@@ -61,7 +62,23 @@ def collect_changed_files(worktree_path: Path) -> list[str]:
     return sorted(files)
 
 
-def diff_patch(worktree_path: Path) -> str:
+def merge_base(worktree_path: Path, ref: str) -> str:
+    result = git(["merge-base", "HEAD", ref], cwd=worktree_path)
+    require_success(result, f"find merge base with {ref}")
+    return result.stdout.strip()
+
+
+def collect_changed_files_since(worktree_path: Path, base_ref: str) -> list[str]:
+    result = git(["diff", "--name-only", "-z", base_ref, "--", "."], cwd=worktree_path)
+    require_success(result, "collect branch changed files")
+    files = {path for path in result.stdout.split("\0") if path}
+    untracked = git(["ls-files", "--others", "--exclude-standard", "-z"], cwd=worktree_path)
+    require_success(untracked, "list untracked files")
+    files.update(path for path in untracked.stdout.split("\0") if path)
+    return sorted(files)
+
+
+def diff_patch(worktree_path: Path, base_ref: str = "HEAD") -> str:
     untracked_result = git(["ls-files", "--others", "--exclude-standard", "-z"], cwd=worktree_path)
     require_success(untracked_result, "list untracked files")
     untracked_files = [path for path in untracked_result.stdout.split("\0") if path]
@@ -71,7 +88,7 @@ def diff_patch(worktree_path: Path) -> str:
         require_success(intent, "mark untracked files for diff")
 
     try:
-        result = git(["diff", "HEAD", "--", "."], cwd=worktree_path)
+        result = git(["diff", base_ref, "--", "."], cwd=worktree_path)
         require_success(result, "collect diff")
         return result.stdout
     finally:

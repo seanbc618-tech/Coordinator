@@ -31,10 +31,12 @@ from .policy import (
 from .tasks import parse_task_markdown, scan_inbox, write_generated_task
 from .gitops import (
     collect_changed_files,
+    collect_changed_files_since,
     commit_all,
     create_worktree,
     diff_patch,
     merge_branch_to_default,
+    merge_base,
     push_branch,
 )
 from .review import run_quality_review, run_spec_review
@@ -71,11 +73,20 @@ def _resolve_memory_path(root: Path, path: Path) -> Path:
 
 def _write_prompt(task, run_dir: Path, root: Path, repo: RepoConfig) -> Path:
     run_dir.mkdir(parents=True, exist_ok=True)
+    verification_commands = [
+        line for line in task["verification_commands"].splitlines() if line
+    ] or repo.verify_commands
     sections = [
         f"# Task: {task['title']}\n",
         f"Repo: {task['repo']}\n",
         f"## Goal\n\n{task['goal']}\n",
         f"## Acceptance Criteria\n\n{task['acceptance_criteria']}\n",
+        "## Required Verification\n\n"
+        "You must execute every command exactly as written before returning. "
+        "If a referenced path does not exist, adjust the implementation or test filename. "
+        "Do not substitute a different command.\n\n"
+        + "\n".join(f"- `{command}`" for command in verification_commands)
+        + "\n",
     ]
     loop_memory = _read_optional_text(loop_memory_path(root))
     if loop_memory is not None:
@@ -652,12 +663,16 @@ def _process_task(
 
     transition_task(conn, task["id"], "running", f"assigned to {agent.id}")
     try:
-        worktree = create_worktree(
-            repo_path=repo.path,
-            worktrees_root=root / "worktrees" / repo.id,
-            task_id=task["id"],
-            branch_name=branch,
-        )
+        registered_worktree = Path(task["worktree_path"]).resolve() if task["worktree_path"] else None
+        if registered_worktree is not None and registered_worktree.is_dir():
+            worktree = registered_worktree
+        else:
+            worktree = create_worktree(
+                repo_path=repo.path,
+                worktrees_root=root / "worktrees" / repo.id,
+                task_id=task["id"],
+                branch_name=branch,
+            )
     except (RuntimeError, OSError) as exc:
         _finish_task(
             conn,
@@ -670,6 +685,19 @@ def _process_task(
         )
         return True
     set_task_branch_and_worktree(conn, task["id"], branch, worktree)
+    try:
+        base_commit = merge_base(worktree, repo.default_branch)
+    except (RuntimeError, OSError) as exc:
+        _finish_task(
+            conn,
+            root,
+            task["id"],
+            "failed",
+            f"merge-base lookup failed: {exc}",
+            verifier_result="not run",
+            next_action="inspect worktree branch history and retry",
+        )
+        return True
     prompt = _write_prompt(task, run_dir, root, repo)
     agent_result = run_agent(
         agent,
@@ -696,7 +724,7 @@ def _process_task(
         )
         return True
 
-    changed_files = collect_changed_files(worktree)
+    changed_files = collect_changed_files_since(worktree, base_commit)
     if not changed_files:
         _finish_task(
             conn,
@@ -722,7 +750,7 @@ def _process_task(
         return True
 
     patch_path = run_dir / "diff.patch"
-    patch_path.write_text(diff_patch(worktree))
+    patch_path.write_text(diff_patch(worktree, base_commit))
     add_artifact(conn, task["id"], "diff", patch_path)
 
     transition_task(conn, task["id"], "verifying", "running verification")
@@ -881,11 +909,15 @@ def _process_task(
         )
         return True
 
-    transition_task(conn, task["id"], "committing", "creating commit")
-    commit_all(
-        worktree,
-        f"{task['title']}\n\nTask: {task['id']}\nAgent: {agent.id}",
-    )
+    uncommitted_files = collect_changed_files(worktree)
+    if uncommitted_files:
+        transition_task(conn, task["id"], "committing", "creating commit")
+        commit_all(
+            worktree,
+            f"{task['title']}\n\nTask: {task['id']}\nAgent: {agent.id}",
+        )
+    else:
+        transition_task(conn, task["id"], "committing", "using agent-created commit")
     if repo.allow_push and repo.merge_policy != "no_push":
         transition_task(conn, task["id"], "pushing", "pushing branch")
         try:
