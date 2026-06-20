@@ -20,6 +20,7 @@ from .commander_runner import (
 )
 from .config import CoordinatorConfig
 from .db import create_task, next_ready_task
+from .reporting import NULL_REPORTER, Reporter
 from .goals import (
     add_commander_message,
     active_goal,
@@ -54,6 +55,7 @@ def create_and_preview_goal(
     completion_criteria: list[str] | None = None,
     constraints: list[str] | None = None,
     repo_ids: list[str] | None = None,
+    reporter: Reporter = NULL_REPORTER,
 ) -> GoalPlanPreview:
     """Create a draft goal and run the Commander to preview the first batch.
 
@@ -73,7 +75,13 @@ def create_and_preview_goal(
     # Run Commander to get initial plan
     try:
         result = run_commander(
-            conn, config, root, goal_id, "initial_plan", COMMANDER_TIMEOUT_SECONDS,
+            conn,
+            config,
+            root,
+            goal_id,
+            "initial_plan",
+            COMMANDER_TIMEOUT_SECONDS,
+            reporter=reporter,
         )
     except (CommanderRunActiveError, ValueError) as exc:
         return GoalPlanPreview(
@@ -139,12 +147,19 @@ def send_chat_message(
     root: Path,
     goal_id: int,
     content: str,
+    reporter: Reporter = NULL_REPORTER,
 ) -> str:
     """Send a user message to Commander and return its visible response."""
     add_commander_message(conn, goal_id, "user", content)
     try:
         result = run_commander(
-            conn, config, root, goal_id, "chat", COMMANDER_TIMEOUT_SECONDS,
+            conn,
+            config,
+            root,
+            goal_id,
+            "chat",
+            COMMANDER_TIMEOUT_SECONDS,
+            reporter=reporter,
         )
     except CommanderRunActiveError:
         return "Commander is already running; try again after the current run finishes."
@@ -282,6 +297,7 @@ def maybe_replenish_goal(
     conn: sqlite3.Connection,
     config: CoordinatorConfig,
     root: Path,
+    reporter: Reporter = NULL_REPORTER,
 ) -> ReplenishmentResult:
     """Replenish the task queue if the active goal has no ready tasks.
 
@@ -313,7 +329,13 @@ def maybe_replenish_goal(
     # Run Commander to get next batch
     try:
         result = run_commander(
-            conn, config, root, goal["id"], "replenishment", COMMANDER_TIMEOUT_SECONDS,
+            conn,
+            config,
+            root,
+            goal["id"],
+            "replenishment",
+            COMMANDER_TIMEOUT_SECONDS,
+            reporter=reporter,
         )
     except CommanderRunActiveError:
         return ReplenishmentResult("commander_run_active", [], [], None)

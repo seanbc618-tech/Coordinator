@@ -23,6 +23,7 @@ from .goals import (
     list_linked_tasks,
 )
 from .process import run_command
+from .reporting import NULL_REPORTER, ExecutionContext, Reporter
 
 COMMANDER_SCHEMA_VERSION = 1
 COMMANDER_GOAL_STATUSES = frozenset({"active", "blocked", "completed"})
@@ -371,9 +372,6 @@ def _finish_commander_attempt(
     conn: sqlite3.Connection,
     *,
     run_id_db: int,
-    root: Path,
-    goal_id: int,
-    tmp_dir: Path,
     prompt_path: Path,
     raw_output_path: Path,
     parsed_output_path: Path | None,
@@ -382,25 +380,12 @@ def _finish_commander_attempt(
     timed_out: bool,
     error: str | None,
     duration: float,
+    status: str | None = None,
 ) -> tuple[Path, Path, Path | None]:
-    import shutil
-
-    art_dir = _artifact_dir(root, goal_id, run_id_db)
-    art_dir.mkdir(parents=True, exist_ok=True)
-    for item in tmp_dir.iterdir():
-        shutil.move(str(item), str(art_dir / item.name))
-    if tmp_dir.exists():
-        tmp_dir.rmdir()
-
-    prompt_path = art_dir / "prompt.md"
-    raw_output_path = art_dir / "raw.txt"
-    if parsed_output_path is not None:
-        parsed_output_path = art_dir / "parsed.json"
-
     finish_commander_run(
         conn,
         run_id_db,
-        status="succeeded" if response is not None else "failed",
+        status=status or ("succeeded" if response is not None else "failed"),
         exit_code=exit_code,
         timed_out=timed_out,
         raw_output_path=str(raw_output_path),
@@ -413,6 +398,32 @@ def _finish_commander_attempt(
     return prompt_path, raw_output_path, parsed_output_path
 
 
+def _prepare_commander_artifacts(
+    conn: sqlite3.Connection,
+    *,
+    root: Path,
+    goal_id: int,
+    run_id_db: int,
+    context: str,
+) -> tuple[Path, Path, Path, Path, Path]:
+    art_dir = _artifact_dir(root, goal_id, run_id_db)
+    art_dir.mkdir(parents=True, exist_ok=True)
+    prompt_path = art_dir / "prompt.md"
+    schema_path = art_dir / "schema.json"
+    raw_output_path = art_dir / "raw.txt"
+    stderr_log_path = art_dir / "stderr.log"
+    prompt_path.write_text(context)
+    schema_path.write_text(json.dumps(commander_response_schema(), indent=2))
+    raw_output_path.write_text("")
+    stderr_log_path.write_text("")
+    conn.execute(
+        "update commander_runs set prompt_path = ? where id = ?",
+        (str(prompt_path), run_id_db),
+    )
+    conn.commit()
+    return art_dir, prompt_path, schema_path, raw_output_path, stderr_log_path
+
+
 def run_commander(
     conn: sqlite3.Connection,
     config: CoordinatorConfig,
@@ -421,6 +432,7 @@ def run_commander(
     trigger: str,
     timeout_seconds: float = 30,
     rejected_fingerprints: list[str] | None = None,
+    reporter: Reporter = NULL_REPORTER,
 ) -> CommanderRunResult:
     """Run the Commander agent and return structured results.
 
@@ -430,15 +442,7 @@ def run_commander(
     if agent is None:
         raise ValueError("no agent configured with 'commander' role")
 
-    tmp_dir = root / "runs" / "commander" / str(goal_id) / "_pending"
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-
     context = build_commander_context(conn, config, root, goal_id, rejected_fingerprints)
-    prompt_path = tmp_dir / "prompt.md"
-    prompt_path.write_text(context)
-
-    schema_path = tmp_dir / "schema.json"
-    schema_path.write_text(json.dumps(commander_response_schema(), indent=2))
 
     goal = get_goal(conn, goal_id)
     repo_ids = json.loads(goal["repo_ids"])
@@ -447,27 +451,31 @@ def run_commander(
     else:
         repo_path = root
 
+    pending_prompt = root / "runs" / "commander" / str(goal_id) / "pending" / "prompt.md"
     run_id_db = acquire_commander_run_slot(
         conn,
         goal_id,
         trigger,
         COMMANDER_SCHEMA_VERSION,
-        prompt_path,
+        pending_prompt,
     )
     if run_id_db is None:
         raise CommanderRunActiveError("commander run already active")
 
+    _, prompt_path, schema_path, raw_output_path, stderr_log_path = _prepare_commander_artifacts(
+        conn,
+        root=root,
+        goal_id=goal_id,
+        run_id_db=run_id_db,
+        context=context,
+    )
+
     try:
         argv = _render_command_tokens(agent.command, prompt_path, schema_path, repo_path)
     except ValueError as exc:
-        raw_output_path = tmp_dir / "raw.txt"
-        raw_output_path.write_text("")
         prompt_path, raw_output_path, _ = _finish_commander_attempt(
             conn,
             run_id_db=run_id_db,
-            root=root,
-            goal_id=goal_id,
-            tmp_dir=tmp_dir,
             prompt_path=prompt_path,
             raw_output_path=raw_output_path,
             parsed_output_path=None,
@@ -490,14 +498,9 @@ def run_commander(
         )
 
     if not argv:
-        raw_output_path = tmp_dir / "raw.txt"
-        raw_output_path.write_text("")
         prompt_path, raw_output_path, _ = _finish_commander_attempt(
             conn,
             run_id_db=run_id_db,
-            root=root,
-            goal_id=goal_id,
-            tmp_dir=tmp_dir,
             prompt_path=prompt_path,
             raw_output_path=raw_output_path,
             parsed_output_path=None,
@@ -519,16 +522,39 @@ def run_commander(
             error="empty command",
         )
 
+    execution_context = ExecutionContext(
+        stage="commander",
+        actor=agent.id,
+        task_id=str(goal_id),
+        log_path=raw_output_path,
+    )
     start_time = time.monotonic()
-    result = run_command(argv, cwd=repo_path, timeout_seconds=timeout_seconds)
+    with (
+        raw_output_path.open("a", encoding="utf-8") as raw_file,
+        stderr_log_path.open("a", encoding="utf-8") as stderr_file,
+    ):
+        try:
+            result = run_command(
+                argv,
+                cwd=repo_path,
+                timeout_seconds=timeout_seconds,
+                reporter=reporter,
+                context=execution_context,
+                stdout_sink=raw_file.write,
+                stderr_sink=stderr_file.write,
+            )
+        except KeyboardInterrupt:
+            duration = time.monotonic() - start_time
+            finish_commander_run(
+                conn,
+                run_id_db,
+                status="interrupted",
+                error="interrupted by operator",
+                duration_seconds=duration,
+                raw_output_path=str(raw_output_path),
+            )
+            raise
     duration = time.monotonic() - start_time
-
-    raw_output_path = tmp_dir / "raw.txt"
-    raw_text = result.stdout
-    if result.stderr:
-        separator = "\n" if raw_text and not raw_text.endswith("\n") else ""
-        raw_text = f"{raw_text}{separator}[stderr]\n{result.stderr}"
-    raw_output_path.write_text(raw_text)
 
     response: CommanderResponse | None = None
     parsed_output_path: Path | None = None
@@ -544,7 +570,7 @@ def run_commander(
     else:
         try:
             response = parse_commander_response(result.stdout)
-            parsed_output_path = tmp_dir / "parsed.json"
+            parsed_output_path = raw_output_path.parent / "parsed.json"
             parsed_output_path.write_text(json.dumps({
                 "schema_version": response.schema_version,
                 "goal_status": response.goal_status,
@@ -572,9 +598,6 @@ def run_commander(
     prompt_path, raw_output_path, parsed_output_path = _finish_commander_attempt(
         conn,
         run_id_db=run_id_db,
-        root=root,
-        goal_id=goal_id,
-        tmp_dir=tmp_dir,
         prompt_path=prompt_path,
         raw_output_path=raw_output_path,
         parsed_output_path=parsed_output_path,

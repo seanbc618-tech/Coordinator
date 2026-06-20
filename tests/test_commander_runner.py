@@ -25,8 +25,17 @@ from local_cli_coordinator.commander_runner import (
     run_commander,
     _render_command_tokens,
 )
+from local_cli_coordinator.reporting import ExecutionEvent
 
 _PYTHON = _sys.executable
+
+
+class RecordingReporter:
+    def __init__(self) -> None:
+        self.events: list[ExecutionEvent] = []
+
+    def emit(self, event: ExecutionEvent) -> None:
+        self.events.append(event)
 
 
 def _write_fixture_script(tmp_dir: Path) -> Path:
@@ -225,7 +234,57 @@ class CommanderRunnerTests(unittest.TestCase):
         self.assertFalse(result.succeeded)
         self.assertEqual(result.exit_code, 2)
         self.assertIn("unsupported option: --old-flag", result.error)
-        self.assertIn("unsupported option: --old-flag", result.raw_output_path.read_text())
+        stderr_log = result.raw_output_path.parent / "stderr.log"
+        self.assertTrue(stderr_log.exists())
+        self.assertIn("unsupported option: --old-flag", stderr_log.read_text())
+        self.assertNotIn("[stderr]", result.raw_output_path.read_text())
+
+    def test_runner_forwards_reporter_and_streams_stdout_only_to_raw(self) -> None:
+        script = self.root / "streaming_commander.py"
+        script.write_text(
+            "import json, sys\n"
+            "print('progress', file=sys.stderr, flush=True)\n"
+            "print(json.dumps({"
+            "'schema_version': 1, 'goal_status': 'active', 'progress_summary': 'Ready', "
+            "'tasks': [], 'stop_reason': None"
+            "}))\n"
+            "print('stderr-msg', file=sys.stderr, flush=True)\n"
+        )
+        config = _test_config(self.root, command=f"{_PYTHON} {script}", repo_path=self.repo)
+        reporter = RecordingReporter()
+
+        result = run_commander(
+            self.conn,
+            config,
+            self.root,
+            self.goal_id,
+            "initial_plan",
+            30,
+            reporter=reporter,
+        )
+
+        self.assertTrue(result.succeeded)
+        started = [event for event in reporter.events if event.kind == "started"]
+        self.assertEqual(len(started), 1)
+        self.assertEqual(started[0].stage, "commander")
+        self.assertEqual(started[0].actor, "codex_commander")
+        self.assertEqual(started[0].cwd.resolve(), self.repo.resolve())
+        self.assertIn(_PYTHON, started[0].command)
+        self.assertTrue(any(event.kind == "stderr" and "progress" in event.text for event in reporter.events))
+        self.assertTrue(any(event.kind == "stderr" and "stderr-msg" in event.text for event in reporter.events))
+        self.assertTrue(any(event.kind == "stdout" and "Ready" in event.text for event in reporter.events))
+        self.assertTrue(any(event.kind == "completed" for event in reporter.events))
+        self.assertTrue(result.raw_output_path.exists())
+        raw_text = result.raw_output_path.read_text()
+        self.assertIn("progress_summary", raw_text)
+        self.assertNotIn("stderr-msg", raw_text)
+        self.assertNotIn("progress\n", raw_text)
+        self.assertNotIn("[codex_commander:stdout]", raw_text)
+        stderr_log = result.raw_output_path.parent / "stderr.log"
+        stderr_text = stderr_log.read_text()
+        self.assertIn("progress", stderr_text)
+        self.assertIn("stderr-msg", stderr_text)
+        self.assertTrue(result.raw_output_path.parent.is_dir())
 
     def test_nonzero_error_keeps_stderr_tail(self) -> None:
         script = self.root / "long_failing_commander.py"

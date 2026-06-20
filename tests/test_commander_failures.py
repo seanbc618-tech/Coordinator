@@ -5,8 +5,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from local_cli_coordinator.commander_runner import CommanderRunResult
+from local_cli_coordinator.commander_runner import CommanderRunResult, run_commander
 from local_cli_coordinator.commander_service import maybe_replenish_goal, resume_goal
+from local_cli_coordinator.reporting import NULL_REPORTER
 from local_cli_coordinator.config import (
     AgentConfig,
     CoordinatorConfig,
@@ -161,6 +162,33 @@ class CommanderFailureTests(unittest.TestCase):
         goal = get_goal(self.conn, self.goal_id)
         self.assertEqual(goal["status"], "blocked")
         self.assertIn("high-risk", goal["stop_reason"].lower())
+
+    def test_keyboard_interrupt_marks_commander_run_interrupted(self) -> None:
+        script = _write_fixture_script(self.root, [])
+        config = _config(self.root, command=f"{_PYTHON} {script}")
+
+        with patch(
+            "local_cli_coordinator.commander_runner.run_command",
+            side_effect=KeyboardInterrupt(),
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                run_commander(
+                    self.conn,
+                    config,
+                    self.root,
+                    self.goal_id,
+                    "replenishment",
+                    30,
+                    reporter=NULL_REPORTER,
+                )
+
+        from local_cli_coordinator.goals import get_latest_commander_run
+
+        run = get_latest_commander_run(self.conn, self.goal_id)
+        self.assertIsNotNone(run)
+        self.assertEqual(run["status"], "interrupted")
+        self.assertEqual(run["error"], "interrupted by operator")
+        self.assertTrue(run["completed_at"])
 
     def test_resume_clears_failure_counters(self) -> None:
         for _ in range(3):
