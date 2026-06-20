@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import errno
 import json
+import queue
 import socket
 import threading
 from collections.abc import Callable
@@ -14,6 +15,7 @@ from local_cli_coordinator.supervisor_protocol import (
     ProtocolError,
     RequestEnvelope,
     ResponseEnvelope,
+    EventEnvelope,
     decode_envelope,
     encode_envelope,
 )
@@ -46,13 +48,18 @@ class SupervisorServer:
         paths: RuntimePathsLike,
         *,
         handler: Handler | None = None,
+        broker: Any | None = None,
     ) -> None:
         self._paths = paths
         self._handler = handler
+        self._broker = broker
         self._shutdown = threading.Event()
         self._server_socket: socket.socket | None = None
         self._client_threads: list[threading.Thread] = []
         self._threads_lock = threading.Lock()
+        # Event queues for subscribed clients: client_id → queue
+        self._event_queues: dict[int, queue.Queue] = {}
+        self._event_queues_lock = threading.Lock()
 
     def request_shutdown(self) -> None:
         self._shutdown.set()
@@ -62,6 +69,16 @@ class SupervisorServer:
                 server_socket.close()
             except OSError:
                 pass
+
+    def push_event(self, event: EventEnvelope) -> None:
+        """Push an event to all subscribed client queues."""
+        encoded = encode_envelope(event) + "\n"
+        with self._event_queues_lock:
+            for q in self._event_queues.values():
+                try:
+                    q.put_nowait(encoded)
+                except queue.Full:
+                    pass
 
     def serve_forever(self) -> None:
         lock_result = acquire_lock_at(self._paths.lock)
@@ -104,21 +121,87 @@ class SupervisorServer:
             release_lock_at(self._paths.lock)
 
     def _serve_client(self, client_socket: socket.socket) -> None:
+        client_id = id(client_socket)
+        event_q: queue.Queue = queue.Queue(maxsize=256)
+
+        with self._event_queues_lock:
+            self._event_queues[client_id] = event_q
+
         try:
             with client_socket:
                 buf = b""
                 while not self._shutdown.is_set():
-                    chunk = client_socket.recv(4096)
+                    # Check for outgoing events (non-blocking)
+                    try:
+                        while True:
+                            event_data = event_q.get_nowait()
+                            client_socket.sendall(event_data.encode("utf-8"))
+                    except queue.Empty:
+                        pass
+
+                    # Wait for incoming data with timeout (allows checking events)
+                    client_socket.settimeout(0.2)
+                    try:
+                        chunk = client_socket.recv(4096)
+                    except socket.timeout:
+                        continue
+                    except OSError:
+                        break
+
                     if not chunk:
                         break
+
                     buf += chunk
                     while b"\n" in buf:
                         line, buf = buf.split(b"\n", 1)
                         if line:
                             response = self._handle_raw_request(line.decode("utf-8").strip())
-                            client_socket.sendall((encode_envelope(response) + "\n").encode("utf-8"))
+                            resp_data = encode_envelope(response) + "\n"
+                            client_socket.sendall(resp_data.encode("utf-8"))
+
+                            # If this was a subscribe response, register the
+                            # client to receive live events via the handler
+                            self._maybe_register_subscription(response, event_q)
         except OSError:
             return
+        finally:
+            with self._event_queues_lock:
+                self._event_queues.pop(client_id, None)
+
+    def _maybe_register_subscription(
+        self, response: ResponseEnvelope, event_q: queue.Queue
+    ) -> None:
+        """If the response indicates a successful subscribe, register a
+        broker callback that forwards events to this client's queue."""
+        if not response.ok or response.result is None:
+            return
+        if "subscription_id" not in response.result:
+            return
+        if self._broker is None:
+            return
+
+        # Extract project_id from the response context (stored in result)
+        project_id = response.result.get("project_id")
+        if not project_id:
+            return
+
+        # Register a broker callback that writes events to this client's queue
+        def _forward_to_client(envelope):
+            try:
+                # Convert broker EventEnvelope to protocol EventEnvelope
+                proto_event = EventEnvelope(
+                    protocol_version=PROTOCOL_VERSION,
+                    project_id=envelope.project_id,
+                    cursor=envelope.cursor,
+                    event_type=envelope.event_type,
+                    payload=envelope.payload,
+                )
+                encoded = encode_envelope(proto_event) + "\n"
+                event_q.put_nowait(encoded)
+            except queue.Full:
+                pass
+
+        self._broker.subscribe(project_id, _forward_to_client)
 
     def _handle_raw_request(self, raw: str) -> ResponseEnvelope:
         request_id = _extract_request_id(raw)

@@ -80,6 +80,40 @@ class SupervisorCliIntegrationTests(unittest.TestCase):
         self._tmpdir = tempfile.TemporaryDirectory()
         self.home = Path(self._tmpdir.name)
         self._processes: list[subprocess.Popen[str]] = []
+        self._write_config()
+
+    def _write_config(self) -> None:
+        config_dir = self.home / "config"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        repo = self.home / "repo"
+        repo.mkdir(exist_ok=True)
+        config_dir.joinpath("agents.toml").write_text(
+            '[agents.test]\n'
+            f'command = "{sys.executable} -c \\"pass\\""\n'
+            'capabilities = ["code"]\n'
+            'max_concurrency = 1\n'
+            'role = "worker"\n'
+        )
+        config_dir.joinpath("repos.toml").write_text(
+            '[repos.demo]\n'
+            f'path = "{repo}"\n'
+            'default_branch = "main"\n'
+        )
+        config_dir.joinpath("policy.toml").write_text(
+            '[task_policy]\n'
+            'require_single_repo = true\n'
+            'require_acceptance_criteria = false\n'
+            'require_verification_commands = false\n'
+            'require_handoff_summary = false\n'
+            'max_files_touched = 10\n'
+            'max_expected_minutes = 30\n'
+            'max_attempts = 3\n'
+            'split_if_touches_multiple_subsystems = false\n'
+            'split_if_research_and_code_are_mixed = false\n'
+            'max_tasks_per_run = 1\n'
+            'max_tasks_per_day = 100\n'
+            'max_consecutive_failures = 3\n'
+        )
 
     def tearDown(self) -> None:
         for process in self._processes:
@@ -90,6 +124,12 @@ class SupervisorCliIntegrationTests(unittest.TestCase):
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait(timeout=2.0)
+            if process.stderr:
+                try:
+                    process.stderr.read()
+                except (OSError, ValueError):
+                    pass
+                process.stderr.close()
         self._tmpdir.cleanup()
 
     def _start_supervisor(self) -> subprocess.Popen[str]:

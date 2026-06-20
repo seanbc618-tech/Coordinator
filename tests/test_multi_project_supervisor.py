@@ -8,7 +8,14 @@ import time
 from pathlib import Path
 from unittest import TestCase
 
-from local_cli_coordinator.db import connect, init_db, create_task
+from local_cli_coordinator.config import (
+    AgentConfig,
+    CoordinatorConfig,
+    DaemonPolicyConfig,
+    PolicyConfig,
+    RepoConfig,
+)
+from local_cli_coordinator.db import connect, init_db, create_task, project_task_counts
 from local_cli_coordinator.supervisor import MultiProjectSupervisor
 from local_cli_coordinator.supervisor_scheduler import FairProjectScheduler
 from local_cli_coordinator.supervisor_events import EventBroker
@@ -16,6 +23,46 @@ from local_cli_coordinator.supervisor_capacity import SharedCapacity
 from local_cli_coordinator.supervisor_methods import SupervisorMethods
 from local_cli_coordinator.runtime_paths import RuntimePaths
 from tests.helpers import ROOT, SRC
+
+
+def _test_config(tmp: Path) -> CoordinatorConfig:
+    repo = tmp / "repo"
+    repo.mkdir(exist_ok=True)
+    return CoordinatorConfig(
+        agents={
+            "test": AgentConfig(
+                id="test",
+                command=f"{sys.executable} -c 'pass'",
+                capabilities=["code"],
+                max_concurrency=1,
+            ),
+        },
+        repos={
+            "demo": RepoConfig(
+                id="demo",
+                path=repo,
+                default_branch="main",
+                remote="origin",
+                branch_prefix="coord/",
+                allow_push=False,
+                merge_policy="no_push",
+                verify_commands=[],
+                review_policy="tests_only",
+            ),
+        },
+        policy=PolicyConfig(
+            require_single_repo=True,
+            require_acceptance_criteria=False,
+            require_verification_commands=False,
+            require_handoff_summary=False,
+            max_files_touched=10,
+            max_expected_minutes=30,
+            max_attempts=3,
+            split_if_touches_multiple_subsystems=False,
+            split_if_research_and_code_are_mixed=False,
+        ),
+        daemon_policy=DaemonPolicyConfig(run_discovery_before_tasks=False),
+    )
 
 
 def _make_supervisor(tmp: Path, projects: list[str]) -> MultiProjectSupervisor:
@@ -33,10 +80,11 @@ def _make_supervisor(tmp: Path, projects: list[str]) -> MultiProjectSupervisor:
         )
     conn.close()
 
+    config = _test_config(tmp)
     scheduler = FairProjectScheduler(projects)
     broker = EventBroker()
     capacity = SharedCapacity(max_global_running=4, max_per_project=2)
-    methods = SupervisorMethods()
+    methods = SupervisorMethods(broker=broker)
 
     return MultiProjectSupervisor(
         paths=paths,
@@ -44,6 +92,7 @@ def _make_supervisor(tmp: Path, projects: list[str]) -> MultiProjectSupervisor:
         broker=broker,
         capacity=capacity,
         methods=methods,
+        config=config,
     )
 
 
@@ -61,7 +110,6 @@ class MultiProjectSupervisorTest(TestCase):
 
     def test_tick_processes_projects(self) -> None:
         sup = _make_supervisor(self.root, ["proj-a", "proj-b"])
-        # tick should attempt to schedule and process projects
         sup.tick()
 
     def test_status_fields(self) -> None:
@@ -86,6 +134,40 @@ class MultiProjectSupervisorCliTest(TestCase):
         self._env["PYTHONPATH"] = str(SRC)
         self._env["COORDINATOR_HOME"] = str(self.home)
         self._processes: list[subprocess.Popen[str]] = []
+        self._write_config()
+
+    def _write_config(self) -> None:
+        config_dir = self.home / "config"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        repo = self.home / "repo"
+        repo.mkdir(exist_ok=True)
+        config_dir.joinpath("agents.toml").write_text(
+            '[agents.test]\n'
+            f'command = "{sys.executable} -c \\"pass\\""\n'
+            'capabilities = ["code"]\n'
+            'max_concurrency = 1\n'
+            'role = "worker"\n'
+        )
+        config_dir.joinpath("repos.toml").write_text(
+            '[repos.demo]\n'
+            f'path = "{repo}"\n'
+            'default_branch = "main"\n'
+        )
+        config_dir.joinpath("policy.toml").write_text(
+            '[task_policy]\n'
+            'require_single_repo = true\n'
+            'require_acceptance_criteria = false\n'
+            'require_verification_commands = false\n'
+            'require_handoff_summary = false\n'
+            'max_files_touched = 10\n'
+            'max_expected_minutes = 30\n'
+            'max_attempts = 3\n'
+            'split_if_touches_multiple_subsystems = false\n'
+            'split_if_research_and_code_are_mixed = false\n'
+            'max_tasks_per_run = 1\n'
+            'max_tasks_per_day = 100\n'
+            'max_consecutive_failures = 3\n'
+        )
 
     def tearDown(self) -> None:
         for p in self._processes:
@@ -95,7 +177,6 @@ class MultiProjectSupervisorCliTest(TestCase):
                     p.wait(timeout=2)
                 except subprocess.TimeoutExpired:
                     p.kill()
-            # Drain and close stderr to avoid ResourceWarning
             if p.stderr:
                 try:
                     p.stderr.read()

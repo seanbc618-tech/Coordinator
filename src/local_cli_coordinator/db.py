@@ -494,6 +494,40 @@ def claim_next_ready_task(
         raise
 
 
+def claim_project_task(
+    conn: sqlite3.Connection,
+    project_id: str,
+    agent_id: str,
+    duration_seconds: int = DEFAULT_LEASE_DURATION_SECONDS,
+) -> sqlite3.Row | None:
+    """Claim the next ready task for a specific project with an atomic lease.
+
+    Returns the claimed task row, or None if no task is available for
+    this project.
+    """
+    conn.execute("begin immediate")
+    try:
+        candidates = conn.execute(
+            "select * from tasks where project_id = ? and state = ? "
+            "order by created_at, id",
+            (project_id, "ready"),
+        ).fetchall()
+
+        for task in candidates:
+            try:
+                if _try_acquire_task_lease(conn, task["id"], agent_id, duration_seconds):
+                    conn.commit()
+                    return task
+            except sqlite3.IntegrityError:
+                continue
+
+        conn.commit()
+        return None
+    except sqlite3.Error:
+        conn.rollback()
+        raise
+
+
 # ---------------------------------------------------------------------------
 # Project-scoped query APIs
 # ---------------------------------------------------------------------------

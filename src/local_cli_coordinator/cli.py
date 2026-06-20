@@ -719,7 +719,12 @@ def _cmd_digest(args: argparse.Namespace) -> int:
 
 
 def _cmd_supervisor_start(args: argparse.Namespace) -> int:
+    import logging
     from .runtime_paths import resolve_runtime_paths
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
+    log = logging.getLogger("supervisor")
+
     paths = resolve_runtime_paths()
     paths.create()
     if not args.foreground:
@@ -734,6 +739,9 @@ def _cmd_supervisor_start(args: argparse.Namespace) -> int:
     from .supervisor_scheduler import FairProjectScheduler
     from .supervisor import MultiProjectSupervisor
     from .db import connect, init_db
+
+    # Load config from runtime paths (respects COORDINATOR_HOME)
+    config = load_config(paths.config_dir.parent)
 
     # Discover registered projects
     conn = connect(paths.database)
@@ -759,6 +767,7 @@ def _cmd_supervisor_start(args: argparse.Namespace) -> int:
         broker=broker,
         capacity=capacity,
         methods=methods,
+        config=config,
     )
 
     # Build handler that delegates to methods + system commands
@@ -791,13 +800,13 @@ def _cmd_supervisor_start(args: argparse.Namespace) -> int:
             conn.close()
 
     try:
-        server = SupervisorServer(paths, handler=handler)
+        server = SupervisorServer(paths, handler=handler, broker=broker)
     except SupervisorServerError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    print(f"Supervisor listening on {paths.socket}")
-    print(f"Projects: {', '.join(project_ids)}")
+    log.info("Supervisor listening on %s", paths.socket)
+    log.info("Projects: %s", ", ".join(project_ids))
 
     # Tick loop in a background thread
     import time
@@ -807,7 +816,7 @@ def _cmd_supervisor_start(args: argparse.Namespace) -> int:
             try:
                 sup.tick()
             except Exception:
-                pass
+                log.exception("tick failed")
             time.sleep(1)
 
     tick_thread = threading.Thread(target=tick_loop, daemon=True)
@@ -816,7 +825,7 @@ def _cmd_supervisor_start(args: argparse.Namespace) -> int:
     try:
         server.serve_forever()
     except SupervisorServerError as exc:
-        print(str(exc), file=sys.stderr)
+        log.error("server error: %s", exc)
         return 1
     finally:
         sup.request_shutdown()

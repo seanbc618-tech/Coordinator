@@ -587,7 +587,7 @@ class GateLiveEventTests(Phase2GateHarness):
             finally:
                 conn.close()
 
-        server = SupervisorServer(self.paths, handler=handler)
+        server = SupervisorServer(self.paths, handler=handler, broker=broker)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         time.sleep(0.1)
 
