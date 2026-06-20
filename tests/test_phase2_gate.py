@@ -1,13 +1,16 @@
 """Phase 2 acceptance gate tests (adversarial).
 
 Requires real fake-agent execution, per-project repo attribution,
-capacity enforcement, unified pause, live socket events, and restart
-exactly-once. Empty tick_scheduled-only passes are rejected.
+capacity enforcement, unified pause, live socket events, restart
+exactly-once, engine pipeline fidelity, ResourceWarning-free execution,
+safe shutdown, subscription cleanup, and default XDG config loading.
+Empty tick_scheduled-only passes are rejected.
 """
 
 from __future__ import annotations
 
 import ast
+import gc
 import inspect
 import json
 import os
@@ -19,7 +22,9 @@ import tempfile
 import textwrap
 import threading
 import time
+import warnings
 from collections import Counter
+from contextlib import contextmanager
 from pathlib import Path
 from unittest import TestCase
 
@@ -31,6 +36,7 @@ from local_cli_coordinator.config import (
     RepoConfig,
 )
 from local_cli_coordinator.db import (
+    artifact_kinds,
     connect,
     create_task,
     get_task,
@@ -96,6 +102,19 @@ def _verify_command() -> str:
     )
 
 
+def _failing_verify_command() -> str:
+    return f'{sys.executable} -c "import sys; sys.exit(1)"'
+
+
+@contextmanager
+def _no_resource_warnings():
+    """Treat leaked DB sockets and other ResourceWarnings as hard failures."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", ResourceWarning)
+        yield
+        gc.collect()
+
+
 def _policy(*, max_tasks_per_run: int = 1) -> PolicyConfig:
     return PolicyConfig(
         require_single_repo=True,
@@ -127,6 +146,7 @@ def _gate_config(
     *,
     slow_seconds: float = 0.0,
     max_global_concurrency: int = 4,
+    verify_commands: list[str] | None = None,
 ) -> CoordinatorConfig:
     repo_configs = {
         f"demo-{pid}": RepoConfig(
@@ -137,7 +157,7 @@ def _gate_config(
             branch_prefix="coord/",
             allow_push=False,
             merge_policy="no_push",
-            verify_commands=[_verify_command()],
+            verify_commands=verify_commands or [_verify_command()],
             review_policy="tests_only",
         )
         for pid, repo_path in repos.items()
@@ -173,6 +193,60 @@ def _write_gate_config_files(home: Path, repos: dict[str, Path], *, slow_seconds
     repo_lines = []
     for pid, repo_path in repos.items():
         verify = _verify_command().replace('"', '\\"')
+        repo_lines.append(textwrap.dedent(f"""
+            [repos."demo-{pid}"]
+            path = "{repo_path}"
+            default_branch = "main"
+            remote = "origin"
+            branch_prefix = "coord/"
+            allow_push = false
+            merge_policy = "no_push"
+            review_policy = "tests_only"
+            verify_commands = ["{verify}"]
+        """).strip())
+    config_dir.joinpath("repos.toml").write_text("\n\n".join(repo_lines), encoding="utf-8")
+
+    config_dir.joinpath("policy.toml").write_text(textwrap.dedent("""
+        [task_policy]
+        require_single_repo = true
+        require_acceptance_criteria = true
+        require_verification_commands = true
+        require_handoff_summary = false
+        max_files_touched = 3
+        max_expected_minutes = 30
+        max_attempts = 3
+        max_tasks_per_run = 1
+        max_tasks_per_day = 100
+        max_consecutive_failures = 3
+        split_if_touches_multiple_subsystems = true
+        split_if_research_and_code_are_mixed = true
+
+        [daemon_policy]
+        run_discovery_before_tasks = false
+    """).strip(), encoding="utf-8")
+
+
+def _write_xdg_gate_config_files(
+    config_dir: Path,
+    repos: dict[str, Path],
+    *,
+    slow_seconds: float = 0.0,
+    verify_command: str | None = None,
+) -> None:
+    """Write config directly into XDG config_dir (not config_dir/config)."""
+    config_dir.mkdir(parents=True, exist_ok=True)
+    worker = _worker_command(slow_seconds=slow_seconds).replace('"', '\\"')
+    verify = (verify_command or _verify_command()).replace('"', '\\"')
+    config_dir.joinpath("agents.toml").write_text(textwrap.dedent(f"""
+        [agents.worker]
+        command = "{worker}"
+        capabilities = ["code"]
+        max_concurrency = 2
+        role = "worker"
+    """).strip(), encoding="utf-8")
+
+    repo_lines = []
+    for pid, repo_path in repos.items():
         repo_lines.append(textwrap.dedent(f"""
             [repos."demo-{pid}"]
             path = "{repo_path}"
@@ -259,20 +333,29 @@ def _project_request(
     )
 
 
+def _pending_futures(sup: MultiProjectSupervisor) -> list:
+    if hasattr(sup, "_futures_lock"):
+        with sup._futures_lock:  # noqa: SLF001
+            return [f for f in sup._active_futures.values() if not f.done()]  # noqa: SLF001
+    return [f for f in sup._active_futures.values() if not f.done()]  # noqa: SLF001
+
+
 def _drain_workers(sup: MultiProjectSupervisor, timeout: float = 30.0) -> None:
     deadline = time.time() + timeout
     while time.time() < deadline:
-        pending = [f for f in sup._active_futures.values() if not f.done()]  # noqa: SLF001
-        if not pending:
+        if not _pending_futures(sup):
+            if hasattr(sup, "join_workers"):
+                sup.join_workers(timeout=1.0)
             return
         time.sleep(0.02)
-    for future in sup._active_futures.values():  # noqa: SLF001
+    for future in _pending_futures(sup):
         future.result(timeout=5)
 
 
 def _tick_and_drain(sup: MultiProjectSupervisor) -> None:
-    sup.tick()
-    _drain_workers(sup)
+    with _no_resource_warnings():
+        sup.tick()
+        _drain_workers(sup)
 
 
 def _wait_until(paths: RuntimePaths, predicate, *, timeout: float = 60.0, tick_fn) -> None:
@@ -364,13 +447,43 @@ def _transition_count(conn, task_id: str, new_state: str) -> int:
     return int(row["cnt"])
 
 
-def _assert_marker_in_repo(test: TestCase, repos: dict[str, Path], project_id: str) -> None:
-    marker = repos[project_id] / MARKER
-    test.assertTrue(
-        marker.exists(),
-        f"fake agent did not write {MARKER} in {project_id} repo (wrong worktree/repo_root)",
-    )
+def _assert_task_completed_via_engine(
+    test: TestCase,
+    conn,
+    task_id: str,
+    *,
+    bare_repo: Path | None = None,
+) -> Path:
+    """Successful tasks must run in an isolated worktree via the engine pipeline."""
+    task = get_task(conn, task_id)
+    test.assertEqual(task["state"], "done", f"task {task_id} not done")
+    test.assertTrue(task["worktree_path"], "task missing worktree_path (engine pipeline bypassed)")
+    worktree = Path(task["worktree_path"])
+    test.assertTrue(worktree.is_dir(), f"worktree missing: {worktree}")
+    if bare_repo is not None:
+        test.assertNotEqual(
+            worktree.resolve(),
+            bare_repo.resolve(),
+            "worktree must not be bare repo root",
+        )
+        test.assertFalse(
+            (bare_repo / MARKER).exists(),
+            "marker must not land on bare repo main checkout",
+        )
+    marker = worktree / MARKER
+    test.assertTrue(marker.exists(), f"marker missing in worktree {worktree}")
     test.assertEqual(marker.read_text(encoding="utf-8"), MARKER_CONTENT)
+    kinds = artifact_kinds(conn, task_id)
+    test.assertIn("verifier_log", kinds, "missing verifier_log (verification step skipped)")
+    return worktree
+
+
+def _running_task_count(conn, *, project_id: str) -> int:
+    row = conn.execute(
+        "select count(*) as cnt from tasks where project_id = ? and state = 'running'",
+        (project_id,),
+    ).fetchone()
+    return int(row["cnt"])
 
 
 class Phase2GateHarness(TestCase):
@@ -390,21 +503,27 @@ class Phase2GateHarness(TestCase):
 
     def tearDown(self) -> None:
         self.conn.close()
-        self._tmpdir.cleanup()
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", ResourceWarning)
+            gc.collect()
+            self._tmpdir.cleanup()
 
 
 class GateExecutionTests(Phase2GateHarness):
     def test_gate_fake_agent_completes_tasks_in_project_repos(self) -> None:
-        for pid in PROJECTS:
-            _create_project_task(self.conn, project_id=pid, title=f"task-{pid}")
+        task_ids = {
+            pid: _create_project_task(self.conn, project_id=pid, title=f"task-{pid}")
+            for pid in PROJECTS
+        }
         self.conn.close()
 
         sup = _make_supervisor(self.paths, list(PROJECTS), self.config)
-        _wait_until(
-            self.paths,
-            lambda: sum(_done_counts(self.paths, list(PROJECTS)).values()) == len(PROJECTS),
-            tick_fn=lambda: _tick_and_drain(sup),
-        )
+        with _no_resource_warnings():
+            _wait_until(
+                self.paths,
+                lambda: sum(_done_counts(self.paths, list(PROJECTS)).values()) == len(PROJECTS),
+                tick_fn=lambda: _tick_and_drain(sup),
+            )
 
         self.assertGreater(_count_cycle_complete_with_work(self.paths), 0)
 
@@ -413,7 +532,9 @@ class GateExecutionTests(Phase2GateHarness):
             for pid in PROJECTS:
                 counts = project_task_counts(conn, project_id=pid)
                 self.assertEqual(counts.get("done", 0), 1, f"{pid} task did not finish")
-                _assert_marker_in_repo(self, self.repos, pid)
+                _assert_task_completed_via_engine(
+                    self, conn, task_ids[pid], bare_repo=self.repos[pid],
+                )
         finally:
             conn.close()
 
@@ -433,7 +554,7 @@ class GateProjectAttributionTests(Phase2GateHarness):
             proj_b = get_task(conn, older)
             self.assertEqual(proj_a["state"], "done")
             self.assertEqual(proj_b["state"], "ready")
-            _assert_marker_in_repo(self, self.repos, "proj-a")
+            _assert_task_completed_via_engine(self, conn, newer, bare_repo=self.repos["proj-a"])
             self.assertFalse((self.repos["proj-b"] / MARKER).exists())
         finally:
             conn.close()
@@ -563,7 +684,7 @@ class GatePauseTests(Phase2GateHarness):
                 self.assertEqual(get_task(conn, task_a)["state"], "ready")
                 self.assertEqual(get_task(conn, task_b)["state"], "done")
                 self.assertFalse((self.repos["proj-a"] / MARKER).exists())
-                _assert_marker_in_repo(self, self.repos, "proj-b")
+                _assert_task_completed_via_engine(self, conn, task_b, bare_repo=self.repos["proj-b"])
             finally:
                 conn.close()
         finally:
@@ -761,7 +882,11 @@ class GateCliPathTests(TestCase):
             else:
                 self.fail("CLI supervisor never completed the ready task")
 
-            _assert_marker_in_repo(self, self.repos, "proj-a")
+            conn = connect(self.paths.database)
+            try:
+                _assert_task_completed_via_engine(self, conn, task_id, bare_repo=self.repos["proj-a"])
+            finally:
+                conn.close()
 
             subprocess.run(
                 [sys.executable, "-m", "local_cli_coordinator", "supervisor", "stop"],
@@ -832,7 +957,9 @@ class GateProjectIsolationTests(Phase2GateHarness):
                 for event in project_list_events(conn, project_id=pid):
                     self.assertEqual(event["project_id"], pid)
                     self.assertEqual(event["task_id"], task_ids[pid])
-                _assert_marker_in_repo(self, self.repos, pid)
+                _assert_task_completed_via_engine(
+                    self, conn, task_ids[pid], bare_repo=self.repos[pid],
+                )
         finally:
             conn.close()
 
@@ -855,6 +982,414 @@ class GateSqlAuditTests(TestCase):
             violations.extend(_audit_sql(db_path.name, sql))
 
         self.assertEqual(violations, [], "\n".join(violations))
+
+
+class GateVerificationFailureTests(Phase2GateHarness):
+    def test_gate_agent_success_with_verification_failure_is_not_done(self) -> None:
+        failing_config = _gate_config(
+            self.repos,
+            verify_commands=[_failing_verify_command()],
+        )
+        task_id = _create_project_task(self.conn, project_id="proj-a", title="verify-fail")
+        self.conn.close()
+
+        sup = _make_supervisor(self.paths, ["proj-a"], failing_config)
+        with _no_resource_warnings():
+            for _ in range(20):
+                _tick_and_drain(sup)
+                conn = connect(self.paths.database)
+                try:
+                    state = get_task(conn, task_id)["state"]
+                finally:
+                    conn.close()
+                if state != "ready":
+                    break
+
+        conn = connect(self.paths.database)
+        try:
+            task = get_task(conn, task_id)
+            self.assertNotEqual(
+                task["state"],
+                "done",
+                "verification failure must not mark task done",
+            )
+            self.assertIn(task["state"], {"failed", "verifying", "running"})
+            self.assertTrue(task["worktree_path"], "engine must still create an isolated worktree")
+        finally:
+            conn.close()
+
+
+class GateResourceWarningTests(Phase2GateHarness):
+    def test_gate_burst_ticks_emit_no_resource_warnings(self) -> None:
+        for pid in PROJECTS:
+            _create_project_task(self.conn, project_id=pid, title=f"warn-{pid}")
+        self.conn.close()
+
+        sup = _make_supervisor(self.paths, list(PROJECTS), self.config)
+        with _no_resource_warnings():
+            for _ in range(30):
+                sup.tick()
+                time.sleep(0.01)
+            _drain_workers(sup)
+
+
+class GateShutdownSafetyTests(Phase2GateHarness):
+    def test_gate_shutdown_waits_workers_before_teardown(self) -> None:
+        slow_config = _gate_config(self.repos, slow_seconds=2.5)
+        _create_project_task(self.conn, project_id="proj-a", title="slow-shutdown")
+        self.conn.close()
+
+        sup = _make_supervisor(self.paths, ["proj-a"], slow_config)
+        with _no_resource_warnings():
+            sup.tick()
+            time.sleep(0.15)
+            sup.request_shutdown()
+            sup.join_workers(timeout=10.0)
+            gc.collect()
+
+
+class GatePerProjectConcurrencyTests(Phase2GateHarness):
+    def test_gate_same_project_respects_max_per_project_limit(self) -> None:
+        slow_config = _gate_config(self.repos, slow_seconds=1.0)
+        _create_project_task(self.conn, project_id="proj-a", title="concurrent-a1")
+        _create_project_task(self.conn, project_id="proj-a", title="concurrent-a2")
+        self.conn.close()
+
+        capacity = SharedCapacity(max_global_running=4, max_per_project=1)
+        sup = _make_supervisor(
+            self.paths,
+            ["proj-a"],
+            slow_config,
+            capacity=capacity,
+        )
+
+        max_running = 0
+        stop = threading.Event()
+
+        def burst_ticks() -> None:
+            while not stop.is_set():
+                with _no_resource_warnings():
+                    sup.tick()
+                time.sleep(0.02)
+
+        thread = threading.Thread(target=burst_ticks, daemon=True)
+        thread.start()
+
+        deadline = time.time() + 20.0
+        try:
+            while time.time() < deadline:
+                conn = connect(self.paths.database)
+                try:
+                    running = _running_task_count(conn, project_id="proj-a")
+                    max_running = max(max_running, running)
+                    counts = project_task_counts(conn, project_id="proj-a")
+                    if counts.get("done", 0) == 2:
+                        break
+                finally:
+                    conn.close()
+                time.sleep(0.03)
+            else:
+                self.fail("both proj-a tasks did not finish")
+        finally:
+            stop.set()
+            thread.join(timeout=2.0)
+            _drain_workers(sup)
+
+        self.assertLessEqual(
+            max_running,
+            1,
+            f"same project exceeded max_per_project=1 (observed {max_running} running)",
+        )
+
+
+class GateProjectStopSemanticsTests(Phase2GateHarness):
+    def _start_server(self, sup: MultiProjectSupervisor) -> SupervisorServer:
+        def handler(request: RequestEnvelope) -> ResponseEnvelope:
+            if request.method == "system.ping":
+                return ResponseEnvelope(
+                    protocol_version=PROTOCOL_VERSION,
+                    request_id=request.request_id,
+                    ok=True,
+                    result={"pong": True},
+                    error=None,
+                )
+            conn = connect(self.paths.database)
+            try:
+                init_db(conn)
+                return sup._methods.handle(conn, request)  # noqa: SLF001
+            finally:
+                conn.close()
+
+        server = SupervisorServer(self.paths, handler=handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        deadline = time.time() + 3.0
+        while time.time() < deadline:
+            try:
+                send_request(
+                    self.paths.socket,
+                    RequestEnvelope(
+                        protocol_version=PROTOCOL_VERSION,
+                        request_id="ping",
+                        project_id=None,
+                        method="system.ping",
+                        params={},
+                    ),
+                )
+                return server
+            except Exception:
+                time.sleep(0.02)
+        self.fail("server not ready")
+
+    def test_gate_project_stop_does_not_resume_paused_project(self) -> None:
+        task_a = _create_project_task(self.conn, project_id="proj-a", title="stop-a")
+        task_b = _create_project_task(self.conn, project_id="proj-b", title="stop-b")
+        self.conn.close()
+
+        sup = _make_supervisor(self.paths, ["proj-a", "proj-b"], self.config)
+        server = self._start_server(sup)
+        try:
+            pause = send_request(
+                self.paths.socket,
+                _project_request("project.pause", "proj-a", "pause-req"),
+            )
+            self.assertTrue(pause.ok, pause.error)
+
+            stop = send_request(
+                self.paths.socket,
+                _project_request("project.stop", "proj-a", "stop-req"),
+            )
+            self.assertTrue(stop.ok, stop.error)
+
+            with _no_resource_warnings():
+                for _ in range(16):
+                    _tick_and_drain(sup)
+
+            conn = connect(self.paths.database)
+            try:
+                self.assertEqual(get_task(conn, task_a)["state"], "ready")
+                self.assertEqual(get_task(conn, task_b)["state"], "done")
+                self.assertFalse((self.repos["proj-a"] / MARKER).exists())
+                _assert_task_completed_via_engine(self, conn, task_b, bare_repo=self.repos["proj-b"])
+            finally:
+                conn.close()
+        finally:
+            server.request_shutdown()
+
+
+class GateSubscriptionCleanupTests(Phase2GateHarness):
+    def test_gate_client_disconnect_clears_broker_subscriptions(self) -> None:
+        _create_project_task(self.conn, project_id="proj-a", title="sub-cleanup")
+        self.conn.close()
+
+        broker = EventBroker()
+        methods = SupervisorMethods(broker=broker)
+        sup = _make_supervisor(self.paths, ["proj-a"], self.config, broker=broker, methods=methods)
+
+        def handler(request: RequestEnvelope) -> ResponseEnvelope:
+            conn = connect(self.paths.database)
+            try:
+                init_db(conn)
+                return methods.handle(conn, request)
+            finally:
+                conn.close()
+
+        server = SupervisorServer(self.paths, handler=handler, broker=broker)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        time.sleep(0.1)
+
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client.connect(str(self.paths.socket))
+        try:
+            subscribe = (
+                '{"type":"request","protocol_version":1,'
+                '"request_id":"sub-1","project_id":"proj-a",'
+                '"method":"events.subscribe","params":{"after":0}}\n'
+            )
+            client.sendall(subscribe.encode("utf-8"))
+            client.settimeout(3.0)
+            first = supervisor_server_module._recv_line(client)
+            self.assertTrue(first, "missing subscribe response")
+            self.assertGreater(len(broker._subscribers), 0)  # noqa: SLF001
+        finally:
+            client.close()
+
+        deadline = time.time() + 3.0
+        while time.time() < deadline:
+            if len(broker._subscribers) == 0 and len(methods._live_queues) == 0:  # noqa: SLF001
+                break
+            time.sleep(0.05)
+        else:
+            self.fail(
+                "broker subscriptions leaked after client disconnect: "
+                f"subscribers={len(broker._subscribers)}, "  # noqa: SLF001
+                f"live_queues={len(methods._live_queues)}"  # noqa: SLF001
+            )
+
+        server.request_shutdown()
+
+
+class GateXdgConfigTests(TestCase):
+    def setUp(self) -> None:
+        from local_cli_coordinator.runtime_paths import resolve_runtime_paths
+
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.home = Path(self._tmpdir.name)
+        self.env = os.environ.copy()
+        self.env["PYTHONPATH"] = str(SRC)
+        self.env["HOME"] = str(self.home)
+        self.env["XDG_CONFIG_HOME"] = str(self.home / ".config")
+        self.env["XDG_DATA_HOME"] = str(self.home / ".local" / "share")
+        self.env["XDG_STATE_HOME"] = str(self.home / ".local" / "state")
+        self.env.pop("COORDINATOR_HOME", None)
+
+        with _apply_env(self.env):
+            self.paths = resolve_runtime_paths()
+        self.paths.create()
+        self.repos = _setup_project_repos(self.home)
+        _write_xdg_gate_config_files(self.paths.config_dir, self.repos)
+
+    def tearDown(self) -> None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", ResourceWarning)
+            gc.collect()
+            self._tmpdir.cleanup()
+
+    def test_gate_cli_supervisor_uses_default_xdg_config_and_executes_tasks(self) -> None:
+        conn = connect(self.paths.database)
+        init_db(conn)
+        task_id = _create_project_task(conn, project_id="proj-a", title="xdg-a")
+        conn.close()
+
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "local_cli_coordinator",
+                "supervisor",
+                "start",
+                "--foreground",
+            ],
+            cwd=ROOT,
+            env=self.env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
+        try:
+            deadline = time.time() + 12.0
+            while time.time() < deadline:
+                if proc.poll() is not None:
+                    stdout = proc.stdout.read() if proc.stdout else ""
+                    stderr = proc.stderr.read() if proc.stderr else ""
+                    self.fail(
+                        "CLI supervisor exited before executing task; "
+                        f"default XDG config was not loaded\nstdout={stdout}\nstderr={stderr}"
+                    )
+                conn = connect(self.paths.database)
+                try:
+                    if get_task(conn, task_id)["state"] == "done":
+                        break
+                finally:
+                    conn.close()
+                time.sleep(0.2)
+            else:
+                self.fail("CLI supervisor never completed the ready task via XDG config")
+
+            conn = connect(self.paths.database)
+            try:
+                _assert_task_completed_via_engine(self, conn, task_id, bare_repo=self.repos["proj-a"])
+            finally:
+                conn.close()
+
+            subprocess.run(
+                [sys.executable, "-m", "local_cli_coordinator", "supervisor", "stop"],
+                cwd=ROOT,
+                env=self.env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            proc.wait(timeout=10.0)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            if proc.stdout is not None:
+                proc.stdout.close()
+            if proc.stderr is not None:
+                proc.stderr.close()
+
+
+@contextmanager
+def _apply_env(env: dict[str, str]):
+    old = os.environ.copy()
+    os.environ.clear()
+    os.environ.update(env)
+    try:
+        yield
+    finally:
+        os.environ.clear()
+        os.environ.update(old)
+
+
+class GateRound3SourceAuditTests(TestCase):
+    def test_gate_project_runtime_delegates_to_engine_process_task(self) -> None:
+        source = (SRC / "local_cli_coordinator" / "project_runtime.py").read_text(encoding="utf-8")
+        self.assertIn("_process_task", source)
+        self.assertNotIn("subprocess.run", source)
+        self.assertNotIn("transition_task(conn, task_id, \"done\"", source)
+
+    def test_gate_supervisor_tick_acquires_capacity_with_closed_connections(self) -> None:
+        source = (SRC / "local_cli_coordinator" / "supervisor.py").read_text(encoding="utf-8")
+        self.assertIn("try_acquire", source, "tick must enforce SharedCapacity")
+        self.assertNotIn("tick-{project_id}", source, "capacity key must not be fixed per project")
+        tick_body = source.split("def tick", 1)[1].split("\n    def ", 1)[0]
+        self.assertIn("_get_conn", tick_body)
+        acquire_pos = tick_body.find("try_acquire")
+        conn_pos = tick_body.find("_get_conn")
+        self.assertGreater(conn_pos, -1)
+        self.assertGreater(acquire_pos, -1)
+        self.assertRegex(
+            tick_body,
+            r"with\s+self\._get_conn\(\)\s+as\s+conn:.*try_acquire",
+            "capacity acquire must use a context-managed connection",
+        )
+
+    def test_gate_project_stop_marks_stopped_instead_of_only_resuming(self) -> None:
+        source = inspect.getsource(
+            __import__(
+                "local_cli_coordinator.supervisor_methods",
+                fromlist=["SupervisorMethods"],
+            ).SupervisorMethods._handle_project_stop
+        )
+        self.assertIn(
+            "_stopped.add",
+            source,
+            "project.stop must add project to stopped set",
+        )
+        self.assertFalse(
+            "discard" in source and "_stopped.add" not in source,
+            "project.stop must not only discard pause (that resumes scheduling)",
+        )
+
+    def test_gate_supervisor_start_joins_workers_on_shutdown(self) -> None:
+        from local_cli_coordinator import cli as cli_module
+
+        source = inspect.getsource(cli_module._cmd_supervisor_start)
+        self.assertIn("join_workers", source)
+        finally_block = source.split("finally:", 1)[1]
+        self.assertIn("join_workers", finally_block)
+
+    def test_gate_cli_load_config_supports_xdg_layout(self) -> None:
+        source = inspect.getsource(
+            __import__("local_cli_coordinator.cli", fromlist=["cli"])._cmd_supervisor_start
+        )
+        self.assertNotIn(
+            "load_config(paths.config_dir.parent)",
+            source,
+            "XDG config_dir already points at coordinator config root",
+        )
 
 
 class GateFileHandleLeakTests(TestCase):
