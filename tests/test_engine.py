@@ -8,6 +8,7 @@ from tests.helpers import init_git_repo, run
 from local_cli_coordinator.config import AgentConfig, CoordinatorConfig, PolicyConfig, RepoConfig
 from local_cli_coordinator.db import connect, create_task, get_task, init_db, transition_task
 from local_cli_coordinator.engine import run_one_ready_task
+from local_cli_coordinator.reporting import ExecutionEvent
 
 
 def test_config(repo_path: Path) -> CoordinatorConfig:
@@ -444,3 +445,38 @@ class EngineTests(unittest.TestCase):
             task = get_task(conn, task_id)
             self.assertEqual(task["state"], "failed")
             self.assertIn("no changed files", latest_event_note(conn, task_id))
+
+    def test_forwards_reporter_to_git_pipeline(self) -> None:
+        class RecordingReporter:
+            def __init__(self) -> None:
+                self.events: list[ExecutionEvent] = []
+
+            def emit(self, event: ExecutionEvent) -> None:
+                self.events.append(event)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            init_git_repo(repo)
+            conn = connect(root / "coordinator.db")
+            init_db(conn)
+            create_task(
+                conn,
+                title="Reporter forwarding",
+                repo="demo",
+                source_path="tasks/inbox/reporter.md",
+                priority="normal",
+                capabilities=["code"],
+                goal="Create feature.txt.",
+                acceptance_criteria=["feature.txt contains done"],
+                verification_commands=[],
+            )
+            reporter = RecordingReporter()
+
+            with patch("local_cli_coordinator.engine.create_worktree") as mock_create:
+                mock_create.side_effect = lambda **kwargs: (
+                    kwargs["worktrees_root"] / kwargs["task_id"]
+                )
+                run_one_ready_task(conn, test_config(repo), root, reporter=reporter)
+
+            self.assertEqual(mock_create.call_args.kwargs["reporter"], reporter)

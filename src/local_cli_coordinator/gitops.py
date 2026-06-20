@@ -1,19 +1,41 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
 from pathlib import Path
-import subprocess
+
+from .process import run_command
+from .reporting import NULL_REPORTER, ExecutionContext, Reporter
 
 
-def git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+@dataclass(frozen=True)
+class GitCommandResult:
+    returncode: int
+    stdout: str
+    stderr: str
+
+
+def git(
+    args: list[str],
+    cwd: Path,
+    *,
+    reporter: Reporter = NULL_REPORTER,
+    task_id: str = "",
+    actor: str = "git",
+) -> GitCommandResult:
+    result = run_command(
         ["git", *args],
         cwd=cwd,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
+        reporter=reporter,
+        context=ExecutionContext(stage="git", actor=actor, task_id=task_id),
+    )
+    return GitCommandResult(
+        returncode=result.returncode,
+        stdout=result.stdout,
+        stderr=result.stderr,
     )
 
 
-def require_success(result: subprocess.CompletedProcess[str], action: str) -> None:
+def require_success(result: GitCommandResult, action: str) -> None:
     if result.returncode != 0:
         raise RuntimeError(f"{action} failed: {result.stderr.strip()}")
 
@@ -29,11 +51,17 @@ def create_worktree(
     worktrees_root: Path,
     task_id: str,
     branch_name: str,
+    reporter: Reporter = NULL_REPORTER,
 ) -> Path:
     repo_path = repo_path.resolve()
     worktree_path = (worktrees_root / task_id).resolve()
     worktree_path.parent.mkdir(parents=True, exist_ok=True)
-    result = git(["worktree", "add", "-b", branch_name, str(worktree_path)], cwd=repo_path)
+    result = git(
+        ["worktree", "add", "-b", branch_name, str(worktree_path)],
+        cwd=repo_path,
+        reporter=reporter,
+        task_id=task_id,
+    )
     require_success(result, "create worktree")
     return worktree_path
 
@@ -97,29 +125,80 @@ def diff_patch(worktree_path: Path, base_ref: str = "HEAD") -> str:
             require_success(reset, "clear untracked intent-to-add markers")
 
 
-def commit_all(worktree_path: Path, message: str) -> str:
-    add_result = git(["add", "--all"], cwd=worktree_path)
+def commit_all(
+    worktree_path: Path,
+    message: str,
+    *,
+    reporter: Reporter = NULL_REPORTER,
+    task_id: str = "",
+) -> str:
+    add_result = git(["add", "--all"], cwd=worktree_path, reporter=reporter, task_id=task_id)
     require_success(add_result, "git add")
-    commit_result = git(["commit", "-m", message], cwd=worktree_path)
+    commit_result = git(
+        ["commit", "-m", message],
+        cwd=worktree_path,
+        reporter=reporter,
+        task_id=task_id,
+    )
     require_success(commit_result, "git commit")
-    rev_result = git(["rev-parse", "HEAD"], cwd=worktree_path)
+    rev_result = git(["rev-parse", "HEAD"], cwd=worktree_path, reporter=reporter, task_id=task_id)
     require_success(rev_result, "read commit hash")
     return rev_result.stdout.strip()
 
 
-def push_branch(worktree_path: Path, remote: str, branch_name: str) -> None:
-    result = git(["push", remote, f"HEAD:{branch_name}"], cwd=worktree_path)
+def push_branch(
+    worktree_path: Path,
+    remote: str,
+    branch_name: str,
+    *,
+    reporter: Reporter = NULL_REPORTER,
+    task_id: str = "",
+) -> None:
+    result = git(
+        ["push", remote, f"HEAD:{branch_name}"],
+        cwd=worktree_path,
+        reporter=reporter,
+        task_id=task_id,
+    )
     require_success(result, "push branch")
 
 
-def merge_branch_to_default(repo_path: Path, branch_name: str, default_branch: str, remote: str) -> None:
-    checkout = git(["checkout", default_branch], cwd=repo_path)
+def merge_branch_to_default(
+    repo_path: Path,
+    branch_name: str,
+    default_branch: str,
+    remote: str,
+    *,
+    reporter: Reporter = NULL_REPORTER,
+    task_id: str = "",
+) -> None:
+    checkout = git(
+        ["checkout", default_branch],
+        cwd=repo_path,
+        reporter=reporter,
+        task_id=task_id,
+    )
     require_success(checkout, "checkout default branch")
-    pull = git(["pull", "--ff-only", remote, default_branch], cwd=repo_path)
+    pull = git(
+        ["pull", "--ff-only", remote, default_branch],
+        cwd=repo_path,
+        reporter=reporter,
+        task_id=task_id,
+    )
     require_success(pull, "pull default branch")
-    merge = git(["merge", "--ff-only", branch_name], cwd=repo_path)
+    merge = git(
+        ["merge", "--ff-only", branch_name],
+        cwd=repo_path,
+        reporter=reporter,
+        task_id=task_id,
+    )
     require_success(merge, "merge branch")
-    push = git(["push", remote, default_branch], cwd=repo_path)
+    push = git(
+        ["push", remote, default_branch],
+        cwd=repo_path,
+        reporter=reporter,
+        task_id=task_id,
+    )
     require_success(push, "push default branch")
 
 
@@ -170,6 +249,5 @@ def stale_worktrees(repo_path: Path, worktrees_root: Path) -> list[dict[str, str
         if not wt_path.exists():
             stale.append(wt)
         elif worktrees_root in wt_path.parents or wt_path == worktrees_root:
-            # This is a coordinator-managed worktree
             stale.append(wt)
     return stale

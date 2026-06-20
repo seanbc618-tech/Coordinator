@@ -42,6 +42,7 @@ from .gitops import (
 )
 from .review import run_quality_review, run_spec_review
 from .verify import run_verification
+from .reporting import NULL_REPORTER, Reporter
 from .memory import LoopMemoryEntry, append_loop_memory, loop_memory_path
 from .review_inbox import write_review_packet
 
@@ -687,6 +688,7 @@ def _process_task(
                 worktrees_root=root / "worktrees" / repo.id,
                 task_id=task["id"],
                 branch_name=branch,
+                reporter=reporter,
             )
     except (RuntimeError, OSError) as exc:
         _finish_task(
@@ -938,13 +940,21 @@ def _process_task(
         commit_all(
             worktree,
             f"{task['title']}\n\nTask: {task['id']}\nAgent: {agent.id}",
+            reporter=reporter,
+            task_id=task["id"],
         )
     else:
         transition_task(conn, task["id"], "committing", "using agent-created commit")
     if repo.allow_push and repo.merge_policy != "no_push":
         transition_task(conn, task["id"], "pushing", "pushing branch")
         try:
-            push_branch(worktree, repo.remote, branch)
+            push_branch(
+                worktree,
+                repo.remote,
+                branch,
+                reporter=reporter,
+                task_id=task["id"],
+            )
         except (RuntimeError, OSError) as exc:
             _finish_task(
                 conn,
@@ -970,7 +980,14 @@ def _process_task(
                 return True
             transition_task(conn, task["id"], "merging", "merging to default branch")
             try:
-                merge_branch_to_default(repo.path, branch, repo.default_branch, repo.remote)
+                merge_branch_to_default(
+                    repo.path,
+                    branch,
+                    repo.default_branch,
+                    repo.remote,
+                    reporter=reporter,
+                    task_id=task["id"],
+                )
             except (RuntimeError, OSError) as exc:
                 _finish_task(
                     conn,
