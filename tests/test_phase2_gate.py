@@ -1350,10 +1350,12 @@ class GateRound3SourceAuditTests(TestCase):
         conn_pos = tick_body.find("_get_conn")
         self.assertGreater(conn_pos, -1)
         self.assertGreater(acquire_pos, -1)
-        self.assertRegex(
-            tick_body,
-            r"with\s+self\._get_conn\(\)\s+as\s+conn:.*try_acquire",
-            "capacity acquire must use a context-managed connection",
+        with_block = "with self._get_conn() as conn:"
+        self.assertIn(with_block, tick_body, "tick must acquire capacity inside _get_conn context")
+        self.assertGreater(
+            tick_body.find("try_acquire", tick_body.find(with_block)),
+            tick_body.find(with_block),
+            "try_acquire must run inside the context-managed connection block",
         )
 
     def test_gate_project_stop_marks_stopped_instead_of_only_resuming(self) -> None:
