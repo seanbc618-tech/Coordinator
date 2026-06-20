@@ -240,5 +240,57 @@ class ProcessStreamingTests(unittest.TestCase):
             self.assertEqual("".join(stderr_chunks), "err\n")
 
 
+    @unittest.skipUnless(os.name == "posix", "process groups require POSIX")
+    def test_keyboard_interrupt_kills_grandchild_process_tree(self) -> None:
+        """Ctrl+C kills both child and grandchild via process group."""
+        import selectors
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            reporter = RecordingReporter()
+            child_marker = Path(tmp) / "child.pid"
+            grandchild_marker = Path(tmp) / "grandchild.pid"
+            # Child spawns a grandchild, prints to trigger select, then both sleep
+            gc_script = (
+                "import os, time; from pathlib import Path; "
+                f"Path({str(grandchild_marker)!r}).write_text(str(os.getpid())); "
+                "time.sleep(30)"
+            )
+            script = (
+                "import subprocess, sys, os, time; from pathlib import Path; "
+                f"Path({str(child_marker)!r}).write_text(str(os.getpid())); "
+                f"subprocess.Popen([sys.executable, '-c', {gc_script!r}]); "
+                "print('child-ready', flush=True); "
+                "time.sleep(30)"
+            )
+            original_select = selectors.DefaultSelector.select
+
+            def interrupting_select(self, timeout=None):  # type: ignore[no-untyped-def]
+                # Wait until both child and grandchild are running
+                if child_marker.exists() and grandchild_marker.exists():
+                    raise KeyboardInterrupt()
+                return original_select(self, timeout)
+
+            with patch.object(selectors.DefaultSelector, "select", interrupting_select):
+                with self.assertRaises(KeyboardInterrupt):
+                    run_command(
+                        [sys.executable, "-c", script],
+                        cwd=Path(tmp),
+                        reporter=reporter,
+                        context=ExecutionContext(stage="worker", actor="fake"),
+                    )
+
+            self.assertTrue(child_marker.exists())
+            self.assertTrue(grandchild_marker.exists())
+            child_pid = int(child_marker.read_text())
+            grandchild_pid = int(grandchild_marker.read_text())
+            self.assertTrue(any(e.kind == "interrupted" for e in reporter.events))
+            # Both processes must be dead
+            with self.assertRaises(ProcessLookupError):
+                os.kill(child_pid, 0)
+            with self.assertRaises(ProcessLookupError):
+                os.kill(grandchild_pid, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -181,5 +181,75 @@ class ConsoleReporterTests(unittest.TestCase):
         self.assertIn("partial", output.getvalue())
 
 
+    def test_renders_cycle_started_event(self) -> None:
+        output = StringIO()
+        reporter = ConsoleReporter(stream=output, timestamp_fn=lambda: "10:58:00")
+        reporter.emit(ExecutionEvent(kind="cycle_started", stage="engine"))
+        self.assertIn("[10:58:00] cycle      started", output.getvalue())
+
+    def test_renders_task_started_event(self) -> None:
+        output = StringIO()
+        reporter = ConsoleReporter(stream=output, timestamp_fn=lambda: "10:58:01")
+        reporter.emit(ExecutionEvent(kind="task_started", stage="engine", task_id="task-123", actor="claude"))
+        text = output.getvalue()
+        self.assertIn("task-123", text)
+        self.assertIn("agent=claude", text)
+
+    def test_renders_timeout_event(self) -> None:
+        output = StringIO()
+        reporter = ConsoleReporter(stream=output, timestamp_fn=lambda: "11:00:00")
+        reporter.emit(ExecutionEvent(kind="timeout", stage="worker", elapsed_seconds=30.0))
+        text = output.getvalue()
+        self.assertIn("TIMED OUT", text)
+        self.assertIn("30.0s", text)
+
+    def test_renders_interrupted_event(self) -> None:
+        output = StringIO()
+        reporter = ConsoleReporter(stream=output, timestamp_fn=lambda: "11:00:00")
+        reporter.emit(ExecutionEvent(kind="interrupted", stage="worker", elapsed_seconds=5.0))
+        text = output.getvalue()
+        self.assertIn("INTERRUPTED", text)
+
+    def test_renders_error_event(self) -> None:
+        output = StringIO()
+        reporter = ConsoleReporter(stream=output, timestamp_fn=lambda: "11:00:00")
+        reporter.emit(ExecutionEvent(kind="error", stage="worker", text="disk full"))
+        text = output.getvalue()
+        self.assertIn("ERROR", text)
+        self.assertIn("disk full", text)
+
+    def test_renders_unknown_event_kind_via_fallback(self) -> None:
+        output = StringIO()
+        reporter = ConsoleReporter(stream=output, timestamp_fn=lambda: "11:00:00")
+        reporter.emit(ExecutionEvent(kind="custom_event", stage="worker", text="info", task_id="t1"))
+        text = output.getvalue()
+        self.assertIn("custom_event", text)
+        self.assertIn("info", text)
+        self.assertIn("task=t1", text)
+
+    def test_started_event_shows_actor(self) -> None:
+        output = StringIO()
+        reporter = ConsoleReporter(stream=output, timestamp_fn=lambda: "10:58:01")
+        reporter.emit(ExecutionEvent(kind="started", stage="worker", actor="claude_worker", command="echo hi"))
+        text = output.getvalue()
+        self.assertIn("actor=claude_worker", text)
+
+    def test_heartbeat_shows_task_and_actor(self) -> None:
+        output = StringIO()
+        reporter = ConsoleReporter(stream=output, timestamp_fn=lambda: "10:58:16")
+        reporter.emit(ExecutionEvent(kind="heartbeat", stage="worker", task_id="task-1", actor="claude", elapsed_seconds=15.0))
+        text = output.getvalue()
+        self.assertIn("task=task-1", text)
+        self.assertIn("actor=claude", text)
+
+    def test_completed_event_shows_status_text(self) -> None:
+        output = StringIO()
+        reporter = ConsoleReporter(stream=output, timestamp_fn=lambda: "10:59:03")
+        reporter.emit(ExecutionEvent(kind="completed", stage="worker", exit_code=0, elapsed_seconds=62.0))
+        text = output.getvalue()
+        self.assertIn("completed", text)
+        self.assertIn("exit=0", text)
+
+
 if __name__ == "__main__":
     unittest.main()

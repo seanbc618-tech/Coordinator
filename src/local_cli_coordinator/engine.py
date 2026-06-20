@@ -449,10 +449,12 @@ def run_discovery_phase(
     conn: sqlite3.Connection,
     config: CoordinatorConfig,
     root: Path,
+    *,
+    reporter: Reporter = NULL_REPORTER,
 ) -> tuple[int, int]:
     if not config.daemon_policy.run_discovery_before_tasks:
         return 0, 0
-    run_configured_discovery(config, root)
+    run_configured_discovery(config, root, reporter=reporter)
     imported = _import_discovered_tasks(conn, config, root)
     planned = _plan_persisted_findings(root)
     if planned:
@@ -472,14 +474,14 @@ def run_daemon_cycle(
         return DaemonCycleResult(0, 0, 0, 0, 0, 0, stop_reason)
 
     reporter.emit(ExecutionEvent(kind="cycle_started", stage="engine"))
-    imported, planned = run_discovery_phase(conn, config, root)
+    imported, planned = run_discovery_phase(conn, config, root, reporter=reporter)
 
     # Replenish goal queue if needed
     commander_admitted = 0
     commander_status = None
     try:
         from .commander_service import maybe_replenish_goal
-        replenishment = maybe_replenish_goal(conn, config, root)
+        replenishment = maybe_replenish_goal(conn, config, root, reporter=reporter)
         commander_status = replenishment.status
         commander_admitted = len(replenishment.admitted_task_ids)
     except Exception as exc:

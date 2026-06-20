@@ -398,7 +398,7 @@ def run_command(
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        start_new_session=os.name == "posix" and timeout_seconds is not None,
+        start_new_session=os.name == "posix",
     )
     if process.stdout is not None:
         _set_nonblocking(process.stdout)

@@ -289,6 +289,8 @@ def discover_git_recent_commits(
 def run_configured_discovery(
     config: CoordinatorConfig,
     root: Path,
+    *,
+    reporter: Reporter = NULL_REPORTER,
 ) -> DiscoveryRunResult:
     """Execute all enabled discovery sources from configuration."""
     if not config.discovery_sources:
@@ -332,6 +334,7 @@ def run_configured_discovery(
                     repo_id=repo_id,
                     enabled_repos=source.repos,
                     persist=True,
+                    reporter=reporter,
                 )
                 discovered += len(result.findings)
                 failures += len(result.failures)

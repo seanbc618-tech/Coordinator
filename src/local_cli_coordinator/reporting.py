@@ -79,11 +79,23 @@ class ConsoleReporter:
     def _render(self, event: ExecutionEvent) -> None:
         kind = event.kind
         ts = self._timestamp()
+        label = self._label(event)
 
-        if kind == "started":
-            self._write(f"[{ts}] {event.stage:<10} started\n")
+        if kind == "cycle_started":
+            self._write(f"[{ts}] cycle      started\n")
+            self._flush()
+        elif kind == "task_started":
+            self._write(f"[{ts}] task       {event.task_id}")
+            if event.actor:
+                self._write(f" - agent={event.actor}")
+            self._write("\n")
+            self._flush()
+        elif kind == "started":
+            self._write(f"[{ts}] {label} started\n")
             if event.task_id:
                 self._write(f"{'':12} task={event.task_id}\n")
+            if event.actor:
+                self._write(f"{'':12} actor={event.actor}\n")
             if event.cwd:
                 self._write(f"{'':12} cwd={event.cwd}\n")
             if event.command:
@@ -94,24 +106,50 @@ class ConsoleReporter:
         elif kind == "stderr":
             self._buffer_stream(event, "stderr")
         elif kind == "heartbeat":
-            self._write(f"[{ts}] {event.stage:<10} running - {event.elapsed_seconds:.1f}s\n")
+            self._write(f"[{ts}] {label} running - {event.elapsed_seconds:.1f}s")
+            if event.task_id:
+                self._write(f" - task={event.task_id}")
+            if event.actor:
+                self._write(f" - actor={event.actor}")
+            self._write("\n")
+            self._flush()
+        elif kind == "timeout":
+            self._flush_partial(event)
+            self._write(f"[{ts}] {label} TIMED OUT - {event.elapsed_seconds:.1f}s\n")
+            self._flush()
+        elif kind == "interrupted":
+            self._flush_partial(event)
+            self._write(f"[{ts}] {label} INTERRUPTED - {event.elapsed_seconds:.1f}s\n")
+            self._flush()
+        elif kind == "error":
+            self._flush_partial(event)
+            self._write(f"[{ts}] {label} ERROR: {event.text}\n")
             self._flush()
         elif kind == "completed":
             self._flush_partial(event)
-            parts = [f"[{ts}] {event.stage:<10}"]
+            status = "timed out" if event.timed_out else "completed"
+            parts = [f"[{ts}] {label} {status}"]
             if event.exit_code is not None:
                 parts.append(f"exit={event.exit_code}")
-            if event.timed_out:
-                parts.append("timed out")
-            elif event.elapsed_seconds:
+            if event.elapsed_seconds:
                 parts.append(f"{event.elapsed_seconds:.1f}s")
             if event.log_path:
                 parts.append(f"log={event.log_path}")
-            self._write(" - ".join(parts[:2]))
-            if len(parts) > 2:
-                self._write(" - " + " - ".join(parts[2:]))
+            self._write(" - ".join(parts))
             self._write("\n")
             self._flush()
+        else:
+            # Generic fallback for unknown event kinds
+            self._write(f"[{ts}] {label} {kind}")
+            if event.text:
+                self._write(f": {event.text}")
+            if event.task_id:
+                self._write(f" - task={event.task_id}")
+            self._write("\n")
+            self._flush()
+
+    def _label(self, event: ExecutionEvent) -> str:
+        return f"{event.stage:<10}"
 
     def _buffer_stream(self, event: ExecutionEvent, stream_name: str) -> None:
         actor = event.actor or event.stage
