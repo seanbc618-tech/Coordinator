@@ -2,12 +2,19 @@
 
 Copies database, config, runs, and tasks from a legacy single-root
 installation to the global runtime directory structure.
+
+Safety guarantees:
+- Copies to a staging directory first; validates before touching live dirs.
+- Backs up all three target dirs (config, data, state) before overwrite.
+- Rolls back to backup if validation fails.
+- Never deletes the source.
 """
 
 from __future__ import annotations
 
 import hashlib
 import shutil
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -64,40 +71,41 @@ _KNOWN_PATHS = (
 )
 
 
-def _copy_legacy(source: Path, paths: RuntimePaths) -> None:
-    """Copy known legacy paths to global directories."""
-    paths.create()
-
+def _copy_known_paths(source: Path, dest_root: Path, paths: RuntimePaths) -> None:
+    """Copy known legacy paths into a destination root directory."""
     for name in _KNOWN_PATHS:
         src = source / name
         if not src.exists():
             continue
 
         if name == "coordinator.db":
-            dst = paths.database
+            dst = dest_root / "data" / "coordinator.db"
         elif name == "config":
-            dst = paths.config_dir
+            dst = dest_root / "config"
         elif name == "runs":
-            dst = paths.data_dir / "runs"
+            dst = dest_root / "data" / "runs"
         elif name == "state":
-            dst = paths.state_dir
+            dst = dest_root / "state"
         elif name == "tasks":
-            dst = paths.data_dir / "tasks"
+            dst = dest_root / "data" / "tasks"
         else:
             continue
 
+        dst.parent.mkdir(parents=True, exist_ok=True)
         if src.is_dir():
             if dst.exists():
                 shutil.rmtree(dst)
             shutil.copytree(src, dst)
         else:
-            dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dst)
 
 
-def _validate_database(paths: RuntimePaths) -> None:
-    """Open the copied database and run migrations to validate."""
-    conn = connect(paths.database)
+def _validate_staged_database(staged_root: Path) -> None:
+    """Open the staged database and run migrations to validate."""
+    db_path = staged_root / "data" / "coordinator.db"
+    if not db_path.exists():
+        return
+    conn = connect(db_path)
     try:
         init_db(conn)
     finally:
@@ -105,12 +113,49 @@ def _validate_database(paths: RuntimePaths) -> None:
 
 
 def _backup_existing(paths: RuntimePaths) -> Path:
-    """Back up existing data directory before overwrite."""
+    """Back up all three target directories before overwrite."""
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    backup = paths.data_dir.parent / f"backup-{timestamp}"
-    if paths.data_dir.exists():
-        shutil.copytree(paths.data_dir, backup)
-    return backup
+    backup_root = paths.data_dir.parent / f"backup-{timestamp}"
+    backup_root.mkdir(parents=True, exist_ok=True)
+
+    for label, directory in [
+        ("config", paths.config_dir),
+        ("data", paths.data_dir),
+        ("state", paths.state_dir),
+    ]:
+        if directory.exists():
+            shutil.copytree(directory, backup_root / label)
+
+    return backup_root
+
+
+def _restore_backup(backup_root: Path, paths: RuntimePaths) -> None:
+    """Restore all three directories from a backup."""
+    for label, directory in [
+        ("config", paths.config_dir),
+        ("data", paths.data_dir),
+        ("state", paths.state_dir),
+    ]:
+        src = backup_root / label
+        if src.exists():
+            if directory.exists():
+                shutil.rmtree(directory)
+            shutil.copytree(src, directory)
+
+
+def _promote_staged(staged_root: Path, paths: RuntimePaths) -> None:
+    """Move staged files to final locations."""
+    for label, directory in [
+        ("config", paths.config_dir),
+        ("data", paths.data_dir),
+        ("state", paths.state_dir),
+    ]:
+        src = staged_root / label
+        if not src.exists():
+            continue
+        if directory.exists():
+            shutil.rmtree(directory)
+        shutil.copytree(src, directory)
 
 
 def migrate_legacy_root(
@@ -142,21 +187,47 @@ def migrate_legacy_root(
         return MigrationResult(status="already_migrated")
 
     if dry_run:
+        # Validate source has a readable database
+        src_db = source / "coordinator.db"
+        if src_db.exists():
+            conn = connect(src_db)
+            try:
+                init_db(conn)
+            finally:
+                conn.close()
         return MigrationResult(status="dry_run")
 
-    # Back up existing destination
+    # Stage the copy in a temp directory first
+    staging = None
     backup_path = None
-    if paths.data_dir.exists():
-        backup_path = _backup_existing(paths)
+    try:
+        staging = Path(tempfile.mkdtemp(prefix="coord-migrate-"))
+        _copy_known_paths(source, staging, paths)
 
-    # Copy legacy state
-    _copy_legacy(source, paths)
+        # Validate staged database
+        _validate_staged_database(staging)
 
-    # Validate the copied database
-    _validate_database(paths)
+        # Back up existing target dirs
+        if paths.data_dir.exists() or paths.config_dir.exists() or paths.state_dir.exists():
+            backup_path = _backup_existing(paths)
 
-    # Write migration marker
-    db_hash = _database_hash(paths.database) if paths.database.exists() else ""
-    _write_marker(paths, source, db_hash)
+        # Promote staged to live
+        _promote_staged(staging, paths)
 
-    return MigrationResult(status="migrated", backup_path=backup_path)
+        # Write migration marker
+        db_hash = ""
+        if paths.database.exists():
+            db_hash = _database_hash(paths.database)
+        _write_marker(paths, source, db_hash)
+
+        return MigrationResult(status="migrated", backup_path=backup_path)
+
+    except Exception:
+        # Rollback: restore from backup if we have one
+        if backup_path is not None:
+            _restore_backup(backup_path, paths)
+        raise
+    finally:
+        # Clean up staging
+        if staging is not None and staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
