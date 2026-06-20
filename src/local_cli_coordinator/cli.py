@@ -717,6 +717,152 @@ def _cmd_digest(args: argparse.Namespace) -> int:
         conn.close()
 
 
+def _cmd_supervisor_start(args: argparse.Namespace) -> int:
+    from .runtime_paths import resolve_runtime_paths
+    paths = resolve_runtime_paths()
+    paths.create()
+    if not args.foreground:
+        print("Use --foreground to start the Supervisor in the foreground.")
+        print("Background daemon mode is not yet implemented.")
+        return 1
+    from .supervisor_server import SupervisorServer
+    from .locks import acquire_lock_at
+    lock_result = acquire_lock_at(paths.lock)
+    if isinstance(lock_result, str):
+        print(lock_result, file=sys.stderr)
+        return 1
+    try:
+        def handler(request):
+            from .supervisor_protocol import ResponseEnvelope
+            if request.method == "system.ping":
+                return ResponseEnvelope(
+                    protocol_version=request.protocol_version,
+                    request_id=request.request_id,
+                    ok=True,
+                    result={"pong": True},
+                    error=None,
+                )
+            if request.method == "system.shutdown":
+                server.request_shutdown()
+                return ResponseEnvelope(
+                    protocol_version=request.protocol_version,
+                    request_id=request.request_id,
+                    ok=True,
+                    result={"shutting_down": True},
+                    error=None,
+                )
+            return ResponseEnvelope(
+                protocol_version=request.protocol_version,
+                request_id=request.request_id,
+                ok=False,
+                result=None,
+                error=f"unknown method: {request.method}",
+            )
+
+        server = SupervisorServer(paths, handler)
+        print(f"Supervisor listening on {paths.socket}")
+        server.serve_forever()
+    finally:
+        from .locks import release_lock_at
+        release_lock_at(paths.lock)
+    return 0
+
+
+def _cmd_supervisor_status(args: argparse.Namespace) -> int:
+    from .runtime_paths import resolve_runtime_paths
+    from .supervisor_server import send_request
+    from .supervisor_protocol import RequestEnvelope
+    paths = resolve_runtime_paths()
+    if not paths.socket.exists():
+        print("Supervisor is not running")
+        return 1
+    try:
+        response = send_request(paths.socket, RequestEnvelope(
+            protocol_version=1,
+            request_id="status-1",
+            project_id=None,
+            method="system.ping",
+            params={},
+        ))
+        if response.ok:
+            print("Supervisor is running")
+            print(f"socket: {paths.socket}")
+        else:
+            print(f"Supervisor error: {response.error}")
+            return 1
+    except Exception as exc:
+        print(f"Cannot reach Supervisor: {exc}")
+        return 1
+    return 0
+
+
+def _cmd_supervisor_stop(args: argparse.Namespace) -> int:
+    from .runtime_paths import resolve_runtime_paths
+    from .supervisor_server import send_request
+    from .supervisor_protocol import RequestEnvelope
+    paths = resolve_runtime_paths()
+    if not paths.socket.exists():
+        print("Supervisor is not running")
+        return 1
+    try:
+        response = send_request(paths.socket, RequestEnvelope(
+            protocol_version=1,
+            request_id="stop-1",
+            project_id=None,
+            method="system.shutdown",
+            params={},
+        ))
+        if response.ok:
+            print("Supervisor shutting down")
+        else:
+            print(f"Supervisor error: {response.error}")
+            return 1
+    except Exception as exc:
+        print(f"Cannot reach Supervisor: {exc}")
+        return 1
+    return 0
+
+
+def _cmd_project_inspect(args: argparse.Namespace) -> int:
+    from .projects import inspect_project
+    path = Path(args.path).resolve()
+    try:
+        draft = inspect_project(path)
+    except ValueError as exc:
+        print(f"error: {exc}")
+        return 1
+    print(f"canonical_path: {draft.canonical_path}")
+    print(f"repo_id: {draft.repo_id}")
+    print(f"default_branch: {draft.default_branch}")
+    print(f"branch_prefix: {draft.branch_prefix}")
+    return 0
+
+
+def _cmd_project_add(args: argparse.Namespace) -> int:
+    from .projects import inspect_project, register_project
+    from .runtime_paths import resolve_runtime_paths
+    if not args.yes:
+        print("Refusing to register without --yes confirmation.")
+        print(f"Run: coordinator project add {args.path} --yes")
+        return 1
+    path = Path(args.path).resolve()
+    try:
+        draft = inspect_project(path)
+    except ValueError as exc:
+        print(f"error: {exc}")
+        return 1
+    paths = resolve_runtime_paths()
+    conn = connect(paths.database)
+    init_db(conn)
+    try:
+        project_id = register_project(conn, draft, confirmed=True)
+    finally:
+        conn.close()
+    print(f"registered: {project_id}")
+    print(f"canonical_path: {draft.canonical_path}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="coordinator")
     parser.add_argument("--root", default=".")
@@ -769,6 +915,25 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("chat")
 
     subparsers.add_parser("logs").add_argument("task_id")
+
+    # Supervisor commands
+    supervisor = subparsers.add_parser("supervisor")
+    supervisor_subparsers = supervisor.add_subparsers(dest="supervisor_command")
+    supervisor_subparsers.required = True
+    start = supervisor_subparsers.add_parser("start")
+    start.add_argument("--foreground", action="store_true")
+    supervisor_subparsers.add_parser("status")
+    supervisor_subparsers.add_parser("stop")
+
+    # Project commands
+    project = subparsers.add_parser("project")
+    project_subparsers = project.add_subparsers(dest="project_command")
+    project_subparsers.required = True
+    project_subparsers.add_parser("inspect").add_argument("path")
+    project_add = project_subparsers.add_parser("add")
+    project_add.add_argument("path")
+    project_add.add_argument("--yes", action="store_true")
+
     return parser
 
 
@@ -813,6 +978,16 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_chat(args)
     if args.command == "logs":
         return _cmd_logs(args)
+    if args.command == "supervisor" and args.supervisor_command == "start":
+        return _cmd_supervisor_start(args)
+    if args.command == "supervisor" and args.supervisor_command == "status":
+        return _cmd_supervisor_status(args)
+    if args.command == "supervisor" and args.supervisor_command == "stop":
+        return _cmd_supervisor_stop(args)
+    if args.command == "project" and args.project_command == "inspect":
+        return _cmd_project_inspect(args)
+    if args.command == "project" and args.project_command == "add":
+        return _cmd_project_add(args)
     if args.command is None:
         parser.print_help()
         return 0
