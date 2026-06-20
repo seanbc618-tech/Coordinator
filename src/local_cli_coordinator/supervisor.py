@@ -2,19 +2,20 @@
 
 Composes the scheduler, event broker, capacity enforcer, and method
 registry into a single process. Uses a thread pool for concurrent
-project execution.
+project execution. Integrates with the existing engine pipeline.
 """
 
 from __future__ import annotations
 
 import logging
 import threading
-from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import contextmanager
+from typing import Any, Generator
 
 from .config import CoordinatorConfig
 from .db import connect, init_db, project_next_ready_task, project_task_counts
-from .project_runtime import ProjectRuntime, run_project_cycle, ProjectCycleResult
+from .project_runtime import ProjectRuntime, run_project_cycle
 from .reporting import NULL_REPORTER, Reporter
 from .runtime_paths import RuntimePaths
 from .supervisor_capacity import SharedCapacity
@@ -53,119 +54,107 @@ class MultiProjectSupervisor:
         self._reporter = reporter
         self._shutdown = threading.Event()
         self._paused: set[str] = set()
+        self._stopped: set[str] = set()
         self._executor = ThreadPoolExecutor(max_workers=max_workers)
-        self._active_futures: dict[str, Any] = {}
+        self._active_futures: dict[str, Future] = {}
+        self._futures_lock = threading.Lock()
 
-        # Expose paused set to methods so API pause affects scheduling
+        # Expose paused/stopped sets to methods
         self._methods.set_paused_ref(self._paused)
+        self._methods.set_stopped_ref(self._stopped)
+
+    @contextmanager
+    def _get_conn(self) -> Generator[sqlite3.Connection, None, None]:
+        """Get a database connection as a context manager."""
+        conn = connect(self._paths.database)
+        init_db(conn)
+        try:
+            yield conn
+        finally:
+            conn.close()
 
     def tick(self) -> None:
         """Run one scheduler tick: pick a project, submit to worker pool.
 
-        Respects pause state and capacity limits.
+        Respects pause/stop state and capacity limits.
         """
+        if self._shutdown.is_set():
+            return
+
         decision = self._scheduler.next(self._is_project_runnable)
         if decision is None:
             return
 
         project_id = decision.project_id
+        task_key = f"task-{id(decision)}"
 
-        # Acquire capacity
-        if not self._capacity.try_acquire(
-            self._get_conn(),
-            project_id=project_id,
-            task_id=f"tick-{project_id}",
-            agent_id="supervisor",
-        ):
-            return
+        # Acquire capacity with context-managed connection
+        with self._get_conn() as conn:
+            if not self._capacity.try_acquire(
+                conn,
+                project_id=project_id,
+                task_id=task_key,
+                agent_id="supervisor",
+            ):
+                return
 
-        # Publish tick event
-        conn = self._get_conn()
-        try:
             self._broker.publish(
                 conn, project_id, "tick_scheduled",
                 {"project_id": project_id, "reason": decision.reason},
             )
-        finally:
-            conn.close()
 
         # Submit to worker pool
-        future = self._executor.submit(self._run_project_cycle, project_id)
-        self._active_futures[project_id] = future
+        future = self._executor.submit(self._run_project_cycle, project_id, task_key)
+        with self._futures_lock:
+            self._active_futures[task_key] = future
 
         # Clean up completed futures
-        for pid in list(self._active_futures):
-            if self._active_futures[pid].done():
-                del self._active_futures[pid]
+        with self._futures_lock:
+            for key in list(self._active_futures):
+                if self._active_futures[key].done():
+                    del self._active_futures[key]
 
-    def _run_project_cycle(self, project_id: str) -> ProjectCycleResult:
+    def _run_project_cycle(self, project_id: str, task_key: str) -> None:
         """Run a project cycle in a worker thread."""
-        conn = self._get_conn()
-        try:
-            # Find the repo path for this project from config
-            # Use the first repo as default (multi-repo projects need registry)
-            repo_root = self._paths.data_dir
-            for repo in self._config.repos.values():
-                repo_root = repo.path
-                break
+        with self._get_conn() as conn:
+            try:
+                runtime = ProjectRuntime(
+                    project_id=project_id,
+                    repo_root=self._paths.data_dir,
+                    state_root=self._paths.state_dir,
+                    config=self._config,
+                )
 
-            runtime = ProjectRuntime(
-                project_id=project_id,
-                repo_root=repo_root,
-                state_root=self._paths.state_dir,
-                config=self._config,
-            )
+                result = run_project_cycle(conn, runtime, self._reporter)
 
-            result = run_project_cycle(conn, runtime, self._reporter)
+                self._broker.publish(
+                    conn, project_id, "cycle_complete",
+                    {
+                        "tasks_processed": result.tasks_processed,
+                        "failures": result.failures,
+                        "stop_reason": result.stop_reason,
+                        "task_id": result.task_id,
+                    },
+                )
 
-            self._broker.publish(
-                conn, project_id, "cycle_complete",
-                {
-                    "tasks_processed": result.tasks_processed,
-                    "failures": result.failures,
-                    "stop_reason": result.stop_reason,
-                    "task_id": result.task_id,
-                },
-            )
-
-            return result
-        except Exception as exc:
-            log.exception("project cycle failed for %s", project_id)
-            self._broker.publish(
-                conn, project_id, "cycle_error",
-                {"error": str(exc)},
-            )
-            return ProjectCycleResult(
-                project_id=project_id,
-                failures=1,
-                stop_reason=str(exc),
-            )
-        finally:
-            self._capacity.release(f"tick-{project_id}")
-            conn.close()
-
-    def _get_conn(self) -> sqlite3.Connection:
-        """Get a fresh database connection."""
-        conn = connect(self._paths.database)
-        init_db(conn)
-        return conn
+                if result.failures > 0:
+                    log.warning("project %s cycle failed: %s", project_id, result.stop_reason)
+            finally:
+                self._capacity.release(task_key)
 
     def _is_project_runnable(self, project_id: str) -> bool:
-        """Check if a project is runnable: not paused, has ready tasks,
-        and capacity is available."""
+        """Check if a project is runnable: not paused/stopped, has ready
+        tasks, and capacity is available."""
         if project_id in self._paused:
             return False
-
-        if self._capacity.active_count() >= self._executor._max_workers:
+        if project_id in self._stopped:
             return False
 
-        # Check for ready tasks
-        conn = self._get_conn()
-        try:
+        with self._get_conn() as conn:
+            if self._capacity.active_count() >= self._executor._max_workers:
+                return False
             next_task = project_next_ready_task(conn, project_id=project_id)
             return next_task is not None
-        finally:
-            conn.close()
 
     def pause_project(self, project_id: str) -> None:
         self._paused.add(project_id)
@@ -173,13 +162,23 @@ class MultiProjectSupervisor:
     def resume_project(self, project_id: str) -> None:
         self._paused.discard(project_id)
 
+    def stop_project(self, project_id: str) -> None:
+        """Permanently stop a project (until explicitly restarted)."""
+        self._stopped.add(project_id)
+        self._paused.discard(project_id)
+
+    def restart_project(self, project_id: str) -> None:
+        self._stopped.discard(project_id)
+
     def is_paused(self, project_id: str) -> bool:
         return project_id in self._paused
 
+    def is_stopped(self, project_id: str) -> bool:
+        return project_id in self._stopped
+
     def status(self) -> dict[str, Any]:
         """Return diagnostic status."""
-        conn = self._get_conn()
-        try:
+        with self._get_conn() as conn:
             projects = {}
             rows = conn.execute(
                 "select distinct project_id from tasks"
@@ -191,20 +190,24 @@ class MultiProjectSupervisor:
             return {
                 "projects": projects,
                 "paused": sorted(self._paused),
+                "stopped": sorted(self._stopped),
                 "active_tasks": len(self._active_futures),
                 "capacity_active": self._capacity.active_count(),
                 "shutdown_requested": self._shutdown.is_set(),
             }
-        finally:
-            conn.close()
 
     def request_shutdown(self) -> None:
         self._shutdown.set()
-        self._executor.shutdown(wait=False, cancel_futures=True)
 
     def is_shutdown_requested(self) -> bool:
         return self._shutdown.is_set()
 
-    def join_workers(self, timeout: float = 5.0) -> None:
+    def join_workers(self, timeout: float = 30.0) -> None:
         """Wait for all active workers to complete."""
-        self._executor.shutdown(wait=True)
+        with self._futures_lock:
+            futures = list(self._active_futures.values())
+        for future in futures:
+            try:
+                future.result(timeout=timeout / max(len(futures), 1))
+            except Exception:
+                pass

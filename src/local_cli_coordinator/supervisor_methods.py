@@ -1,8 +1,8 @@
 """Multi-client Supervisor method registry.
 
 Handles project-scoped requests: status, chat, pause/resume/stop,
-event subscribe/replay. Delegates pause state to the supervisor's
-shared set. Event subscribers receive live events via the shared broker.
+event subscribe/replay. Delegates pause/stop state to the supervisor's
+shared sets. Event subscribers receive live events via the shared broker.
 """
 
 from __future__ import annotations
@@ -26,13 +26,15 @@ class SupervisorMethods:
 
     The EventBroker must be shared with the supervisor loop so that
     events published during ticks are visible to subscribers.
-    Pause state is delegated to a shared set owned by the supervisor.
+    Pause/stop state is delegated to shared sets owned by the supervisor.
     """
 
     def __init__(self, broker: EventBroker | None = None) -> None:
         self._broker = broker or EventBroker()
-        self._paused: set[str] = set()  # fallback if not set by supervisor
-        self._live_queues: dict[str, queue.Queue] = {}  # sub_id → event queue
+        self._paused: set[str] = set()
+        self._stopped: set[str] = set()
+        self._live_queues: dict[str, queue.Queue] = {}
+        self._subscriptions: dict[str, int] = {}  # sub_id → broker token
         self._handlers: dict[str, Callable] = {
             "project.status": self._handle_project_status,
             "chat.send": self._handle_chat_send,
@@ -44,8 +46,12 @@ class SupervisorMethods:
         }
 
     def set_paused_ref(self, paused: set[str]) -> None:
-        """Set reference to supervisor's paused set (unified state)."""
+        """Set reference to supervisor's paused set."""
         self._paused = paused
+
+    def set_stopped_ref(self, stopped: set[str]) -> None:
+        """Set reference to supervisor's stopped set."""
+        self._stopped = stopped
 
     @property
     def broker(self) -> EventBroker:
@@ -78,6 +84,7 @@ class SupervisorMethods:
         return self._ok(request, {
             "counts": counts,
             "paused": project_id in self._paused,
+            "stopped": project_id in self._stopped,
         })
 
     def _handle_chat_send(
@@ -100,6 +107,8 @@ class SupervisorMethods:
     def _handle_project_stop(
         self, conn: sqlite3.Connection, request: RequestEnvelope
     ) -> ResponseEnvelope:
+        """Stop a project: add to stopped set, remove from paused."""
+        self._stopped.add(request.project_id)
         self._paused.discard(request.project_id)
         return self._ok(request, {"stopped": True})
 
@@ -108,21 +117,25 @@ class SupervisorMethods:
     ) -> ResponseEnvelope:
         """Subscribe to live events for a project.
 
-        Creates a queue and registers a broker callback that pushes
-        events to it. Returns the subscription ID and replayed events.
+        Registers a broker callback that pushes events to a queue.
+        Returns the subscription ID and replayed events.
         """
         project_id = request.project_id
         after = request.params.get("after", 0)
 
         sub_id = str(uuid.uuid4())[:8]
-        event_queue: queue.Queue = queue.Queue()
+        event_queue: queue.Queue = queue.Queue(maxsize=256)
         self._live_queues[sub_id] = event_queue
 
         # Register a real subscriber that pushes to the queue
         def _on_event(envelope):
-            event_queue.put(envelope)
+            try:
+                event_queue.put_nowait(envelope)
+            except queue.Full:
+                pass
 
-        self._broker.subscribe(project_id, _on_event)
+        token = self._broker.subscribe(project_id, _on_event)
+        self._subscriptions[sub_id] = token
 
         # Replay existing events
         events = self._broker.replay(conn, project_id, after=after)
@@ -136,7 +149,14 @@ class SupervisorMethods:
             ],
         })
 
-    def poll_live_events(self, sub_id: str, timeout: float = 0.0) -> list[dict]:
+    def unsubscribe(self, sub_id: str) -> None:
+        """Remove a subscription and clean up resources."""
+        token = self._subscriptions.pop(sub_id, None)
+        if token is not None:
+            self._broker.unsubscribe(token)
+        self._live_queues.pop(sub_id, None)
+
+    def poll_live_events(self, sub_id: str) -> list[dict]:
         """Poll for live events from a subscription."""
         q = self._live_queues.get(sub_id)
         if q is None:
@@ -146,6 +166,7 @@ class SupervisorMethods:
             while True:
                 env = q.get_nowait()
                 events.append({
+                    "project_id": env.project_id,
                     "cursor": env.cursor,
                     "type": env.event_type,
                     "payload": env.payload,

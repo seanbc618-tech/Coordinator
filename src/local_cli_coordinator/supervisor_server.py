@@ -48,18 +48,15 @@ class SupervisorServer:
         paths: RuntimePathsLike,
         *,
         handler: Handler | None = None,
-        broker: Any | None = None,
+        methods: Any | None = None,
     ) -> None:
         self._paths = paths
         self._handler = handler
-        self._broker = broker
+        self._methods = methods  # for poll_live_events / unsubscribe
         self._shutdown = threading.Event()
         self._server_socket: socket.socket | None = None
         self._client_threads: list[threading.Thread] = []
         self._threads_lock = threading.Lock()
-        # Event queues for subscribed clients: client_id → queue
-        self._event_queues: dict[int, queue.Queue] = {}
-        self._event_queues_lock = threading.Lock()
 
     def request_shutdown(self) -> None:
         self._shutdown.set()
@@ -69,16 +66,6 @@ class SupervisorServer:
                 server_socket.close()
             except OSError:
                 pass
-
-    def push_event(self, event: EventEnvelope) -> None:
-        """Push an event to all subscribed client queues."""
-        encoded = encode_envelope(event) + "\n"
-        with self._event_queues_lock:
-            for q in self._event_queues.values():
-                try:
-                    q.put_nowait(encoded)
-                except queue.Full:
-                    pass
 
     def serve_forever(self) -> None:
         lock_result = acquire_lock_at(self._paths.lock)
@@ -121,25 +108,33 @@ class SupervisorServer:
             release_lock_at(self._paths.lock)
 
     def _serve_client(self, client_socket: socket.socket) -> None:
-        client_id = id(client_socket)
-        event_q: queue.Queue = queue.Queue(maxsize=256)
+        """Serve a single client connection.
 
-        with self._event_queues_lock:
-            self._event_queues[client_id] = event_q
+        After a successful events.subscribe response, polls the methods'
+        live_queues for events and forwards them to the client.
+        On disconnect, calls methods.unsubscribe to clean up.
+        """
+        active_sub_id: str | None = None
 
         try:
             with client_socket:
                 buf = b""
                 while not self._shutdown.is_set():
-                    # Check for outgoing events (non-blocking)
-                    try:
-                        while True:
-                            event_data = event_q.get_nowait()
-                            client_socket.sendall(event_data.encode("utf-8"))
-                    except queue.Empty:
-                        pass
+                    # Forward live events from methods' queue
+                    if active_sub_id and self._methods:
+                        events = self._methods.poll_live_events(active_sub_id)
+                        for evt in events:
+                            proto = EventEnvelope(
+                                protocol_version=PROTOCOL_VERSION,
+                                project_id=evt.get("project_id", ""),
+                                cursor=evt.get("cursor", 0),
+                                event_type=evt.get("type", ""),
+                                payload=evt.get("payload", {}),
+                            )
+                            encoded = encode_envelope(proto) + "\n"
+                            client_socket.sendall(encoded.encode("utf-8"))
 
-                    # Wait for incoming data with timeout (allows checking events)
+                    # Wait for incoming data with timeout
                     client_socket.settimeout(0.2)
                     try:
                         chunk = client_socket.recv(4096)
@@ -159,49 +154,16 @@ class SupervisorServer:
                             resp_data = encode_envelope(response) + "\n"
                             client_socket.sendall(resp_data.encode("utf-8"))
 
-                            # If this was a subscribe response, register the
-                            # client to receive live events via the handler
-                            self._maybe_register_subscription(response, event_q)
+                            # Track subscription for live event forwarding
+                            if (response.ok and response.result
+                                    and "subscription_id" in response.result):
+                                active_sub_id = response.result["subscription_id"]
         except OSError:
             return
         finally:
-            with self._event_queues_lock:
-                self._event_queues.pop(client_id, None)
-
-    def _maybe_register_subscription(
-        self, response: ResponseEnvelope, event_q: queue.Queue
-    ) -> None:
-        """If the response indicates a successful subscribe, register a
-        broker callback that forwards events to this client's queue."""
-        if not response.ok or response.result is None:
-            return
-        if "subscription_id" not in response.result:
-            return
-        if self._broker is None:
-            return
-
-        # Extract project_id from the response context (stored in result)
-        project_id = response.result.get("project_id")
-        if not project_id:
-            return
-
-        # Register a broker callback that writes events to this client's queue
-        def _forward_to_client(envelope):
-            try:
-                # Convert broker EventEnvelope to protocol EventEnvelope
-                proto_event = EventEnvelope(
-                    protocol_version=PROTOCOL_VERSION,
-                    project_id=envelope.project_id,
-                    cursor=envelope.cursor,
-                    event_type=envelope.event_type,
-                    payload=envelope.payload,
-                )
-                encoded = encode_envelope(proto_event) + "\n"
-                event_q.put_nowait(encoded)
-            except queue.Full:
-                pass
-
-        self._broker.subscribe(project_id, _forward_to_client)
+            # Clean up subscription on disconnect
+            if active_sub_id and self._methods:
+                self._methods.unsubscribe(active_sub_id)
 
     def _handle_raw_request(self, raw: str) -> ResponseEnvelope:
         request_id = _extract_request_id(raw)

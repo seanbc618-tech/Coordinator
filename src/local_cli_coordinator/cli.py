@@ -740,8 +740,25 @@ def _cmd_supervisor_start(args: argparse.Namespace) -> int:
     from .supervisor import MultiProjectSupervisor
     from .db import connect, init_db
 
-    # Load config from runtime paths (respects COORDINATOR_HOME)
-    config = load_config(paths.config_dir.parent)
+    # Load config from runtime paths
+    # config_dir is ~/.config/coordinator (XDG) or $COORDINATOR_HOME/config
+    # load_config expects root/config/agents.toml, so we need to adjust
+    config_root = paths.config_dir.parent
+    if not (paths.config_dir / "agents.toml").exists():
+        # Try loading from the root (legacy layout)
+        config = load_config(config_root)
+    else:
+        # XDG layout: config files are directly in config_dir
+        # We need to create a temporary root structure
+        import shutil
+        tmp_config = paths.config_dir.parent / ".coord-config-tmp"
+        tmp_config.mkdir(parents=True, exist_ok=True)
+        (tmp_config / "config").mkdir(exist_ok=True)
+        for f in paths.config_dir.iterdir():
+            if f.is_file():
+                shutil.copy2(f, tmp_config / "config" / f.name)
+        config = load_config(tmp_config)
+        shutil.rmtree(tmp_config, ignore_errors=True)
 
     # Discover registered projects
     conn = connect(paths.database)
@@ -800,7 +817,7 @@ def _cmd_supervisor_start(args: argparse.Namespace) -> int:
             conn.close()
 
     try:
-        server = SupervisorServer(paths, handler=handler, broker=broker)
+        server = SupervisorServer(paths, handler=handler, methods=methods)
     except SupervisorServerError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -828,7 +845,10 @@ def _cmd_supervisor_start(args: argparse.Namespace) -> int:
         log.error("server error: %s", exc)
         return 1
     finally:
+        log.info("Shutting down, waiting for workers...")
         sup.request_shutdown()
+        sup.join_workers(timeout=30.0)
+        log.info("Shutdown complete")
 
     return 0
 
