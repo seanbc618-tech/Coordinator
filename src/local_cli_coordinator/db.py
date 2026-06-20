@@ -60,14 +60,15 @@ def create_task(
     goal: str,
     acceptance_criteria: list[str],
     verification_commands: list[str],
+    project_id: str = "legacy-default",
 ) -> str:
     task_id = f"task-{uuid.uuid4().hex[:12]}"
     conn.execute(
         """
         insert into tasks(
             id, title, repo, state, priority, capabilities, source_path,
-            goal, acceptance_criteria, verification_commands
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            goal, acceptance_criteria, verification_commands, project_id
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             task_id,
@@ -80,11 +81,13 @@ def create_task(
             goal,
             "\n".join(acceptance_criteria),
             "\n".join(verification_commands),
+            project_id,
         ),
     )
     conn.execute(
-        "insert into events(task_id, old_state, new_state, note) values (?, ?, ?, ?)",
-        (task_id, "inbox", "ready", "task imported"),
+        "insert into events(task_id, old_state, new_state, note, project_id) "
+        "values (?, ?, ?, ?, ?)",
+        (task_id, "inbox", "ready", "task imported", project_id),
     )
     conn.commit()
     return task_id
@@ -144,9 +147,14 @@ def set_task_branch_and_worktree(
 
 
 def add_artifact(conn: sqlite3.Connection, task_id: str, kind: str, path: Path) -> None:
+    # Look up project_id from the parent task
+    task = conn.execute(
+        "select project_id from tasks where id = ?", (task_id,)
+    ).fetchone()
+    project_id = task["project_id"] if task else "legacy-default"
     conn.execute(
-        "insert into artifacts(task_id, kind, path) values (?, ?, ?)",
-        (task_id, kind, str(path)),
+        "insert into artifacts(task_id, kind, path, project_id) values (?, ?, ?, ?)",
+        (task_id, kind, str(path), project_id),
     )
     conn.commit()
 
@@ -484,3 +492,73 @@ def claim_next_ready_task(
     except sqlite3.Error:
         conn.rollback()
         raise
+
+
+# ---------------------------------------------------------------------------
+# Project-scoped query APIs
+# ---------------------------------------------------------------------------
+
+
+def project_task_counts(
+    conn: sqlite3.Connection, *, project_id: str
+) -> dict[str, int]:
+    rows = conn.execute(
+        "select state, count(*) as cnt from tasks where project_id = ? group by state",
+        (project_id,),
+    ).fetchall()
+    return {row["state"]: row["cnt"] for row in rows}
+
+
+def project_list_tasks(
+    conn: sqlite3.Connection, *, project_id: str
+) -> list[sqlite3.Row]:
+    return conn.execute(
+        "select * from tasks where project_id = ? order by created_at, id",
+        (project_id,),
+    ).fetchall()
+
+
+def project_next_ready_task(
+    conn: sqlite3.Connection, *, project_id: str
+) -> sqlite3.Row | None:
+    return conn.execute(
+        "select * from tasks where project_id = ? and state = ? "
+        "order by created_at, id limit 1",
+        (project_id, "ready"),
+    ).fetchone()
+
+
+def project_list_events(
+    conn: sqlite3.Connection, *, project_id: str
+) -> list[sqlite3.Row]:
+    return conn.execute(
+        "select * from events where project_id = ? order by id",
+        (project_id,),
+    ).fetchall()
+
+
+def project_list_artifacts(
+    conn: sqlite3.Connection, *, project_id: str
+) -> list[sqlite3.Row]:
+    return conn.execute(
+        "select * from artifacts where project_id = ? order by id",
+        (project_id,),
+    ).fetchall()
+
+
+def project_list_daemon_runs(
+    conn: sqlite3.Connection, *, project_id: str
+) -> list[sqlite3.Row]:
+    return conn.execute(
+        "select * from daemon_runs where project_id = ? order by id",
+        (project_id,),
+    ).fetchall()
+
+
+def project_list_leases(
+    conn: sqlite3.Connection, *, project_id: str
+) -> list[sqlite3.Row]:
+    return conn.execute(
+        "select * from task_leases where project_id = ? order by id",
+        (project_id,),
+    ).fetchall()

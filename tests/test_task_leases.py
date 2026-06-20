@@ -130,7 +130,10 @@ class LeaseMigrationTests(unittest.TestCase):
             root = Path(tmp)
             partial_migrations = root / "partial_migrations"
             partial_migrations.mkdir()
-            for migration in sorted(MIGRATIONS_DIR.glob("00[1-4]_*.sql")):
+            # Apply all migrations except 005 (which dedupes leases)
+            for migration in sorted(MIGRATIONS_DIR.glob("*.sql")):
+                if migration.name.startswith("005"):
+                    continue
                 partial_migrations.joinpath(migration.name).write_text(
                     migration.read_text(encoding="utf-8"),
                     encoding="utf-8",
