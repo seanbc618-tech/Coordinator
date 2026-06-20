@@ -7,6 +7,7 @@ import re
 import sqlite3
 
 from .agent import run_agent
+from .agent_result import AgentResultClass, classify_agent_output
 from .config import CoordinatorConfig, RepoConfig, select_agent_by_role
 from .reporting import NULL_REPORTER, ExecutionEvent, Reporter
 from .db import (
@@ -16,9 +17,12 @@ from .db import (
     artifact_kinds,
     circuit_breaker_reason,
     create_task,
+    fallback_count_for_task,
+    finish_attempt,
     get_task,
     release_task_lease,
     set_task_branch_and_worktree,
+    start_attempt,
     transition_task,
 )
 from .discovery import list_findings, run_configured_discovery
@@ -624,6 +628,69 @@ def run_one_ready_task(
         release_task_lease(conn, task["id"])
 
 
+def run_worker_attempt(
+    conn: sqlite3.Connection,
+    config: CoordinatorConfig,
+    task_id: str,
+    agent,
+    prompt: Path,
+    worktree: Path,
+    run_dir: Path,
+    *,
+    fallback_from_attempt_id: int | None = None,
+    reporter: Reporter = NULL_REPORTER,
+):
+    """Run one worker attempt with full attempt lifecycle tracking.
+
+    Returns (agent_result, classified_result, attempt_id).
+    """
+    from .db import list_attempts as _list_attempts
+    all_attempts = _list_attempts(conn, task_id)
+    attempt_number = len(all_attempts) + 1
+    attempt_dir = run_dir / f"attempt-{attempt_number}"
+    attempt_dir.mkdir(parents=True, exist_ok=True)
+
+    attempt_id = start_attempt(
+        conn, task_id, agent.id, agent.command,
+        fallback_from_attempt_id=fallback_from_attempt_id,
+    )
+
+    try:
+        agent_result = run_agent(
+            agent,
+            prompt,
+            worktree,
+            attempt_dir,
+            timeout_seconds=config.policy.max_task_runtime_seconds,
+            reporter=reporter,
+            task_id=task_id,
+        )
+        classified = classify_agent_output(
+            agent_result.log_path.read_text() if agent_result.log_path.exists() else "",
+            exit_code=agent_result.exit_code,
+            timed_out=agent_result.timed_out,
+        )
+        finish_attempt(
+            conn,
+            attempt_id,
+            exit_code=agent_result.exit_code,
+            result_class=classified.classification.value,
+            result_reason=classified.reason,
+            log_path=str(agent_result.log_path),
+        )
+        # Add attempt log as artifact
+        add_artifact(conn, task_id, "attempt_log", agent_result.log_path)
+        # Keep compatibility pointer
+        add_artifact(conn, task_id, "agent_log", agent_result.log_path)
+        return agent_result, classified, attempt_id
+    except Exception:
+        finish_attempt(
+            conn, attempt_id, exit_code=127, result_class="command_failed",
+            result_reason="exception",
+        )
+        raise
+
+
 def _process_task(
     conn: sqlite3.Connection,
     config: CoordinatorConfig,
@@ -718,16 +785,10 @@ def _process_task(
         )
         return True
     prompt = _write_prompt(task, run_dir, root, repo)
-    agent_result = run_agent(
-        agent,
-        prompt,
-        worktree,
-        run_dir,
-        timeout_seconds=config.policy.max_task_runtime_seconds,
+    agent_result, classified, attempt_id = run_worker_attempt(
+        conn, config, task["id"], agent, prompt, worktree, run_dir,
         reporter=reporter,
-        task_id=task["id"],
     )
-    add_artifact(conn, task["id"], "agent_log", agent_result.log_path)
     if agent_result.exit_code != 0 or agent_result.timed_out:
         _finish_task(
             conn,
