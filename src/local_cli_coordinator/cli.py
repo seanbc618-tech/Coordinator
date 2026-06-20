@@ -725,46 +725,15 @@ def _cmd_supervisor_start(args: argparse.Namespace) -> int:
         print("Use --foreground to start the Supervisor in the foreground.")
         print("Background daemon mode is not yet implemented.")
         return 1
-    from .supervisor_server import SupervisorServer
-    from .locks import acquire_lock_at
-    lock_result = acquire_lock_at(paths.lock)
-    if isinstance(lock_result, str):
-        print(lock_result, file=sys.stderr)
-        return 1
-    try:
-        def handler(request):
-            from .supervisor_protocol import ResponseEnvelope
-            if request.method == "system.ping":
-                return ResponseEnvelope(
-                    protocol_version=request.protocol_version,
-                    request_id=request.request_id,
-                    ok=True,
-                    result={"pong": True},
-                    error=None,
-                )
-            if request.method == "system.shutdown":
-                server.request_shutdown()
-                return ResponseEnvelope(
-                    protocol_version=request.protocol_version,
-                    request_id=request.request_id,
-                    ok=True,
-                    result={"shutting_down": True},
-                    error=None,
-                )
-            return ResponseEnvelope(
-                protocol_version=request.protocol_version,
-                request_id=request.request_id,
-                ok=False,
-                result=None,
-                error=f"unknown method: {request.method}",
-            )
+    from .supervisor_server import SupervisorServer, SupervisorServerError
 
-        server = SupervisorServer(paths, handler)
-        print(f"Supervisor listening on {paths.socket}")
+    server = SupervisorServer(paths)
+    print(f"Supervisor listening on {paths.socket}")
+    try:
         server.serve_forever()
-    finally:
-        from .locks import release_lock_at
-        release_lock_at(paths.lock)
+    except SupervisorServerError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     return 0
 
 

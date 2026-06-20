@@ -27,33 +27,54 @@ def lockfile_path(root: Path) -> Path:
     return root / "state" / LOCKFILE_NAME
 
 
+def _write_lock_atomically(lock_path: Path, info: LockInfo) -> None:
+    payload = (
+        json.dumps({"pid": info.pid, "acquired_at": info.acquired_at}, indent=2)
+        + "\n"
+    )
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    fd = os.open(str(lock_path), flags, 0o600)
+    try:
+        os.write(fd, payload.encode("utf-8"))
+    finally:
+        os.close(fd)
+
+
 def acquire_lock_at(lock_path: Path, *, force: bool = False) -> LockInfo | str:
     """Attempt to acquire a lock at an explicit path."""
     lock_path.parent.mkdir(parents=True, exist_ok=True)
 
-    existing = _read_lock(lock_path)
-    if existing is not None:
-        if _is_stale(existing.pid):
-            pass
-        elif force:
-            pass
-        else:
-            return (
-                f"daemon is already running (pid {existing.pid}, "
-                f"acquired at {existing.acquired_at}). "
-                f"Use --force-lock to override."
-            )
+    if force:
+        lock_path.unlink(missing_ok=True)
 
     info = LockInfo(
         pid=os.getpid(),
         acquired_at=datetime.now(timezone.utc).isoformat(),
     )
-    lock_path.write_text(
-        json.dumps({"pid": info.pid, "acquired_at": info.acquired_at}, indent=2)
-        + "\n",
-        encoding="utf-8",
-    )
-    return info
+
+    try:
+        _write_lock_atomically(lock_path, info)
+        return info
+    except FileExistsError:
+        existing = _read_lock(lock_path)
+        if existing is not None and _is_stale(existing.pid):
+            lock_path.unlink(missing_ok=True)
+            try:
+                _write_lock_atomically(lock_path, info)
+                return info
+            except FileExistsError:
+                existing = _read_lock(lock_path)
+
+        if existing is not None:
+            return (
+                f"daemon is already running (pid {existing.pid}, "
+                f"acquired at {existing.acquired_at}). "
+                f"Use --force-lock to override."
+            )
+        return (
+            "daemon is already running (lock file exists). "
+            "Use --force-lock to override."
+        )
 
 
 def release_lock_at(lock_path: Path) -> bool:

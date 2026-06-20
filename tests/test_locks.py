@@ -1,13 +1,16 @@
 import json
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
 from local_cli_coordinator.locks import (
     LockInfo,
     acquire_lock,
+    acquire_lock_at,
     lockfile_path,
     release_lock,
+    release_lock_at,
 )
 
 
@@ -85,3 +88,26 @@ class LockfileTests(unittest.TestCase):
             self.assertFalse((root / "state").exists())
             acquire_lock(root)
             self.assertTrue((root / "state").exists())
+
+    def test_concurrent_acquire_only_one_succeeds(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            lock_path = Path(tmp) / "supervisor.lock"
+            barrier = threading.Barrier(2)
+            results: list[LockInfo | str] = []
+
+            def worker() -> None:
+                barrier.wait()
+                results.append(acquire_lock_at(lock_path))
+
+            threads = [threading.Thread(target=worker) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+            successes = [result for result in results if isinstance(result, LockInfo)]
+            failures = [result for result in results if isinstance(result, str)]
+            self.assertEqual(len(successes), 1)
+            self.assertEqual(len(failures), 1)
+            self.assertIn("already running", failures[0])
+            release_lock_at(lock_path)
