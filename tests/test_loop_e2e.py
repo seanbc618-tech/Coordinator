@@ -356,7 +356,7 @@ class LoopE2ETests(unittest.TestCase):
             finally:
                 conn.close()
 
-            agent_log = root / "runs" / task["id"] / "agent.log"
+            agent_log = root / "runs" / task["id"] / "attempt-1" / "agent.log"
             log_text = agent_log.read_text()
             self.assertEqual(log_text.count("early-line"), 1)
             self.assertEqual(log_text.count("late-line"), 1)

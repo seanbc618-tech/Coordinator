@@ -138,6 +138,32 @@ class ConsoleReporter:
             self._write(" - ".join(parts))
             self._write("\n")
             self._flush()
+        elif kind == "worker_blocked":
+            self._write(f"[{ts}] {label} BLOCKED - {event.task_id}")
+            if event.actor:
+                self._write(f" agent={event.actor}")
+            if event.text:
+                self._write(f" reason={event.text}")
+            self._write("\n")
+            self._flush()
+        elif kind == "fallback_selected":
+            self._write(f"[{ts}] {label} fallback -> {event.actor}")
+            if event.task_id:
+                self._write(f" task={event.task_id}")
+            self._write("\n")
+            self._flush()
+        elif kind == "fallback_started":
+            self._write(f"[{ts}] {label} FALLBACK started - {event.task_id}")
+            if event.actor:
+                self._write(f" agent={event.actor}")
+            self._write("\n")
+            self._flush()
+        elif kind == "fallback_exhausted":
+            self._write(f"[{ts}] {label} FALLBACK exhausted - {event.task_id}")
+            if event.text:
+                self._write(f" {event.text}")
+            self._write("\n")
+            self._flush()
         else:
             # Generic fallback for unknown event kinds
             self._write(f"[{ts}] {label} {kind}")
