@@ -115,4 +115,3 @@ Run the same cycle with --quiet and verify only the final summary appears while 
 ## Delivery
 
 Commit fixes as small, reviewable commits on external/live-daemon-observability. Do not rewrite the seven accepted historical commits. Report new commit SHAs, focused/full test counts, manual smoke output, and clean git status.
-
