@@ -20,6 +20,7 @@ from pathlib import Path
 from .config import AgentConfig, CoordinatorConfig, select_agent_by_role
 from .models import Finding, TaskDraft
 from .process import run_command
+from .reporting import NULL_REPORTER, ExecutionContext, Reporter
 
 # Maximum number of acceptance criteria a single task may carry before the
 # planner considers it too broad.
@@ -264,6 +265,8 @@ def plan_finding_with_agent(
     finding: Finding,
     config: CoordinatorConfig,
     timeout_seconds: float | None = 60,
+    *,
+    reporter: Reporter = NULL_REPORTER,
 ) -> PlanResult:
     """Plan a finding using a configured planner agent, guarded by rules.
 
@@ -294,10 +297,17 @@ def plan_finding_with_agent(
 
         try:
             argv = [planner_agent.command, str(prompt_path)]
+            context = ExecutionContext(
+                stage="planner",
+                actor=planner_agent.id,
+                log_path=prompt_path,
+            )
             result = run_command(
                 argv,
                 cwd=workdir,
                 timeout_seconds=timeout_seconds,
+                reporter=reporter,
+                context=context,
             )
         except (OSError, ValueError):
             return plan_finding(finding)

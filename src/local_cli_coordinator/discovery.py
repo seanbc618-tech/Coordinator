@@ -7,6 +7,7 @@ restarts and can be inspected by operators.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -15,6 +16,8 @@ from pathlib import Path
 from .config import CoordinatorConfig
 from .gitops import git
 from .models import Finding
+from .process import run_command
+from .reporting import NULL_REPORTER, ExecutionContext, Reporter
 
 FINDINGS_DIR = Path("state") / "findings"
 DISCOVERY_DIR = Path("state") / "discovery"
@@ -208,28 +211,35 @@ def discover_from_command(
     repo_id: str,
     enabled_repos: dict[str, bool],
     persist: bool = False,
+    reporter: Reporter = NULL_REPORTER,
 ) -> CommandDiscoveryResult:
     if not enabled_repos.get(repo_id, False):
         return CommandDiscoveryResult(findings=[], failures=[])
 
-    completed = subprocess.run(
-        command,
-        shell=True,
-        cwd=root,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
-    if completed.returncode != 0:
-        message = f"discovery command failed with exit code {completed.returncode}"
-        stderr = completed.stderr.strip()
+    shell = os.environ.get("SHELL", "/bin/sh")
+    argv = [shell, "-lc", command]
+    context = ExecutionContext(stage="discovery", actor=source_id)
+    try:
+        result = run_command(
+            argv,
+            cwd=root,
+            reporter=reporter,
+            context=context,
+        )
+    except OSError as exc:
+        message = f"discovery command failed: {exc}"
+        log_discovery_failure(root, source_id, message)
+        return CommandDiscoveryResult(findings=[], failures=[message])
+
+    if result.returncode != 0:
+        message = f"discovery command failed with exit code {result.returncode}"
+        stderr = result.stderr.strip()
         if stderr:
             message = f"{message}: {stderr}"
         log_discovery_failure(root, source_id, message)
         return CommandDiscoveryResult(findings=[], failures=[message])
 
-    findings, failures = _parse_command_findings(completed.stdout)
+    findings, failures = _parse_command_findings(result.stdout)
     for message in failures:
         log_discovery_failure(root, source_id, message)
     if persist:

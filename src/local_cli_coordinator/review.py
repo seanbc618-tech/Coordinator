@@ -3,6 +3,7 @@ from pathlib import Path
 
 from .agent import run_agent
 from .config import AgentConfig, RepoConfig
+from .reporting import NULL_REPORTER, Reporter
 
 
 @dataclass(frozen=True)
@@ -40,6 +41,9 @@ def run_spec_review(
     worktree: Path,
     run_dir: Path,
     timeout_seconds: float | None = None,
+    *,
+    reporter: Reporter = NULL_REPORTER,
+    task_id: str = "",
 ) -> ReviewResult:
     prompt_path = write_spec_review_prompt(task, changed_files, diff_path, run_dir)
     agent_result = run_agent(
@@ -48,6 +52,8 @@ def run_spec_review(
         worktree,
         run_dir / "spec_review",
         timeout_seconds=timeout_seconds,
+        reporter=reporter,
+        task_id=task_id,
     )
     return ReviewResult(
         passed=agent_result.exit_code == 0 and not agent_result.timed_out,
@@ -90,6 +96,9 @@ def run_quality_review(
     worktree: Path,
     run_dir: Path,
     timeout_seconds: float | None = None,
+    *,
+    reporter: Reporter = NULL_REPORTER,
+    task_id: str = "",
 ) -> ReviewResult:
     prompt_path = write_quality_review_prompt(
         task,
@@ -105,6 +114,8 @@ def run_quality_review(
         worktree,
         run_dir / "quality_review",
         timeout_seconds=timeout_seconds,
+        reporter=reporter,
+        task_id=task_id,
     )
     return ReviewResult(
         passed=agent_result.exit_code == 0 and not agent_result.timed_out,

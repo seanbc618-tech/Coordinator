@@ -3,6 +3,7 @@ from pathlib import Path
 import shlex
 
 from .process import run_command
+from .reporting import NULL_REPORTER, ExecutionContext, Reporter
 
 
 @dataclass(frozen=True)
@@ -25,51 +26,67 @@ def run_verification(
     worktree_path: Path,
     run_dir: Path,
     timeout_seconds: float | None = None,
+    *,
+    reporter: Reporter = NULL_REPORTER,
+    task_id: str = "",
 ) -> VerificationResult:
     run_dir.mkdir(parents=True, exist_ok=True)
     log_path = run_dir / "verifier.log"
-    output: list[str] = []
     results: list[CommandResult] = []
+
+    def _append_log(text: str) -> None:
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(text)
+
     if not commands:
-        output.append("no verification commands configured\n")
-        output.append("timed_out: False\n")
-        output.append(f"timeout_seconds: {timeout_seconds}\n")
-        log_path.write_text("".join(output))
+        log_path.write_text("no verification commands configured\n")
+        _append_log(f"timed_out: False\n")
+        _append_log(f"timeout_seconds: {timeout_seconds}\n")
         return VerificationResult(passed=False, results=results, log_path=log_path)
 
+    # Clear log for streaming writes
+    log_path.write_text("")
+
     for command in commands:
-        output.append(f"$ {command}\n")
+        _append_log(f"$ {command}\n")
         try:
             argv = shlex.split(command)
         except ValueError as exc:
-            output.append(f"error: {exc}\n")
-            output.append("timed_out: False\n")
-            output.append(f"timeout_seconds: {timeout_seconds}\n")
+            _append_log(f"error: {exc}\n")
+            _append_log(f"timed_out: False\n")
+            _append_log(f"timeout_seconds: {timeout_seconds}\n")
             results.append(CommandResult(command=command, exit_code=127))
             break
         if not argv:
-            output.append("empty verification command\n")
-            output.append("timed_out: False\n")
-            output.append(f"timeout_seconds: {timeout_seconds}\n")
+            _append_log("empty verification command\n")
+            _append_log(f"timed_out: False\n")
+            _append_log(f"timeout_seconds: {timeout_seconds}\n")
             results.append(CommandResult(command=command, exit_code=127))
             break
         try:
+            context = ExecutionContext(
+                stage="verify",
+                task_id=task_id,
+                log_path=log_path,
+            )
             result = run_command(
                 argv,
                 cwd=worktree_path,
                 timeout_seconds=timeout_seconds,
+                reporter=reporter,
+                context=context,
+                stdout_sink=_append_log,
+                stderr_sink=_append_log,
             )
         except OSError as exc:
-            output.append(f"error: {exc}\n")
-            output.append("timed_out: False\n")
-            output.append(f"timeout_seconds: {timeout_seconds}\n")
+            _append_log(f"error: {exc}\n")
+            _append_log(f"timed_out: False\n")
+            _append_log(f"timeout_seconds: {timeout_seconds}\n")
             results.append(CommandResult(command=command, exit_code=127))
             break
         else:
-            output.append(result.stdout)
-            output.append(result.stderr)
-            output.append(f"timed_out: {result.timed_out}\n")
-            output.append(f"timeout_seconds: {timeout_seconds}\n")
+            _append_log(f"timed_out: {result.timed_out}\n")
+            _append_log(f"timeout_seconds: {timeout_seconds}\n")
             results.append(
                 CommandResult(
                     command=command,
@@ -80,7 +97,6 @@ def run_verification(
             if result.returncode != 0 or result.timed_out:
                 break
     timed_out = any(result.timed_out for result in results)
-    log_path.write_text("".join(output))
     return VerificationResult(
         passed=(
             bool(results)

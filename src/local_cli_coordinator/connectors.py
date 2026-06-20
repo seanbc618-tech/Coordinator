@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+
+from .process import run_command
+from .reporting import NULL_REPORTER, ExecutionContext, Reporter
 
 FAILURES_FILENAME = "connector_failures.jsonl"
 
@@ -56,35 +60,64 @@ def run_connector(
     connector_id: str,
     command: str,
     payload: dict[str, object] | None = None,
+    reporter: Reporter = NULL_REPORTER,
 ) -> ConnectorResult:
     stdin_data = ""
     if payload is not None:
         stdin_data = json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
-    completed = subprocess.run(
-        command,
-        shell=True,
-        cwd=root,
-        input=stdin_data,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
-    if completed.returncode != 0:
-        message = f"connector {connector_id!r} failed with exit code {completed.returncode}"
-        stderr = completed.stderr.strip()
-        if stderr:
-            message = f"{message}: {stderr}"
-        log_connector_failure(root, connector_id, message)
-        return ConnectorResult(output=None, failures=[message])
+    shell = os.environ.get("SHELL", "/bin/sh")
+    argv = [shell, "-lc", command]
+    context = ExecutionContext(stage="discovery", actor=connector_id)
 
-    stdout = completed.stdout.strip()
-    if not stdout:
+    # Connectors may need stdin for payload; use subprocess.run when payload
+    # is provided, otherwise use run_command for full streaming.
+    if stdin_data:
+        completed = subprocess.run(
+            command,
+            shell=True,
+            cwd=root,
+            input=stdin_data,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if completed.returncode != 0:
+            message = f"connector {connector_id!r} failed with exit code {completed.returncode}"
+            stderr = completed.stderr.strip()
+            if stderr:
+                message = f"{message}: {stderr}"
+            log_connector_failure(root, connector_id, message)
+            return ConnectorResult(output=None, failures=[message])
+        stdout_text = completed.stdout
+    else:
+        try:
+            result = run_command(
+                argv,
+                cwd=root,
+                reporter=reporter,
+                context=context,
+            )
+        except OSError as exc:
+            message = f"connector {connector_id!r} failed: {exc}"
+            log_connector_failure(root, connector_id, message)
+            return ConnectorResult(output=None, failures=[message])
+        if result.returncode != 0:
+            message = f"connector {connector_id!r} failed with exit code {result.returncode}"
+            stderr = result.stderr.strip()
+            if stderr:
+                message = f"{message}: {stderr}"
+            log_connector_failure(root, connector_id, message)
+            return ConnectorResult(output=None, failures=[message])
+        stdout_text = result.stdout
+
+    stdout_text = stdout_text.strip()
+    if not stdout_text:
         return ConnectorResult(output={}, failures=[])
 
     try:
-        parsed = json.loads(stdout)
+        parsed = json.loads(stdout_text)
     except json.JSONDecodeError:
         message = f"connector {connector_id!r} returned invalid JSON"
         log_connector_failure(root, connector_id, message)
