@@ -8,7 +8,8 @@ import sqlite3
 
 from .agent import run_agent
 from .agent_result import AgentResultClass, classify_agent_output
-from .config import CoordinatorConfig, RepoConfig, select_agent_by_role
+from .config import CoordinatorConfig, RepoConfig, select_agent_by_role, select_fallback_agent
+from .fallback import FallbackDecision, decide_fallback
 from .reporting import NULL_REPORTER, ExecutionEvent, Reporter
 from .db import (
     _try_acquire_task_lease,
@@ -789,6 +790,41 @@ def _process_task(
         conn, config, task["id"], agent, prompt, worktree, run_dir,
         reporter=reporter,
     )
+
+    # Check for interactive block and attempt fallback
+    if classified.classification == AgentResultClass.INTERACTIVE_BLOCKED:
+        fallback_agent = select_fallback_agent(config, agent.id, capabilities)
+        fallback_decision = decide_fallback(
+            conn,
+            task["id"],
+            classified,
+            fallback_agent_id=fallback_agent.id if fallback_agent else None,
+            worktree=worktree,
+        )
+        if fallback_decision == FallbackDecision.RUN and fallback_agent is not None:
+            reporter.emit(ExecutionEvent(
+                kind="fallback_started",
+                stage="engine",
+                task_id=task["id"],
+                actor=fallback_agent.id,
+            ))
+            agent_result, classified, attempt_id = run_worker_attempt(
+                conn, config, task["id"], fallback_agent, prompt, worktree, run_dir,
+                fallback_from_attempt_id=attempt_id,
+                reporter=reporter,
+            )
+        elif fallback_decision == FallbackDecision.HUMAN_REVIEW:
+            _finish_task(
+                conn,
+                root,
+                task["id"],
+                "awaiting_human",
+                "agent blocked, no eligible fallback",
+                verifier_result="not run",
+                next_action="operator must manually approve or reassign",
+            )
+            return True
+
     if agent_result.exit_code != 0 or agent_result.timed_out:
         _finish_task(
             conn,
