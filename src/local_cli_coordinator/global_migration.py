@@ -5,14 +5,17 @@ installation to the global runtime directory structure.
 
 Safety guarantees:
 - Copies to a staging directory first; validates before touching live dirs.
+- dry_run operates on a temporary DB copy, never touches the source.
+- Promote uses same-filesystem rename for atomicity.
 - Backs up all three target dirs (config, data, state) before overwrite.
-- Rolls back to backup if validation fails.
+- Rollback deletes directories that were newly created by this migration.
 - Never deletes the source.
 """
 
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -100,11 +103,8 @@ def _copy_known_paths(source: Path, dest_root: Path, paths: RuntimePaths) -> Non
             shutil.copy2(src, dst)
 
 
-def _validate_staged_database(staged_root: Path) -> None:
-    """Open the staged database and run migrations to validate."""
-    db_path = staged_root / "data" / "coordinator.db"
-    if not db_path.exists():
-        return
+def _validate_database_copy(db_path: Path) -> None:
+    """Open a database copy and run migrations to validate."""
     conn = connect(db_path)
     try:
         init_db(conn)
@@ -129,22 +129,39 @@ def _backup_existing(paths: RuntimePaths) -> Path:
     return backup_root
 
 
-def _restore_backup(backup_root: Path, paths: RuntimePaths) -> None:
-    """Restore all three directories from a backup."""
+def _restore_backup(
+    backup_root: Path,
+    paths: RuntimePaths,
+    existed_before: dict[str, bool],
+) -> None:
+    """Restore all three directories from a backup.
+
+    For directories that did not exist before migration, delete them
+    instead of restoring.
+    """
     for label, directory in [
         ("config", paths.config_dir),
         ("data", paths.data_dir),
         ("state", paths.state_dir),
     ]:
+        if directory.exists():
+            shutil.rmtree(directory)
+
         src = backup_root / label
         if src.exists():
-            if directory.exists():
-                shutil.rmtree(directory)
             shutil.copytree(src, directory)
+        elif not existed_before.get(label, True):
+            # Directory was created by migration and backup doesn't have it;
+            # it was already deleted above.
+            pass
 
 
 def _promote_staged(staged_root: Path, paths: RuntimePaths) -> None:
-    """Move staged files to final locations."""
+    """Move staged directories to final locations using rename for atomicity.
+
+    For same-filesystem moves, os.replace is atomic. For cross-filesystem,
+    falls back to copytree + rmtree.
+    """
     for label, directory in [
         ("config", paths.config_dir),
         ("data", paths.data_dir),
@@ -153,9 +170,19 @@ def _promote_staged(staged_root: Path, paths: RuntimePaths) -> None:
         src = staged_root / label
         if not src.exists():
             continue
+
+        directory.parent.mkdir(parents=True, exist_ok=True)
+
         if directory.exists():
             shutil.rmtree(directory)
-        shutil.copytree(src, directory)
+
+        # Try atomic rename first (same filesystem)
+        try:
+            os.rename(str(src), str(directory))
+        except OSError:
+            # Cross-filesystem: copy then remove
+            shutil.copytree(src, directory)
+            shutil.rmtree(src)
 
 
 def migrate_legacy_root(
@@ -169,7 +196,7 @@ def migrate_legacy_root(
     Args:
         source: Legacy root directory containing coordinator.db, config/, etc.
         paths: Target global runtime paths.
-        dry_run: If True, validate only without writing.
+        dry_run: If True, validate a temp copy of the DB without writing.
 
     Returns:
         MigrationResult with status and optional backup path.
@@ -187,20 +214,50 @@ def migrate_legacy_root(
         return MigrationResult(status="already_migrated")
 
     if dry_run:
-        # Validate source has a readable database
-        src_db = source / "coordinator.db"
-        if src_db.exists():
-            conn = connect(src_db)
-            try:
-                init_db(conn)
-            finally:
-                conn.close()
+        return _dry_run_validate(source)
+
+    return _migrate_write(source, paths)
+
+
+def _dry_run_validate(source: Path) -> MigrationResult:
+    """Validate migration without writing: copy DB to temp, run init_db,
+    assert source hash unchanged."""
+    src_db = source / "coordinator.db"
+    if not src_db.exists():
         return MigrationResult(status="dry_run")
 
-    # Stage the copy in a temp directory first
+    source_hash = _database_hash(src_db)
+
+    # Copy to temp and validate
+    tmp_dir = Path(tempfile.mkdtemp(prefix="coord-dryrun-"))
+    try:
+        tmp_db = tmp_dir / "coordinator.db"
+        shutil.copy2(src_db, tmp_db)
+        _validate_database_copy(tmp_db)
+
+        # Assert source hash unchanged
+        assert _database_hash(src_db) == source_hash, (
+            "source database was modified during dry_run"
+        )
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    return MigrationResult(status="dry_run")
+
+
+def _migrate_write(source: Path, paths: RuntimePaths) -> MigrationResult:
+    """Perform the actual migration with staging, backup, and rollback."""
+    # Track which target dirs existed before we started
+    existed_before = {
+        "config": paths.config_dir.exists(),
+        "data": paths.data_dir.exists(),
+        "state": paths.state_dir.exists(),
+    }
+
     staging = None
     backup_path = None
     try:
+        # Stage the copy in a temp directory
         staging = Path(tempfile.mkdtemp(prefix="coord-migrate-"))
         _copy_known_paths(source, staging, paths)
 
@@ -208,10 +265,10 @@ def migrate_legacy_root(
         _validate_staged_database(staging)
 
         # Back up existing target dirs
-        if paths.data_dir.exists() or paths.config_dir.exists() or paths.state_dir.exists():
+        if any(existed_before.values()):
             backup_path = _backup_existing(paths)
 
-        # Promote staged to live
+        # Promote staged to live (atomic rename when possible)
         _promote_staged(staging, paths)
 
         # Write migration marker
@@ -223,11 +280,51 @@ def migrate_legacy_root(
         return MigrationResult(status="migrated", backup_path=backup_path)
 
     except Exception:
-        # Rollback: restore from backup if we have one
-        if backup_path is not None:
-            _restore_backup(backup_path, paths)
+        # Rollback
+        _rollback(paths, existed_before, backup_path)
         raise
     finally:
         # Clean up staging
         if staging is not None and staging.exists():
             shutil.rmtree(staging, ignore_errors=True)
+
+
+def _validate_staged_database(staging: Path) -> None:
+    """Open the staged database and run migrations to validate."""
+    db_path = staging / "data" / "coordinator.db"
+    if not db_path.exists():
+        return
+    _validate_database_copy(db_path)
+
+
+def _rollback(
+    paths: RuntimePaths,
+    existed_before: dict[str, bool],
+    backup_path: Path | None,
+) -> None:
+    """Rollback: restore from backup or delete newly-created directories."""
+    if backup_path is not None:
+        # Restore from backup
+        for label, directory in [
+            ("config", paths.config_dir),
+            ("data", paths.data_dir),
+            ("state", paths.state_dir),
+        ]:
+            if directory.exists():
+                shutil.rmtree(directory)
+
+            src = backup_root = backup_path / label
+            if src.exists():
+                shutil.copytree(src, directory)
+            elif not existed_before[label]:
+                # Was newly created, no backup to restore — already deleted
+                pass
+    else:
+        # No backup (fresh migration that failed) — delete newly-created dirs
+        for label, directory in [
+            ("config", paths.config_dir),
+            ("data", paths.data_dir),
+            ("state", paths.state_dir),
+        ]:
+            if directory.exists() and not existed_before[label]:
+                shutil.rmtree(directory)
