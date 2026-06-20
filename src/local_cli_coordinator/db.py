@@ -353,6 +353,97 @@ def active_lease_count(conn: sqlite3.Connection, agent_id: str | None = None) ->
     return row["cnt"]
 
 
+# ---------------------------------------------------------------------------
+# Attempt result tracking
+# ---------------------------------------------------------------------------
+
+
+def start_attempt(
+    conn: sqlite3.Connection,
+    task_id: str,
+    agent_id: str,
+    command: str,
+    *,
+    fallback_from_attempt_id: int | None = None,
+) -> int:
+    """Create a new attempt record and return its ID.
+
+    Raises ValueError if fallback_from_attempt_id belongs to a different task.
+    """
+    if fallback_from_attempt_id is not None:
+        parent = conn.execute(
+            "select task_id from attempts where id = ?",
+            (fallback_from_attempt_id,),
+        ).fetchone()
+        if parent is None:
+            raise ValueError(f"unknown attempt: {fallback_from_attempt_id}")
+        if parent["task_id"] != task_id:
+            raise ValueError(
+                f"fallback parent {fallback_from_attempt_id} belongs to "
+                f"{parent['task_id']}, not {task_id}"
+            )
+    cursor = conn.execute(
+        """
+        insert into attempts(task_id, agent_id, command, fallback_from_attempt_id)
+        values (?, ?, ?, ?)
+        """,
+        (task_id, agent_id, command, fallback_from_attempt_id),
+    )
+    conn.commit()
+    return cursor.lastrowid
+
+
+def finish_attempt(
+    conn: sqlite3.Connection,
+    attempt_id: int,
+    *,
+    exit_code: int,
+    result_class: str = "",
+    result_reason: str = "",
+    log_path: str = "",
+    timed_out: bool = False,
+) -> None:
+    """Record attempt completion with classification."""
+    conn.execute(
+        """
+        update attempts
+        set ended_at = current_timestamp,
+            exit_code = ?,
+            result_class = ?,
+            result_reason = ?,
+            log_path = ?
+        where id = ?
+        """,
+        (exit_code, result_class, result_reason, log_path, attempt_id),
+    )
+    conn.commit()
+
+
+def list_attempts(
+    conn: sqlite3.Connection, task_id: str
+) -> list[sqlite3.Row]:
+    """Return attempts for a task ordered by ID."""
+    return conn.execute(
+        "select * from attempts where task_id = ? order by id",
+        (task_id,),
+    ).fetchall()
+
+
+def fallback_count_for_task(conn: sqlite3.Connection, task_id: str) -> int:
+    """Count how many fallback attempts have been made for a task.
+
+    A fallback attempt is one that has a fallback_from_attempt_id set.
+    """
+    row = conn.execute(
+        """
+        select count(*) as cnt from attempts
+        where task_id = ? and fallback_from_attempt_id is not null
+        """,
+        (task_id,),
+    ).fetchone()
+    return row["cnt"]
+
+
 def claim_next_ready_task(
     conn: sqlite3.Connection,
     agent_id: str,
