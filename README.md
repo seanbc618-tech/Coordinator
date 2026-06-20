@@ -35,6 +35,12 @@ PYTHONPATH=src python -m local_cli_coordinator daemon --once
 # Run continuous daemon loop
 PYTHONPATH=src python -m local_cli_coordinator daemon
 
+# Live commands, output, heartbeats, and transitions (default)
+PYTHONPATH=src python -m local_cli_coordinator daemon
+
+# Durable logs with final summary only
+PYTHONPATH=src python -m local_cli_coordinator daemon --quiet
+
 # Show task status
 PYTHONPATH=src python -m local_cli_coordinator status
 
@@ -53,6 +59,18 @@ PYTHONPATH=src python -m local_cli_coordinator task artifacts <task_id>
 # Clean up stale worktrees
 PYTHONPATH=src python -m local_cli_coordinator repo cleanup-worktrees
 ```
+
+## Live Observability
+
+`coordinator daemon` and `coordinator daemon --once` display live output by
+default. Every pipeline stage reports the exact command, working directory,
+live stdout and stderr, elapsed time, exit code, and durable log path.
+
+Commands are displayed unredacted. Terminal display does not change rollback,
+worktree, commit, push, merge, or timeout behavior.
+
+Use `--quiet` to suppress live events and show only the final summary. Durable
+logs are always written regardless of display mode.
 
 ## Configuration
 
