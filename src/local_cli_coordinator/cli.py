@@ -832,6 +832,42 @@ def _cmd_project_add(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_migrate(args: argparse.Namespace) -> int:
+    from .global_migration import migrate_legacy_root
+    from .runtime_paths import resolve_runtime_paths
+
+    source = Path(args.source).resolve()
+    if not source.exists():
+        print(f"error: source not found: {source}", file=sys.stderr)
+        return 1
+
+    paths = resolve_runtime_paths()
+
+    if args.dry_run:
+        try:
+            result = migrate_legacy_root(source, paths, dry_run=True)
+            print(f"dry run: {result.status}")
+        except Exception as exc:
+            print(f"dry run failed: {exc}", file=sys.stderr)
+            return 1
+        return 0
+
+    if not args.yes:
+        print("Refusing to migrate without --yes confirmation.")
+        print(f"Run: coordinator migrate --source {args.source} --yes")
+        return 1
+
+    try:
+        result = migrate_legacy_root(source, paths)
+        print(f"status: {result.status}")
+        if result.backup_path:
+            print(f"backup: {result.backup_path}")
+    except Exception as exc:
+        print(f"migration failed: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="coordinator")
     parser.add_argument("--root", default=".")
@@ -903,6 +939,12 @@ def build_parser() -> argparse.ArgumentParser:
     project_add.add_argument("path")
     project_add.add_argument("--yes", action="store_true")
 
+    # Migrate command
+    migrate = subparsers.add_parser("migrate")
+    migrate.add_argument("--source", required=True, help="Legacy root directory")
+    migrate.add_argument("--dry-run", action="store_true", help="Validate without writing")
+    migrate.add_argument("--yes", action="store_true", help="Confirm migration")
+
     return parser
 
 
@@ -957,6 +999,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_project_inspect(args)
     if args.command == "project" and args.project_command == "add":
         return _cmd_project_add(args)
+    if args.command == "migrate":
+        return _cmd_migrate(args)
     if args.command is None:
         parser.print_help()
         return 0
