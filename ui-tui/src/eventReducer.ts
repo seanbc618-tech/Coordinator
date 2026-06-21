@@ -3,24 +3,30 @@
  *
  * Takes the current state and an event, returns the new state.
  * Returns unchanged state for duplicate or foreign events.
+ * This function is pure: no module-level mutable state.
  */
 
 import type { EventEnvelope } from './protocol.js'
 import type { TuiState, TranscriptItem, Activity } from './domain.js'
 import { MAX_OUTPUT_LINES } from './domain.js'
 
-let itemCounter = 0
-
-function nextItemId(): string {
-  itemCounter += 1
-  return `item-${itemCounter}`
+function nextItemId(state: TuiState): string {
+  // Derive ID from transcript length + cursor — pure, no module state.
+  return `item-${state.transcript.length}-${state.lastCursor}`
 }
 
-export function reduceEvent(state: TuiState, event: EventEnvelope): TuiState {
-  // Reject foreign events
-  if (event.project_id !== undefined) {
-    // Events are project-scoped; only process if they match the state's project context.
-    // In single-project TUI mode, all events should match.
+/**
+ * Reduce an event into TUI state.
+ *
+ * @param state Current TUI state.
+ * @param event Supervisor event envelope.
+ * @param projectId The project this TUI is scoped to. If set, foreign
+ *   events (different project_id) are rejected.
+ */
+export function reduceEvent(state: TuiState, event: EventEnvelope, projectId?: string): TuiState {
+  // Reject foreign events when project scope is known.
+  if (projectId && event.project_id !== projectId) {
+    return state
   }
 
   // Deduplicate by cursor
@@ -63,7 +69,7 @@ export function reduceEvent(state: TuiState, event: EventEnvelope): TuiState {
 }
 
 function addMessage(state: TuiState, role: 'user' | 'coordinator' | 'system', text: string): TuiState {
-  const item: TranscriptItem = { id: nextItemId(), kind: 'message', role, text }
+  const item: TranscriptItem = { id: nextItemId(state), kind: 'message', role, text }
   return { ...state, transcript: [...state.transcript, item] }
 }
 
@@ -89,7 +95,7 @@ function upsertActivity(state: TuiState, taskId: string, update: Partial<Activit
     item => item.kind === 'activity' && item.activity.taskId === taskId,
   )
   const newTranscript = [...state.transcript]
-  const activityItem: TranscriptItem = { id: nextItemId(), kind: 'activity', activity }
+  const activityItem: TranscriptItem = { id: nextItemId(state), kind: 'activity', activity }
 
   if (existingIdx >= 0) {
     newTranscript[existingIdx] = activityItem

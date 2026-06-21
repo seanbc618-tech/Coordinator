@@ -29,6 +29,12 @@ describe('Header', () => {
     expect(lastFrame()).toContain('connected')
   })
 
+  it('renders at 80 columns', () => {
+    const { lastFrame } = render(<Header projectId="proj-a" connectionState="connected" columns={80} />)
+    expect(lastFrame()).toContain('proj-a')
+    expect(lastFrame()).toContain('connected')
+  })
+
   it('renders compact at 50 columns', () => {
     const { lastFrame } = render(<Header projectId="proj-a" connectionState="connected" columns={50} />)
     expect(lastFrame()).toContain('proj-a')

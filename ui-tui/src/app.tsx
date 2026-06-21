@@ -5,7 +5,7 @@
  * lifecycle together.
  */
 
-import React, { useEffect, useState, useCallback } from 'react'
+import React, { useEffect, useState, useCallback, useRef } from 'react'
 import { Box } from 'ink'
 import { useStore } from '@nanostores/react'
 import { SupervisorClient } from './supervisorClient.js'
@@ -38,6 +38,11 @@ export function App({ socketPath, projectId }: AppProps) {
     lastCursor: 0,
   })
 
+  // P0: Destructive command confirmation state machine.
+  // Tracks which destructive command is awaiting confirmation.
+  // null = no pending; string = command name awaiting re-entry.
+  const pendingDestructiveRef = useRef<string | null>(null)
+
   // Set up lifecycle cleanup
   useEffect(() => {
     setupLifecycle({
@@ -51,13 +56,16 @@ export function App({ socketPath, projectId }: AppProps) {
   useEffect(() => {
     client.on('state', (state: string) => {
       connStateAtom.set(state as 'connecting' | 'connected' | 'reconnecting' | 'offline')
+      // Clear pending destructive on reconnect
+      if (state === 'reconnecting' || state === 'offline') {
+        pendingDestructiveRef.current = null
+      }
     })
 
     client.on('event', (event: EventEnvelope) => {
+      // P1 fix: use functional update only — no stale closure writes to atoms.
+      // Atoms are synced via the useEffect below.
       setTuiState(prev => reduceEvent(prev, event))
-      transcriptAtom.set(tuiState.transcript)
-      activitiesAtom.set(tuiState.activities)
-      lastCursorAtom.set(tuiState.lastCursor)
     })
 
     client.connect()
@@ -79,7 +87,7 @@ export function App({ socketPath, projectId }: AppProps) {
     }
   }, [client])
 
-  // Sync tuiState to nanostores
+  // P1 fix: single source of truth — sync tuiState → atoms here only.
   useEffect(() => {
     transcriptAtom.set(tuiState.transcript)
     activitiesAtom.set(tuiState.activities)
@@ -96,20 +104,41 @@ export function App({ socketPath, projectId }: AppProps) {
         return
       }
 
+      // P0: Destructive confirmation state machine.
       if (parsed.command.destructive) {
-        // Add confirmation message
-        setTuiState(prev => ({
-          ...prev,
-          transcript: [
-            ...prev.transcript,
-            { id: `confirm-${Date.now()}`, kind: 'message', role: 'system', text: `Confirm: ${parsed.command.name}? (type again to confirm)` },
-          ],
-        }))
+        const pending = pendingDestructiveRef.current
+
+        if (pending === parsed.command.name) {
+          // Second entry confirmed — execute.
+          pendingDestructiveRef.current = null
+          setTuiState(prev => ({
+            ...prev,
+            transcript: [
+              ...prev.transcript,
+              { id: `conf-${Date.now()}`, kind: 'message', role: 'system', text: `${parsed.command.name} confirmed.` },
+            ],
+          }))
+          void client.request(parsed.command.method, { args: parsed.args }).catch(() => {})
+        } else {
+          // First entry — ask for confirmation, do NOT send RPC.
+          pendingDestructiveRef.current = parsed.command.name
+          setTuiState(prev => ({
+            ...prev,
+            transcript: [
+              ...prev.transcript,
+              { id: `pend-${Date.now()}`, kind: 'message', role: 'system', text: `Confirm: ${parsed.command.name}? Type ${parsed.command.name} again to proceed.` },
+            ],
+          }))
+        }
+        return
       }
 
+      // Non-destructive command — send immediately.
       void client.request(parsed.command.method, { args: parsed.args }).catch(() => {})
     } else {
-      // Plain message — send as chat
+      // Plain message — send as chat.
+      // Clear any pending destructive on freeform input.
+      pendingDestructiveRef.current = null
       setTuiState(prev => ({
         ...prev,
         transcript: [
