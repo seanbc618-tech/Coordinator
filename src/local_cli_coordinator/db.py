@@ -3,6 +3,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from .config import CoordinatorConfig, iter_agents_by_role
 from .models import TASK_STATES
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -18,6 +19,7 @@ def connect(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute("pragma foreign_keys = on")
+    conn.execute("pragma busy_timeout = 5000")
     return conn
 
 
@@ -494,16 +496,52 @@ def claim_next_ready_task(
         raise
 
 
-def claim_project_task(
+def _task_capabilities(task: sqlite3.Row) -> list[str]:
+    return [part for part in task["capabilities"].split(",") if part]
+
+
+def _task_has_active_lease(conn: sqlite3.Connection, task_id: str) -> bool:
+    row = conn.execute(
+        """
+        select id from task_leases
+        where task_id = ?
+          and released_at is null
+          and expires_at > ?
+        """,
+        (task_id, _utcnow().isoformat()),
+    ).fetchone()
+    return row is not None
+
+
+def _agents_for_task(
+    config: CoordinatorConfig,
+    capabilities: list[str],
+    *,
+    preferred_agent_id: str | None = None,
+) -> list:
+    if preferred_agent_id is not None:
+        agent = config.agents.get(preferred_agent_id)
+        if agent is None:
+            return []
+        if not set(capabilities).issubset(set(agent.capabilities)):
+            return []
+        return [agent]
+    return list(iter_agents_by_role(config, "worker", capabilities))
+
+
+def claim_project_ready_task(
     conn: sqlite3.Connection,
     project_id: str,
-    agent_id: str,
+    config: CoordinatorConfig,
+    *,
+    preferred_agent_id: str | None = None,
     duration_seconds: int = DEFAULT_LEASE_DURATION_SECONDS,
-) -> sqlite3.Row | None:
-    """Claim the next ready task for a specific project with an atomic lease.
+) -> tuple[sqlite3.Row | None, str | None]:
+    """Atomically claim a ready project task with a matching, available agent.
 
-    Returns the claimed task row, or None if no task is available for
-    this project.
+    Within one BEGIN IMMEDIATE transaction this walks unleased ready tasks,
+    selects an agent with spare capacity and matching capabilities, and
+    creates the lease. Returns (task, agent_id) or (None, None).
     """
     conn.execute("begin immediate")
     try:
@@ -514,18 +552,95 @@ def claim_project_task(
         ).fetchall()
 
         for task in candidates:
-            try:
-                if _try_acquire_task_lease(conn, task["id"], agent_id, duration_seconds):
-                    conn.commit()
-                    return task
-            except sqlite3.IntegrityError:
+            capabilities = _task_capabilities(task)
+            if not capabilities:
                 continue
+            if _task_has_active_lease(conn, task["id"]):
+                continue
+            for agent in _agents_for_task(
+                config,
+                capabilities,
+                preferred_agent_id=preferred_agent_id,
+            ):
+                if active_lease_count(conn, agent.id) >= agent.max_concurrency:
+                    continue
+                try:
+                    if _try_acquire_task_lease(
+                        conn, task["id"], agent.id, duration_seconds
+                    ):
+                        conn.commit()
+                        return task, agent.id
+                except sqlite3.IntegrityError:
+                    continue
 
         conn.commit()
-        return None
+        return None, None
     except sqlite3.Error:
         conn.rollback()
         raise
+
+
+def project_has_claimable_task(
+    conn: sqlite3.Connection,
+    project_id: str,
+    config: CoordinatorConfig,
+    *,
+    preferred_agent_id: str | None = None,
+) -> bool:
+    """Return True if a ready task can be claimed for the project."""
+    candidates = conn.execute(
+        "select * from tasks where project_id = ? and state = ? "
+        "order by created_at, id",
+        (project_id, "ready"),
+    ).fetchall()
+
+    for task in candidates:
+        capabilities = _task_capabilities(task)
+        if not capabilities:
+            continue
+        if _task_has_active_lease(conn, task["id"]):
+            continue
+        for agent in _agents_for_task(
+            config,
+            capabilities,
+            preferred_agent_id=preferred_agent_id,
+        ):
+            if active_lease_count(conn, agent.id) < agent.max_concurrency:
+                return True
+    return False
+
+
+def peek_project_claim(
+    conn: sqlite3.Connection,
+    project_id: str,
+    config: CoordinatorConfig,
+    *,
+    preferred_agent_id: str | None = None,
+) -> tuple[sqlite3.Row | None, str | None]:
+    """Return the first task/agent pair that would be claimed (non-mutating)."""
+    candidates = conn.execute(
+        "select * from tasks where project_id = ? and state = ? "
+        "order by created_at, id",
+        (project_id, "ready"),
+    ).fetchall()
+
+    for task in candidates:
+        capabilities = _task_capabilities(task)
+        if not capabilities:
+            continue
+        if _task_has_active_lease(conn, task["id"]):
+            continue
+        for agent in _agents_for_task(
+            config,
+            capabilities,
+            preferred_agent_id=preferred_agent_id,
+        ):
+            if active_lease_count(conn, agent.id) < agent.max_concurrency:
+                return task, agent.id
+    return None, None
+
+
+
 
 
 # ---------------------------------------------------------------------------

@@ -95,19 +95,27 @@ class CoordinatorConfig:
     daemon_policy: DaemonPolicyConfig = field(default_factory=DaemonPolicyConfig)
 
 
+def iter_agents_by_role(
+    config: "CoordinatorConfig",
+    role: str,
+    capabilities: list[str] | None = None,
+):
+    """Yield agents matching *role* and optional *capabilities* in config order."""
+    if not config.agents:
+        return
+    required = set(capabilities) if capabilities else set()
+    for agent in config.agents.values():
+        if agent.role == role and required.issubset(set(agent.capabilities)):
+            yield agent
+
+
 def select_agent_by_role(
     config: "CoordinatorConfig",
     role: str,
     capabilities: list[str] | None = None,
 ) -> "AgentConfig | None":
     """Return the first agent matching *role* and optional *capabilities*."""
-    if not config.agents:
-        return None
-    required = set(capabilities) if capabilities else set()
-    for agent in config.agents.values():
-        if agent.role == role and required.issubset(set(agent.capabilities)):
-            return agent
-    return None
+    return next(iter_agents_by_role(config, role, capabilities), None)
 
 
 def select_fallback_agent(

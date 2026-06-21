@@ -87,6 +87,10 @@ class SharedCapacity:
             return len(self._leases)
         return sum(1 for l in self._leases.values() if l.project_id == project_id)
 
+    def can_accept_project(self, project_id: str) -> bool:
+        """Return True if the project is below its per-project concurrency limit."""
+        return self.active_count(project_id=project_id) < self._max_per_project
+
     def _maybe_reset_daily(self) -> None:
         today = date.today()
         if today != self._daily_date:

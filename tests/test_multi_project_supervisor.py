@@ -111,6 +111,7 @@ class MultiProjectSupervisorTest(TestCase):
     def test_tick_processes_projects(self) -> None:
         sup = _make_supervisor(self.root, ["proj-a", "proj-b"])
         sup.tick()
+        sup.join_workers(timeout=5.0)
 
     def test_status_fields(self) -> None:
         sup = _make_supervisor(self.root, ["proj-a"])

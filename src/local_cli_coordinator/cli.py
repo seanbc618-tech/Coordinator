@@ -760,13 +760,15 @@ def _cmd_supervisor_start(args: argparse.Namespace) -> int:
         config = load_config(tmp_config)
         shutil.rmtree(tmp_config, ignore_errors=True)
 
-    # Discover registered projects
+    # Discover registered projects from tasks and the projects registry
+    from .projects import list_projects
+
     conn = connect(paths.database)
     init_db(conn)
-    project_ids = [
+    project_ids = sorted({
         row["project_id"]
         for row in conn.execute("select distinct project_id from tasks").fetchall()
-    ]
+    } | {row["id"] for row in list_projects(conn)})
     conn.close()
 
     if not project_ids:
@@ -847,7 +849,9 @@ def _cmd_supervisor_start(args: argparse.Namespace) -> int:
     finally:
         log.info("Shutting down, waiting for workers...")
         sup.request_shutdown()
-        sup.join_workers(timeout=30.0)
+        if not sup.join_workers(timeout=30.0, shutdown=True):
+            log.error("Shutdown incomplete: workers did not finish in time")
+            return 1
         log.info("Shutdown complete")
 
     return 0

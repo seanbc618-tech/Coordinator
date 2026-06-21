@@ -28,6 +28,13 @@ class FairProjectScheduler:
 
     def __init__(self, project_ids: list[str]) -> None:
         self._order: deque[str] = deque(project_ids)
+        self._known: set[str] = set(project_ids)
+
+    def register_project(self, project_id: str) -> None:
+        """Add a project to the scheduler if not already known."""
+        if project_id not in self._known:
+            self._known.add(project_id)
+            self._order.append(project_id)
 
     def next(self, is_runnable: Callable[[str], bool]) -> ScheduleDecision | None:
         """Return the next runnable project, or None if none are runnable."""

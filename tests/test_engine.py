@@ -66,6 +66,7 @@ class EngineTests(unittest.TestCase):
             init_git_repo(repo)
             conn = connect(root / "coordinator.db")
             init_db(conn)
+            self.addCleanup(conn.close)
             task_id = create_task(
                 conn,
                 title="Broken branch history",
@@ -95,6 +96,7 @@ class EngineTests(unittest.TestCase):
             init_git_repo(repo)
             conn = connect(root / "coordinator.db")
             init_db(conn)
+            self.addCleanup(conn.close)
             task_id = create_task(
                 conn,
                 title="Create feature file",
@@ -129,6 +131,7 @@ class EngineTests(unittest.TestCase):
             )
             conn = connect(root / "coordinator.db")
             init_db(conn)
+            self.addCleanup(conn.close)
             task_id = create_task(
                 conn,
                 title="Committed feature",
@@ -161,6 +164,7 @@ class EngineTests(unittest.TestCase):
             init_git_repo(repo)
             conn = connect(root / "coordinator.db")
             init_db(conn)
+            self.addCleanup(conn.close)
             task_id = create_task(
                 conn,
                 title="Retry feature",
@@ -208,6 +212,7 @@ class EngineTests(unittest.TestCase):
             init_git_repo(repo)
             conn = connect(root / "coordinator.db")
             init_db(conn)
+            self.addCleanup(conn.close)
             task_id = create_task(
                 conn,
                 title="Create feature file",
@@ -236,6 +241,7 @@ class EngineTests(unittest.TestCase):
             init_git_repo(repo)
             conn = connect(root / "coordinator.db")
             init_db(conn)
+            self.addCleanup(conn.close)
             task_id = create_task(
                 conn,
                 title="Create feature file",
@@ -264,6 +270,7 @@ class EngineTests(unittest.TestCase):
             init_git_repo(repo)
             conn = connect(root / "coordinator.db")
             init_db(conn)
+            self.addCleanup(conn.close)
             task_id = create_task(
                 conn,
                 title="Create feature file",
@@ -292,7 +299,7 @@ class EngineTests(unittest.TestCase):
             task = get_task(conn, task_id)
             self.assertEqual(task["state"], "blocked")
             self.assertIn(
-                "no matching agent for capabilities: code",
+                "lacks capabilities: code",
                 latest_event_note(conn, task_id),
             )
 
@@ -303,6 +310,7 @@ class EngineTests(unittest.TestCase):
             init_git_repo(repo)
             conn = connect(root / "coordinator.db")
             init_db(conn)
+            self.addCleanup(conn.close)
             task_id = create_task(
                 conn,
                 title="Create feature file",
@@ -332,6 +340,7 @@ class EngineTests(unittest.TestCase):
             init_git_repo(repo)
             conn = connect(root / "coordinator.db")
             init_db(conn)
+            self.addCleanup(conn.close)
             task_id = create_task(
                 conn,
                 title="Create feature file",
@@ -361,6 +370,7 @@ class EngineTests(unittest.TestCase):
             init_git_repo(repo)
             conn = connect(root / "coordinator.db")
             init_db(conn)
+            self.addCleanup(conn.close)
             task_id = create_task(
                 conn,
                 title="Create feature file",
@@ -404,6 +414,7 @@ class EngineTests(unittest.TestCase):
             init_git_repo(repo)
             conn = connect(root / "coordinator.db")
             init_db(conn)
+            self.addCleanup(conn.close)
             task_id = create_task(
                 conn,
                 title="Noop task",
@@ -460,6 +471,7 @@ class EngineTests(unittest.TestCase):
             init_git_repo(repo)
             conn = connect(root / "coordinator.db")
             init_db(conn)
+            self.addCleanup(conn.close)
             create_task(
                 conn,
                 title="Reporter forwarding",

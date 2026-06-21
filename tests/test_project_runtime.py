@@ -112,7 +112,7 @@ class ProjectRuntimeTest(TestCase):
         )
 
         from local_cli_coordinator.reporting import NullReporter
-        result = run_project_cycle(self.conn, runtime, NullReporter())
+        result = run_project_cycle(self.conn, runtime, NullReporter(), agent_id="test")
 
         # Should only process proj-a's task
         self.assertEqual(result.project_id, "proj-a")

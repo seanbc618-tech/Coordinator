@@ -12,6 +12,7 @@ class DatabaseTests(unittest.TestCase):
             db_path = Path(tmp) / "coordinator.db"
             conn = connect(db_path)
             init_db(conn)
+            self.addCleanup(conn.close)
 
             task_id = create_task(
                 conn,
@@ -52,6 +53,7 @@ class DatabaseTests(unittest.TestCase):
             )
 
             conn = connect(tmp_path / "coordinator.db")
+            self.addCleanup(conn.close)
 
             with self.assertRaises(sqlite3.OperationalError):
                 init_db(conn, migrations_dir=migrations_dir)

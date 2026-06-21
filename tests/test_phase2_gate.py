@@ -1176,6 +1176,415 @@ class GateProjectStopSemanticsTests(Phase2GateHarness):
             server.request_shutdown()
 
 
+class GateLeaseCleanupTests(Phase2GateHarness):
+    def test_gate_active_db_leases_zero_after_task_done(self) -> None:
+        task_id = _create_project_task(self.conn, project_id="proj-a", title="lease-clean")
+        self.conn.close()
+
+        sup = _make_supervisor(self.paths, ["proj-a"], self.config)
+        with _no_resource_warnings():
+            _tick_and_drain(sup)
+
+        conn = connect(self.paths.database)
+        try:
+            self.assertEqual(get_task(conn, task_id)["state"], "done")
+        finally:
+            conn.close()
+
+        self.assertEqual(
+            _active_db_leases(self.paths),
+            [],
+            f"task leases leaked after completion: {_active_db_leases(self.paths)}",
+        )
+
+
+class GateMultiClientSubscriptionTests(Phase2GateHarness):
+    def test_gate_three_clients_disconnect_out_of_order_leave_no_subscribers(self) -> None:
+        _create_project_task(self.conn, project_id="proj-a", title="multi-sub")
+        self.conn.close()
+
+        broker = EventBroker()
+        methods = SupervisorMethods(broker=broker)
+        sup = _make_supervisor(self.paths, ["proj-a"], self.config, broker=broker, methods=methods)
+
+        def handler(request: RequestEnvelope) -> ResponseEnvelope:
+            conn = connect(self.paths.database)
+            try:
+                init_db(conn)
+                return methods.handle(conn, request)
+            finally:
+                conn.close()
+
+        server = SupervisorServer(self.paths, handler=handler, methods=methods)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        time.sleep(0.1)
+
+        subscribe_payload = (
+            '{"type":"request","protocol_version":1,'
+            '"request_id":"sub-%s","project_id":"proj-a",'
+            '"method":"events.subscribe","params":{"after":0}}\n'
+        )
+
+        clients: list[socket.socket] = []
+        try:
+            for i in range(3):
+                client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                client.connect(str(self.paths.socket))
+                client.sendall((subscribe_payload % i).encode("utf-8"))
+                client.settimeout(3.0)
+                first = supervisor_server_module._recv_line(client)
+                self.assertTrue(first, f"missing subscribe response for client {i}")
+                clients.append(client)
+
+            self.assertEqual(len(broker._subscribers), 3)  # noqa: SLF001
+
+            for idx in (0, 2, 1):
+                clients[idx].close()
+                time.sleep(0.1)
+        finally:
+            for client in clients:
+                try:
+                    client.close()
+                except OSError:
+                    pass
+
+        deadline = time.time() + 3.0
+        while time.time() < deadline:
+            if len(broker._subscribers) == 0 and len(methods._live_queues) == 0:  # noqa: SLF001
+                break
+            time.sleep(0.05)
+        else:
+            self.fail(
+                "subscriptions leaked after three out-of-order disconnects: "
+                f"subscribers={len(broker._subscribers)}, "  # noqa: SLF001
+                f"live_queues={len(methods._live_queues)}"  # noqa: SLF001
+            )
+
+        server.request_shutdown()
+
+
+class GateAgentConcurrencyTests(Phase2GateHarness):
+    def test_gate_worker_max_concurrency_limits_parallel_leases(self) -> None:
+        slow_config = _gate_config(self.repos, slow_seconds=1.0, max_global_concurrency=1)
+        _create_project_task(self.conn, project_id="proj-a", title="agent-conc-1")
+        _create_project_task(self.conn, project_id="proj-a", title="agent-conc-2")
+        self.conn.close()
+
+        sup = _make_supervisor(
+            self.paths,
+            ["proj-a"],
+            slow_config,
+            capacity=SharedCapacity(max_global_running=4, max_per_project=2),
+        )
+
+        max_worker_leases = 0
+        stop = threading.Event()
+
+        def burst_ticks() -> None:
+            while not stop.is_set():
+                with _no_resource_warnings():
+                    sup.tick()
+                time.sleep(0.02)
+
+        thread = threading.Thread(target=burst_ticks, daemon=True)
+        thread.start()
+
+        deadline = time.time() + 20.0
+        try:
+            while time.time() < deadline:
+                conn = connect(self.paths.database)
+                try:
+                    row = conn.execute(
+                        "select count(*) as cnt from task_leases "
+                        "where agent_id = ? and released_at is null",
+                        ("worker",),
+                    ).fetchone()
+                    max_worker_leases = max(max_worker_leases, int(row["cnt"]))
+                    counts = project_task_counts(conn, project_id="proj-a")
+                    if counts.get("done", 0) == 2:
+                        break
+                finally:
+                    conn.close()
+                time.sleep(0.03)
+            else:
+                self.fail("both proj-a tasks did not finish under agent concurrency gate")
+        finally:
+            stop.set()
+            thread.join(timeout=2.0)
+            _drain_workers(sup)
+
+        self.assertLessEqual(
+            max_worker_leases,
+            1,
+            f"worker max_concurrency=1 exceeded (observed {max_worker_leases} active leases)",
+        )
+
+
+class GateEventBrokerThreadSafetyTests(Phase2GateHarness):
+    def test_gate_concurrent_publish_never_collides_on_cursor(self) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        broker = EventBroker()
+        thread_count = 12
+        barrier = threading.Barrier(thread_count)
+        errors: list[Exception] = []
+
+        def publish_once(i: int) -> int:
+            conn = connect(self.paths.database)
+            init_db(conn)
+            try:
+                barrier.wait(timeout=5.0)
+                return broker.publish(conn, "proj-a", f"evt-{i}", {"i": i})
+            except Exception as exc:
+                errors.append(exc)
+                raise
+            finally:
+                conn.close()
+
+        with ThreadPoolExecutor(max_workers=thread_count) as pool:
+            cursors = list(pool.map(publish_once, range(thread_count)))
+
+        self.assertEqual(errors, [], f"concurrent publish errors: {errors}")
+        self.assertEqual(len(set(cursors)), thread_count)
+
+        conn = connect(self.paths.database)
+        try:
+            init_db(conn)
+            count = conn.execute(
+                "select count(*) as cnt from supervisor_events where project_id = ?",
+                ("proj-a",),
+            ).fetchone()["cnt"]
+            self.assertEqual(count, thread_count)
+        finally:
+            conn.close()
+
+    def test_gate_publish_while_unsubscribing_never_mutates_subscriber_dict(self) -> None:
+        broker = EventBroker()
+        tokens = [broker.subscribe("proj-a", lambda e: None) for _ in range(3)]
+        stop = threading.Event()
+        errors: list[Exception] = []
+
+        def churn_subscriptions() -> None:
+            try:
+                for _ in range(80):
+                    if stop.is_set():
+                        break
+                    for token in tokens:
+                        broker.unsubscribe(token)
+                    for i in range(len(tokens)):
+                        tokens[i] = broker.subscribe("proj-a", lambda e: None)
+                    time.sleep(0.001)
+            except Exception as exc:
+                errors.append(exc)
+
+        thread = threading.Thread(target=churn_subscriptions, daemon=True)
+        thread.start()
+        try:
+            conn = connect(self.paths.database)
+            init_db(conn)
+            try:
+                for i in range(40):
+                    broker.publish(conn, "proj-a", f"live-{i}", {})
+            finally:
+                conn.close()
+        finally:
+            stop.set()
+            thread.join(timeout=2.0)
+
+        self.assertEqual(errors, [])
+
+
+class GateTickLeaseCleanupTests(Phase2GateHarness):
+    def test_gate_tick_releases_lease_when_publish_fails(self) -> None:
+        from unittest.mock import patch
+
+        task_id = _create_project_task(self.conn, project_id="proj-a", title="publish-fail")
+        self.conn.close()
+
+        sup = _make_supervisor(self.paths, ["proj-a"], self.config)
+
+        def boom(*_args, **_kwargs):
+            raise RuntimeError("injected event failure")
+
+        with patch.object(sup._broker, "publish", side_effect=boom):  # noqa: SLF001
+            with self.assertRaises(RuntimeError):
+                sup.tick()
+
+        self.assertEqual(_active_db_leases(self.paths), [])
+
+    def test_gate_tick_releases_lease_when_submit_fails(self) -> None:
+        from unittest.mock import patch
+
+        task_id = _create_project_task(self.conn, project_id="proj-a", title="submit-fail")
+        self.conn.close()
+
+        sup = _make_supervisor(self.paths, ["proj-a"], self.config)
+
+        def boom(*_args, **_kwargs):
+            raise RuntimeError("injected submit failure")
+
+        with patch.object(sup._executor, "submit", side_effect=boom):  # noqa: SLF001
+            with self.assertRaises(RuntimeError):
+                sup.tick()
+
+        self.assertEqual(_active_db_leases(self.paths), [])
+
+
+class GateAtomicClaimTests(Phase2GateHarness):
+    def test_gate_atomic_claim_binds_matching_task_and_agent(self) -> None:
+        from local_cli_coordinator.db import claim_project_ready_task
+
+        code_config = CoordinatorConfig(
+            agents={
+                "code": AgentConfig(
+                    id="code",
+                    command=_worker_command(),
+                    capabilities=["code"],
+                    max_concurrency=2,
+                    role="worker",
+                ),
+                "docs": AgentConfig(
+                    id="docs",
+                    command=_worker_command(),
+                    capabilities=["docs"],
+                    max_concurrency=2,
+                    role="worker",
+                ),
+            },
+            repos=self.config.repos,
+            policy=self.config.policy,
+            daemon_policy=self.config.daemon_policy,
+        )
+
+        docs_task = _create_project_task(
+            self.conn,
+            project_id="proj-a",
+            title="docs-first",
+        )
+        self.conn.execute(
+            "update tasks set capabilities = ? where id = ?",
+            ("docs", docs_task),
+        )
+        code_task = _create_project_task(
+            self.conn,
+            project_id="proj-a",
+            title="code-second",
+        )
+        self.conn.commit()
+
+        claimed, agent_id = claim_project_ready_task(
+            self.conn, "proj-a", code_config, preferred_agent_id="code"
+        )
+        self.assertIsNotNone(claimed)
+        self.assertEqual(agent_id, "code")
+        self.assertEqual(claimed["id"], code_task)
+        self.assertEqual(claimed["capabilities"], "code")
+
+
+class GateMultiAgentSelectionTests(Phase2GateHarness):
+    def test_gate_selects_second_agent_when_first_is_at_capacity(self) -> None:
+        from local_cli_coordinator.project_runtime import select_available_agent
+        from local_cli_coordinator.db import acquire_task_lease
+
+        multi_config = CoordinatorConfig(
+            agents={
+                "worker-a": AgentConfig(
+                    id="worker-a",
+                    command=_worker_command(),
+                    capabilities=["code"],
+                    max_concurrency=1,
+                    role="worker",
+                ),
+                "worker-b": AgentConfig(
+                    id="worker-b",
+                    command=_worker_command(),
+                    capabilities=["code"],
+                    max_concurrency=1,
+                    role="worker",
+                ),
+            },
+            repos=self.config.repos,
+            policy=self.config.policy,
+            daemon_policy=self.config.daemon_policy,
+        )
+
+        first_id = _create_project_task(self.conn, project_id="proj-a", title="multi-agent-1")
+        _create_project_task(self.conn, project_id="proj-a", title="multi-agent-2")
+        acquire_task_lease(self.conn, first_id, "worker-a")
+        agent, _ = select_available_agent(self.conn, multi_config, "proj-a")
+        self.assertIsNotNone(agent)
+        self.assertEqual(agent.id, "worker-b")
+
+
+class GateShutdownTimeoutTests(Phase2GateHarness):
+    def test_gate_join_workers_timeout_returns_false_without_faking_success(self) -> None:
+        slow_config = _gate_config(self.repos, slow_seconds=5.0)
+        _create_project_task(self.conn, project_id="proj-a", title="shutdown-timeout")
+        self.conn.close()
+
+        sup = _make_supervisor(self.paths, ["proj-a"], slow_config)
+        try:
+            with _no_resource_warnings():
+                sup.tick()
+                time.sleep(0.15)
+                all_done = sup.join_workers(timeout=0.2)
+
+            self.assertFalse(all_done, "join_workers must report timeout instead of pretending success")
+            self.assertGreater(
+                len(sup._active_futures),  # noqa: SLF001
+                0,
+                "timed-out workers must remain tracked in _active_futures",
+            )
+        finally:
+            sup.join_workers(timeout=10.0)
+
+    def test_gate_cli_shutdown_checks_join_workers_result(self) -> None:
+        from local_cli_coordinator import cli as cli_module
+
+        source = inspect.getsource(cli_module._cmd_supervisor_start)
+        finally_block = source.split("finally:", 1)[1]
+        self.assertIn("join_workers", finally_block)
+        self.assertRegex(
+            finally_block,
+            r"if not sup\.join_workers\([^)]*shutdown=True",
+            "CLI must treat join_workers failure as shutdown error",
+        )
+        self.assertIn("return 1", finally_block)
+
+
+class GateDynamicProjectTests(Phase2GateHarness):
+    def test_gate_new_project_task_scheduled_after_runtime_refresh(self) -> None:
+        initial = _create_project_task(self.conn, project_id="proj-a", title="initial-a")
+        self.conn.close()
+
+        sup = _make_supervisor(self.paths, ["proj-a"], self.config)
+        with _no_resource_warnings():
+            _tick_and_drain(sup)
+
+        conn = connect(self.paths.database)
+        try:
+            self.assertEqual(get_task(conn, initial)["state"], "done")
+            late_id = _create_project_task(conn, project_id="proj-c", title="late-c")
+        finally:
+            conn.close()
+
+        with _no_resource_warnings():
+            _wait_until(
+                self.paths,
+                lambda: _done_counts(self.paths, ["proj-c"]).get("proj-c", 0) == 1,
+                tick_fn=lambda: _tick_and_drain(sup),
+                timeout=30.0,
+            )
+
+        conn = connect(self.paths.database)
+        try:
+            _assert_task_completed_via_engine(
+                self, conn, late_id, bare_repo=self.repos["proj-c"],
+            )
+        finally:
+            conn.close()
+
+
 class GateSubscriptionCleanupTests(Phase2GateHarness):
     def test_gate_client_disconnect_clears_broker_subscriptions(self) -> None:
         _create_project_task(self.conn, project_id="proj-a", title="sub-cleanup")
@@ -1382,6 +1791,60 @@ class GateRound3SourceAuditTests(TestCase):
         self.assertIn("join_workers", source)
         finally_block = source.split("finally:", 1)[1]
         self.assertIn("join_workers", finally_block)
+        self.assertIn("shutdown=True", finally_block)
+
+    def test_gate_supervisor_uses_monotonic_capacity_keys(self) -> None:
+        source = (SRC / "local_cli_coordinator" / "supervisor.py").read_text(encoding="utf-8")
+        tick_body = source.split("def tick", 1)[1].split("\n    def ", 1)[0]
+        self.assertIn("_worker_counter", tick_body)
+        self.assertNotIn("id(decision)", tick_body)
+
+    def test_gate_supervisor_tick_aborts_pre_claimed_lease_before_worker_handoff(self) -> None:
+        source = (SRC / "local_cli_coordinator" / "supervisor.py").read_text(encoding="utf-8")
+        tick_body = source.split("def tick", 1)[1].split("\n    def ", 1)[0]
+        self.assertIn("submitted", tick_body)
+        self.assertIn("_abort_tick_claim", tick_body)
+        self.assertIn("if not submitted and claimed_task_id is not None:", tick_body)
+        run_body = source.split("def _run_project_cycle", 1)[1].split("\n    def ", 1)[0]
+        self.assertIn("finally:", run_body)
+        self.assertIn("release_task_lease(conn, task_id)", run_body)
+
+    def test_gate_project_runtime_releases_task_lease_in_finally(self) -> None:
+        source = (SRC / "local_cli_coordinator" / "project_runtime.py").read_text(encoding="utf-8")
+        self.assertIn("release_task_lease", source)
+        run_body = source.split("def run_project_cycle", 1)[1].split("\ndef ", 1)[0]
+        self.assertIn("finally:", run_body)
+        self.assertIn("release_task_lease(conn, task_id)", run_body)
+
+    def test_gate_event_broker_unsubscribe_uses_token_map(self) -> None:
+        source = (SRC / "local_cli_coordinator" / "supervisor_events.py").read_text(encoding="utf-8")
+        self.assertIn("_subscribers: dict[int, _Subscription]", source)
+        self.assertIn("self._subscribers.pop(token, None)", source)
+        self.assertIn("begin immediate", source)
+        self.assertIn("list(self._subscribers.values())", source)
+        self.assertNotRegex(
+            source,
+            r"self\._subscribers\.pop\(token\)",
+            "unsubscribe must not treat token as list index",
+        )
+
+    def test_gate_process_task_honors_assigned_agent_id(self) -> None:
+        source = (SRC / "local_cli_coordinator" / "engine.py").read_text(encoding="utf-8")
+        body = source.split("def _process_task", 1)[1].split("\ndef ", 1)[0]
+        self.assertIn("if agent_id is not None:", body)
+        self.assertIn("config.agents.get(agent_id)", body)
+
+    def test_gate_atomic_claim_lives_in_db_begin_immediate(self) -> None:
+        source = (SRC / "local_cli_coordinator" / "db.py").read_text(encoding="utf-8")
+        body = source.split("def claim_project_ready_task", 1)[1].split("\ndef ", 1)[0]
+        self.assertIn("begin immediate", body)
+        self.assertIn("_agents_for_task", body)
+        self.assertIn("_try_acquire_task_lease", body)
+
+    def test_gate_project_runtime_delegates_atomic_claim(self) -> None:
+        source = (SRC / "local_cli_coordinator" / "project_runtime.py").read_text(encoding="utf-8")
+        self.assertIn("claim_project_ready_task", source)
+        self.assertNotIn("claim_project_task", source)
 
     def test_gate_cli_load_config_supports_xdg_layout(self) -> None:
         source = inspect.getsource(
@@ -1392,6 +1855,56 @@ class GateRound3SourceAuditTests(TestCase):
             source,
             "XDG config_dir already points at coordinator config root",
         )
+
+
+class GateResourceWarningHarnessTests(TestCase):
+    def test_gate_leaked_coordinator_connection_fails_under_global_warning_policy(self) -> None:
+        import tempfile
+        from pathlib import Path
+        import tests
+
+        with tempfile.TemporaryDirectory() as tmp:
+            leaked = connect(Path(tmp) / "leak.db")
+            with self.assertRaises(ResourceWarning):
+                tests._audit_open_connections()
+            leaked.close()
+
+    def test_gate_test_harness_tracks_sqlite_close_and_runs_gc_collect(self) -> None:
+        import tests
+
+        source = inspect.getsource(tests._run_with_resource_guard)
+        self.assertIn("gc.collect()", source)
+        self.assertIn("_audit_open_connections", source)
+        self.assertIn("_TrackedConnection", inspect.getsource(tests._install_tracked_connect))
+
+    def test_gate_background_thread_connection_leak_fails_audit(self) -> None:
+        import tempfile
+        from pathlib import Path
+        import tests
+
+        ready = threading.Event()
+        close_signal = threading.Event()
+        worker_thread_id: list[int] = []
+
+        def worker() -> None:
+            conn = connect(Path(tempfile.mkdtemp()) / "bg.db")
+            worker_thread_id.append(threading.get_ident())
+            ready.set()
+            close_signal.wait(timeout=2.0)
+            conn.close()
+
+        thread = threading.Thread(target=worker)
+        thread.start()
+        self.assertTrue(ready.wait(timeout=2.0))
+
+        with self.assertRaises(ResourceWarning) as ctx:
+            tests._audit_open_connections()
+        self.assertIn("background-thread leak", str(ctx.exception))
+        self.assertNotEqual(worker_thread_id[0], threading.main_thread().ident)
+
+        close_signal.set()
+        thread.join(timeout=2.0)
+        self.assertFalse(thread.is_alive())
 
 
 class GateFileHandleLeakTests(TestCase):

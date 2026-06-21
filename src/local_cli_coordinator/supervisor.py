@@ -8,14 +8,16 @@ project execution. Integrates with the existing engine pipeline.
 from __future__ import annotations
 
 import logging
+import sqlite3
 import threading
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from contextlib import contextmanager
 from typing import Any, Generator
 
 from .config import CoordinatorConfig
-from .db import connect, init_db, project_next_ready_task, project_task_counts
-from .project_runtime import ProjectRuntime, run_project_cycle
+from .db import claim_project_ready_task, connect, init_db, project_task_counts, release_task_lease
+from .project_runtime import ProjectRuntime, project_is_runnable, run_project_cycle
+from .projects import list_projects
 from .reporting import NULL_REPORTER, Reporter
 from .runtime_paths import RuntimePaths
 from .supervisor_capacity import SharedCapacity
@@ -58,6 +60,8 @@ class MultiProjectSupervisor:
         self._executor = ThreadPoolExecutor(max_workers=max_workers)
         self._active_futures: dict[str, Future] = {}
         self._futures_lock = threading.Lock()
+        self._worker_counter = 0
+        self._counter_lock = threading.Lock()
 
         # Expose paused/stopped sets to methods
         self._methods.set_paused_ref(self._paused)
@@ -81,32 +85,59 @@ class MultiProjectSupervisor:
         if self._shutdown.is_set():
             return
 
+        self._refresh_projects()
+
         decision = self._scheduler.next(self._is_project_runnable)
         if decision is None:
             return
 
         project_id = decision.project_id
-        task_key = f"task-{id(decision)}"
+        claimed_task_id: str | None = None
+        task_key: str | None = None
+        agent_id: str | None = None
+        submitted = False
 
-        # Acquire capacity with context-managed connection
-        with self._get_conn() as conn:
-            if not self._capacity.try_acquire(
-                conn,
-                project_id=project_id,
-                task_id=task_key,
-                agent_id="supervisor",
-            ):
-                return
+        try:
+            with self._get_conn() as conn:
+                task, agent_id = claim_project_ready_task(
+                    conn, project_id, self._config
+                )
+                if task is None or agent_id is None:
+                    return
+                claimed_task_id = task["id"]
 
-            self._broker.publish(
-                conn, project_id, "tick_scheduled",
-                {"project_id": project_id, "reason": decision.reason},
+                with self._counter_lock:
+                    self._worker_counter += 1
+                    task_key = f"cycle-{self._worker_counter}"
+
+                if not self._capacity.try_acquire(
+                    conn,
+                    project_id=project_id,
+                    task_id=task_key,
+                    agent_id=agent_id,
+                ):
+                    release_task_lease(conn, claimed_task_id)
+                    return
+
+                self._broker.publish(
+                    conn, project_id, "tick_scheduled",
+                    {"project_id": project_id, "reason": decision.reason},
+                )
+
+            future = self._executor.submit(
+                self._run_project_cycle,
+                project_id,
+                task_key,
+                agent_id,
+                claimed_task_id,
             )
-
-        # Submit to worker pool
-        future = self._executor.submit(self._run_project_cycle, project_id, task_key)
-        with self._futures_lock:
-            self._active_futures[task_key] = future
+            submitted = True
+            with self._futures_lock:
+                self._active_futures[task_key] = future
+        except Exception:
+            if not submitted and claimed_task_id is not None:
+                self._abort_tick_claim(claimed_task_id, task_key)
+            raise
 
         # Clean up completed futures
         with self._futures_lock:
@@ -114,7 +145,20 @@ class MultiProjectSupervisor:
                 if self._active_futures[key].done():
                     del self._active_futures[key]
 
-    def _run_project_cycle(self, project_id: str, task_key: str) -> None:
+    def _abort_tick_claim(self, task_id: str, task_key: str | None) -> None:
+        """Release a pre-claimed lease when tick fails before worker handoff."""
+        with self._get_conn() as conn:
+            release_task_lease(conn, task_id)
+        if task_key is not None:
+            self._capacity.release(task_key)
+
+    def _run_project_cycle(
+        self,
+        project_id: str,
+        task_key: str,
+        agent_id: str,
+        task_id: str,
+    ) -> None:
         """Run a project cycle in a worker thread."""
         with self._get_conn() as conn:
             try:
@@ -125,7 +169,13 @@ class MultiProjectSupervisor:
                     config=self._config,
                 )
 
-                result = run_project_cycle(conn, runtime, self._reporter)
+                result = run_project_cycle(
+                    conn,
+                    runtime,
+                    self._reporter,
+                    agent_id=agent_id,
+                    task_id=task_id,
+                )
 
                 self._broker.publish(
                     conn, project_id, "cycle_complete",
@@ -140,6 +190,7 @@ class MultiProjectSupervisor:
                 if result.failures > 0:
                     log.warning("project %s cycle failed: %s", project_id, result.stop_reason)
             finally:
+                release_task_lease(conn, task_id)
                 self._capacity.release(task_key)
 
     def _is_project_runnable(self, project_id: str) -> bool:
@@ -150,11 +201,24 @@ class MultiProjectSupervisor:
         if project_id in self._stopped:
             return False
 
+        if not self._capacity.can_accept_project(project_id):
+            return False
+
         with self._get_conn() as conn:
             if self._capacity.active_count() >= self._executor._max_workers:
                 return False
-            next_task = project_next_ready_task(conn, project_id=project_id)
-            return next_task is not None
+            return project_is_runnable(conn, self._config, project_id)
+
+    def _refresh_projects(self) -> None:
+        """Discover new projects from tasks and the projects registry."""
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "select distinct project_id from tasks"
+            ).fetchall()
+            for row in rows:
+                self._scheduler.register_project(row["project_id"])
+            for row in list_projects(conn):
+                self._scheduler.register_project(row["id"])
 
     def pause_project(self, project_id: str) -> None:
         self._paused.add(project_id)
@@ -202,12 +266,30 @@ class MultiProjectSupervisor:
     def is_shutdown_requested(self) -> bool:
         return self._shutdown.is_set()
 
-    def join_workers(self, timeout: float = 30.0) -> None:
-        """Wait for all active workers to complete."""
+    def join_workers(self, timeout: float = 30.0, *, shutdown: bool = False) -> bool:
+        """Wait for all active workers to complete.
+
+        Returns True if all workers finished, False if some timed out.
+        When *shutdown* is True, also stops the executor (final process exit).
+        """
         with self._futures_lock:
-            futures = list(self._active_futures.values())
-        for future in futures:
+            pending = list(self._active_futures.items())
+        all_done = True
+        completed_keys: list[str] = []
+        per_future_timeout = timeout / max(len(pending), 1)
+        for task_key, future in pending:
             try:
-                future.result(timeout=timeout / max(len(futures), 1))
+                future.result(timeout=per_future_timeout)
+                completed_keys.append(task_key)
+            except FutureTimeoutError:
+                log.warning("worker timed out after %.1fs", per_future_timeout)
+                all_done = False
             except Exception:
-                pass
+                log.exception("worker raised an exception")
+                completed_keys.append(task_key)
+        with self._futures_lock:
+            for task_key in completed_keys:
+                self._active_futures.pop(task_key, None)
+        if shutdown:
+            self._executor.shutdown(wait=all_done)
+        return all_done

@@ -143,6 +143,7 @@ class PushMergeTests(unittest.TestCase):
             remote = init_bare_remote(root, repo)
             conn = connect(root / "coordinator.db")
             init_db(conn)
+            self.addCleanup(conn.close)
             task_id = create_task(
                 conn,
                 title="Push feature file",
@@ -171,6 +172,7 @@ class PushMergeTests(unittest.TestCase):
             remote = init_bare_remote(root, repo)
             conn = connect(root / "coordinator.db")
             init_db(conn)
+            self.addCleanup(conn.close)
             task_id = create_task(
                 conn,
                 title="Local only feature file",
@@ -223,6 +225,7 @@ class PushMergeTests(unittest.TestCase):
             init_git_repo(repo)
             conn = connect(root / "coordinator.db")
             init_db(conn)
+            self.addCleanup(conn.close)
             task_id = create_task(
                 conn,
                 title="Push without remote",
@@ -261,6 +264,7 @@ class PushMergeTests(unittest.TestCase):
             )
             conn = connect(root / "coordinator.db")
             init_db(conn)
+            self.addCleanup(conn.close)
             task_id = create_task(
                 conn,
                 title="Merge divergent branch",

@@ -725,7 +725,36 @@ def _process_task(
             next_action="configure an agent",
         )
         return True
-    agent = _select_agent(config, capabilities)
+    if not capabilities:
+        agent = None
+    elif agent_id is not None:
+        agent = config.agents.get(agent_id)
+        if agent is None:
+            _finish_task(
+                conn,
+                root,
+                task["id"],
+                "blocked",
+                f"assigned agent is not configured: {agent_id}",
+                verifier_result="not run",
+                next_action="configure the assigned agent",
+            )
+            return True
+        if not set(capabilities).issubset(set(agent.capabilities)):
+            capability_text = ", ".join(capabilities)
+            _finish_task(
+                conn,
+                root,
+                task["id"],
+                "blocked",
+                f"assigned agent {agent_id} lacks capabilities: {capability_text}",
+                verifier_result="not run",
+                next_action="assign a capable agent or split the task",
+            )
+            return True
+    else:
+        agent = _select_agent(config, capabilities)
+
     if agent is None:
         capability_text = ", ".join(capabilities) if capabilities else "(none)"
         _finish_task(

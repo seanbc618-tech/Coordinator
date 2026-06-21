@@ -57,6 +57,7 @@ class MultiTaskRunTests(unittest.TestCase):
             repo.mkdir()
             conn = connect(root / "coordinator.db")
             init_db(conn)
+            self.addCleanup(conn.close)
             config = test_config(repo, max_tasks_per_run=2)
             for index in range(3):
                 create_task(
@@ -93,6 +94,7 @@ class MultiTaskRunTests(unittest.TestCase):
             repo.mkdir()
             conn = connect(root / "coordinator.db")
             init_db(conn)
+            self.addCleanup(conn.close)
             config = test_config(repo, max_tasks_per_run=5)
             config = CoordinatorConfig(
                 agents=config.agents,
