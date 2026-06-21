@@ -1,0 +1,78 @@
+import React from 'react'
+import { Box, Text } from 'ink'
+import type { Activity } from '../domain.js'
+
+interface ActivityBlockProps {
+  activity: Activity
+  columns: number
+}
+
+function formatElapsed(startedAt: number | null): string {
+  if (!startedAt) return ''
+  const seconds = Math.floor((Date.now() - startedAt) / 1000)
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  return `${minutes}m${seconds % 60}s`
+}
+
+export function ActivityBlock({ activity, columns }: ActivityBlockProps) {
+  const compact = columns < 60
+
+  // Compact: single line
+  // Expanded: show output
+  const statusIcon = activity.stage.startsWith('done')
+    ? '✓'
+    : activity.stage.startsWith('verification')
+      ? '⟐'
+      : activity.stage.startsWith('review')
+        ? '◉'
+        : activity.stage.startsWith('git')
+          ? '⎇'
+          : '●'
+
+  const statusColor = activity.stage.startsWith('done')
+    ? 'green'
+    : activity.stage.startsWith('verification: passed')
+      ? 'green'
+      : activity.stage.startsWith('verification: failed')
+        ? 'red'
+        : 'yellow'
+
+  if (!activity.expanded || compact) {
+    return (
+      <Box paddingX={1} flexDirection="row">
+        <Text color={statusColor}>{statusIcon} </Text>
+        <Text bold>{activity.title}</Text>
+        {activity.agent && <Text dimColor> [{activity.agent}]</Text>}
+        <Text dimColor> {activity.stage}</Text>
+        {activity.startedAt && <Text dimColor> {formatElapsed(activity.startedAt)}</Text>}
+        {activity.fallback && (
+          <Text color="yellow"> ⚠ {activity.fallback.from}→{activity.fallback.to}</Text>
+        )}
+      </Box>
+    )
+  }
+
+  // Expanded view
+  const outputLines = activity.output.slice(-10)
+  return (
+    <Box flexDirection="column" paddingX={1} borderStyle="round" borderColor="gray">
+      <Text>
+        <Text color={statusColor}>{statusIcon} </Text>
+        <Text bold>{activity.title}</Text>
+        {activity.agent && <Text dimColor> [{activity.agent}]</Text>}
+        <Text dimColor> {activity.stage}</Text>
+        {activity.startedAt && <Text dimColor> {formatElapsed(activity.startedAt)}</Text>}
+      </Text>
+      {activity.latestCommand && (
+        <Text dimColor>  $ {activity.latestCommand}</Text>
+      )}
+      {activity.fallback && (
+        <Text color="yellow">  ⚠ fallback: {activity.fallback.from} → {activity.fallback.to} ({activity.fallback.used}/{activity.fallback.limit})</Text>
+      )}
+      {outputLines.map((line, i) => (
+        <Text key={i} dimColor>  {line.slice(0, Math.max(columns - 4, 20))}</Text>
+      ))}
+    </Box>
+  )
+}
