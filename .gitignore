@@ -10,3 +10,8 @@ tasks/accepted/*.md
 tasks/blocked/*.md
 tasks/generated/*.md
 tasks/review/*.md
+
+# TUI build artifacts
+ui-tui/dist/
+ui-tui/node_modules/
+*.tgz
