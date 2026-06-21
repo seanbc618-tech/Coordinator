@@ -30,6 +30,7 @@ export default [
       'react/prop-types': 'off',
       '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_' }],
       'no-unused-vars': 'off',
+      'no-undef': 'off',  // TypeScript handles this
     },
     settings: {
       react: { version: 'detect' },

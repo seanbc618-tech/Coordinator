@@ -2,8 +2,8 @@
  * Coordinator TUI state store using nanostores.
  */
 
-import { atom, computed } from 'nanostores'
-import type { TuiState, ConnectionState, TranscriptItem, Activity } from './domain.js'
+import { atom } from 'nanostores'
+import type { ConnectionState, TranscriptItem, Activity } from './domain.js'
 
 export const connectionState = atom<ConnectionState>('offline')
 export const transcript = atom<TranscriptItem[]>([])

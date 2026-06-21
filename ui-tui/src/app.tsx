@@ -6,7 +6,7 @@
  */
 
 import React, { useEffect, useState, useCallback } from 'react'
-import { Box, Text } from 'ink'
+import { Box } from 'ink'
 import { useStore } from '@nanostores/react'
 import { SupervisorClient } from './supervisorClient.js'
 import { reduceEvent } from './eventReducer.js'

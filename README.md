@@ -394,3 +394,57 @@ roadmap_context_max_chars = 20000
 - Goal status (none, draft, active, paused, blocked, completed)
 - Commander replenishment state
 - Task counts by state
+
+## TUI (Terminal UI)
+
+The Coordinator TUI provides a conversational interface with live activity
+monitoring. It is built with React Ink (TypeScript) and communicates with the
+Supervisor over a Unix socket.
+
+### Development Commands
+
+```bash
+# Install dependencies
+npm install --prefix ui-tui
+
+# Typecheck
+npm run typecheck --prefix ui-tui
+
+# Lint
+npm run lint --prefix ui-tui
+
+# Run TUI tests
+npm test --prefix ui-tui -- --run
+
+# Build production bundle
+npm run build --prefix ui-tui
+
+# Run PTY integration tests
+PYTHONPATH=src python3 -m unittest tests.test_tui_pty -v
+```
+
+### Usage
+
+The TUI connects to a running Supervisor via a Unix socket and project ID:
+
+```bash
+# Start the Supervisor first
+PYTHONPATH=src python3 -m local_cli_coordinator supervisor start --foreground
+
+# Then connect the TUI (Phase 4 will add the global launcher)
+node ui-tui/dist/entry.js ~/.local/state/coordinator/supervisor.sock <project-id>
+```
+
+### Architecture
+
+- `protocol.ts` — typed envelopes matching the Supervisor protocol v1
+- `supervisorClient.ts` — Unix-socket client with reconnect and cursor replay
+- `eventReducer.ts` — pure reducer: Supervisor events → TUI state
+- `components/` — React Ink layout (Header, Transcript, ActivityBlock, Composer, Footer)
+- `lifecycle.ts` — idempotent terminal cleanup on detach/signal/crash
+
+### Non-Goals (Phase 3)
+
+- Global no-argument launcher (Phase 4)
+- Multiple independent Supervisors
+- Network-accessible Supervisor

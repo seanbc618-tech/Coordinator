@@ -11,6 +11,21 @@ const here = dirname(fileURLToPath(import.meta.url))
 const root = resolve(here, '..')
 const out = resolve(root, 'dist/entry.js')
 
+// Stub out react-devtools-core — only used in Ink dev mode.
+const stubDevtools = {
+  name: 'stub-react-devtools-core',
+  setup(b) {
+    b.onResolve({ filter: /^react-devtools-core$/ }, args => ({
+      path: args.path,
+      namespace: 'stub-devtools'
+    }))
+    b.onLoad({ filter: /.*/, namespace: 'stub-devtools' }, () => ({
+      contents: 'export default { initialize() {}, connectToDevTools() {} }',
+      loader: 'js'
+    }))
+  }
+}
+
 await build({
   entryPoints: [resolve(root, 'src/entry.tsx')],
   bundle: true,
@@ -20,6 +35,7 @@ await build({
   outfile: out,
   jsx: 'automatic',
   jsxImportSource: 'react',
+  plugins: [stubDevtools],
   banner: {
     js: "import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);"
   },
