@@ -63,8 +63,10 @@ integration owner cherry-picks one task commit at a time in plan order.
 
 ### Wave 3: TUI
 
-- Grok: package scaffold, socket client, layout, lifecycle, PTY integration.
-- Claude: state reducer and composer/slash commands.
+- Claude Code: Tasks 1 through 7 implementation, one focused commit per task.
+- Grok: adversarial review after each wave; production repairs stay on the
+  responsible Claude task branch.
+- Codex: integration, scope/license review, PTY review, and final acceptance.
 - Gate: TypeScript suite, bundle inspection, PTY widths, terminal cleanup.
 
 ### Wave 4: Installation
@@ -102,6 +104,21 @@ After every accepted task, update this file with:
 
 A resumed session reads the latest checkpoint and the referenced plan task. It
 does not reconstruct progress from chat history.
+
+### 2026-06-22 Checkpoint
+
+- task: Wave 2 Multi-Project Supervisor acceptance
+- owner: Claude Code implementation, Grok adversarial repair, Codex acceptance
+- branch: `external/live-daemon-observability`
+- commit: `f67c449`
+- focused tests: Phase 2 adversarial gates and injected lease-cleanup failures
+- integration head: `f67c449`
+- status: accepted; Wave 3 Hermes TUI is ready to start
+- Wave 3 integration branch: `external/coordinator-global-tui`
+- Phase 3 implementation handoff:
+  `../handoffs/2026-06-22-phase3-claude-code-implementation.md`
+- Phase 3 review handoff:
+  `../handoffs/2026-06-22-phase3-grok-adversarial-review.md`
 
 ## Final Acceptance
 

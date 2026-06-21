@@ -12,10 +12,11 @@
 
 ## Ownership and Order
 
-- Grok: Tasks 1, 2, 4, and 6.
-- Claude Code: Tasks 3 and 5.
-- Grok: Task 7 integration.
-- Codex: license/scope review after Task 1 and UI/PTY review after Task 7.
+- Claude Code: Tasks 1 through 7 implementation, one focused commit per task.
+- Grok: adversarial review after each wave; no production rewrite unless Codex
+  returns a defect to the responsible task branch.
+- Codex: integration, license/scope review after Task 1, wave gates, and UI/PTY
+  review after Task 7.
 - Start after Phase 2 protocol and event contracts are frozen.
 
 ### Task 1: Create the Licensed TUI Package
