@@ -1135,7 +1135,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "migrate":
         return _cmd_migrate(args)
     if args.command is None:
-        parser.print_help()
-        return 0
+        from .tui_launcher import launch_tui
+
+        return launch_tui(start_path=Path(args.root).resolve())
     print(f"{args.command}: command is registered")
     return 0
