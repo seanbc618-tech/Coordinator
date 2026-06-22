@@ -159,6 +159,20 @@ does not reconstruct progress from chat history.
 - submission handoff:
   `../handoffs/2026-06-22-phase3-codex-acceptance-submission.md`
 
+### 2026-06-22 Phase 3 Round 3 Repair
+
+- task: Round 3 audit — Ctrl+C tests were false positives
+- owner: Claude Code implementation, Codex acceptance
+- branch: `external/coordinator-global-tui`
+- commit: `f308156`
+- focused tests: Ctrl+C PTY tests with fd open, 25 PTY gates, 100 unit
+- integration head: `f308156`
+- TypeScript tests: 100 passed
+- PTY tests: 25 passed
+- status: submitted for Codex acceptance
+- submission handoff:
+  `../handoffs/2026-06-22-phase3-codex-acceptance-submission.md`
+
 ## Final Acceptance
 
 - No unresolved task branches or unreviewed commits.

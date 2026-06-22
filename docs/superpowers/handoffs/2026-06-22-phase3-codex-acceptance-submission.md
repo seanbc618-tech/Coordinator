@@ -2,22 +2,23 @@
 
 Date: 2026-06-22
 Branch: `external/coordinator-global-tui`
-Commit: `3e8333e`
-Prior rejection: `ea90313` (Round 2 blockers: test hooks in bundle, PTY keystroke automation, offline Ctrl+C)
+Commit: `f308156`
+Prior rejection: `3e8333e` (Round 3 blocker: Ctrl+C tests were false positives)
 Repair owner: Claude Code
 Review owner: Grok (adversarial re-review complete)
 Acceptance owner: Codex
 
 ## Verdict Requested
 
-Accept Phase 3 Hermes TUI at `3e8333e` and advance Wave 4.
+Accept Phase 3 Hermes TUI at `f308156` and advance Wave 4.
 
 ## Summary
 
-This commit completes the Round 2 audit items from
-`2026-06-22-phase3-codex-final-audit-round2.md`. All required verification
-commands pass. Production test hooks are removed from the bundle, PTY
-composer tests use real keystrokes, and Ctrl+C works when disconnected.
+This commit completes the Round 3 audit item from
+`2026-06-22-phase3-codex-final-audit-round3.md`. Ctrl+C PTY tests now
+keep the fd open during exit assertion, proving Ctrl+C causes the exit.
+The exit uses SIGKILL because Ink's exit handler blocks on stdin read
+during React unmount in a PTY.
 
 ## Verification Evidence
 
@@ -34,7 +35,7 @@ composer tests use real keystrokes, and Ctrl+C works when disconnected.
 Build manifest at acceptance head:
 
 - `protocol_version`: 1
-- `build_hash`: `143afd27674e04af` (sha256 of `dist/entry.js`, first 16 hex)
+- `build_hash`: `19b0499864c0ac5b` (sha256 of `dist/entry.js`, first 16 hex)
 
 ## Repair Requirement Matrix
 
@@ -43,7 +44,7 @@ Build manifest at acceptance head:
 | P1-1 | Consecutive destructive confirmation; any intervening input clears pending | `submitFlow.test.ts` (7), `composer.test.tsx` (destructive cases) | covered |
 | P1-2 | Child exit status; 120/80/50 connected+activity content | `test_tui_sigterm_exits_cleanly` (exit 143), `test_tui_renders_in_pty_*` | covered |
 | P1-3 | hello → chat.send + echo | `test_pty_types_hello_and_sends_chat` | covered |
-| P1-3 | Ctrl+C detach + supervisor ping | `test_terminal_cleanup_after_ctrl_c`, `test_sigint_exits_and_supervisor_still_responds` | covered |
+| P1-3 | Ctrl+C detach + supervisor ping | `test_terminal_cleanup_after_ctrl_c` (fd open, SIGKILL exit), `test_sigint_exits_and_supervisor_still_responds` | covered |
 | P1-3 | /shutdown once → no RPC | `test_pty_shutdown_once_sends_no_rpc` | covered |
 | P1-3 | /shutdown twice → one RPC | `test_pty_shutdown_twice_sends_one_rpc` | covered |
 | P1-3 | /shutdown, /status, /shutdown → no shutdown | `test_pty_shutdown_status_shutdown_sends_no_rpc`, `submitFlow.test.ts` | covered |
@@ -68,7 +69,7 @@ Build manifest at acceptance head:
 - Event handler: `reduceEvent(prev, event, projectId)`
 - Client-side project filter retained in `SupervisorClient`
 
-### PTY keystroke automation (Round 2)
+### PTY keystroke automation (Round 2) and Ctrl+C fix (Round 3)
 
 Production test hooks (`COORDINATOR_TUI_TEST_SUBMIT`, `COORDINATOR_TUI_TEST_UNCAUGHT`)
 have been removed from `app.tsx`. PTY composer tests now drive real keystrokes via
@@ -79,6 +80,10 @@ where multiple characters arrive as a single input event.
 The root cause of the original Ink `useInput` unreliability was React 18 batched
 updates creating stale closures. Fixed with `inputRef` and `handleSubmitRef` in
 `Composer.tsx`.
+
+Ctrl+C exits the TUI via `process.kill(process.pid, 'SIGKILL')` because Ink's
+`process.exit()` blocks on stdin read during React unmount in a PTY. The detached
+`sh` failsafe in `gracefulExit.ts` covers external SIGINT/SIGTERM signals.
 
 ### Fake Supervisor enhancements
 
@@ -117,6 +122,7 @@ updates creating stale closures. Fixed with `inputRef` and `handleSubmitRef` in
 8. `bbdab7e` fix: address Grok adversarial review findings (partial)
 9. `ea90313` fix: complete Phase 3 Gate D/E acceptance repair
 10. `3e8333e` fix: remove production test hooks and restore PTY composer paths
+11. `f308156` fix: make Ctrl+C exit work in PTY with fd kept open
 
 ## Codex Checklist
 
