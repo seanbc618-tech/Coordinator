@@ -300,12 +300,10 @@ class IdempotentLaunchTests(FirstRunMigrationTestBase):
 
 class RealSchemaVerificationTests(unittest.TestCase):
     def setUp(self) -> None:
-        if not (ROOT / "coordinator.db").exists():
-            self.skipTest("repository coordinator.db fixture unavailable")
         self._tmpdir = tempfile.TemporaryDirectory()
         self.home = Path(self._tmpdir.name) / "home"
         self.legacy = Path(self._tmpdir.name) / "legacy"
-        _copy_legacy_fixture(self.legacy, include_real_db=True)
+        _copy_legacy_fixture(self.legacy)
         self.paths = RuntimePaths(
             config_dir=self.home / "config",
             data_dir=self.home / "data",
@@ -316,7 +314,7 @@ class RealSchemaVerificationTests(unittest.TestCase):
         os.environ["COORDINATOR_HOME"] = str(self.home)
         os.environ["COORDINATOR_LEGACY_ROOT"] = str(self.legacy)
 
-        source_conn = connect(ROOT / "coordinator.db")
+        source_conn = connect(self.legacy / "coordinator.db")
         self.source_goal_count = source_conn.execute("select count(*) from goals").fetchone()[0]
         self.source_task_count = source_conn.execute("select count(*) from tasks").fetchone()[0]
         self.source_event_count = source_conn.execute("select count(*) from events").fetchone()[0]
@@ -328,6 +326,7 @@ class RealSchemaVerificationTests(unittest.TestCase):
         self.sample_artifact = dict(
             source_conn.execute("select kind, path from artifacts order by id limit 1").fetchone()
         )
+        self.legacy_db_before = (self.legacy / "coordinator.db").read_bytes()
         source_conn.close()
 
     def tearDown(self) -> None:
@@ -368,16 +367,18 @@ class RealSchemaVerificationTests(unittest.TestCase):
                 legacy_conn.close()
             events = project_list_events(conn, project_id="legacy-default")
             self.assertGreater(len(events), 0)
-            self.assertIsNone(find_project_by_path(conn, ROOT))
+            self.assertIsNone(find_project_by_path(conn, self.legacy))
 
             artifact = conn.execute(
                 "select kind, path from artifacts order by id limit 1",
             ).fetchone()
             self.assertEqual(artifact["kind"], self.sample_artifact["kind"])
             artifact_path = Path(artifact["path"])
-            if not artifact_path.is_absolute():
-                artifact_path = self.paths.data_dir / artifact_path
-            self.assertTrue(artifact_path.exists())
+            self.assertTrue(artifact_path.exists(), f"missing migrated artifact: {artifact_path}")
+            self.assertEqual(
+                (self.legacy / "coordinator.db").read_bytes(),
+                self.legacy_db_before,
+            )
         finally:
             conn.close()
 
