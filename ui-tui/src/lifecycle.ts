@@ -39,6 +39,14 @@ export function setupLifecycle(options: LifecycleOptions = {}): void {
 
   process.on('exit', cleanup)
 
+  const signalDetachOrShutdown = (code: number) => {
+    if (hasDetachHandlers()) {
+      performDetach(code)
+      return
+    }
+    shutdown(code)
+  }
+
   process.on('SIGINT', () => {
     if (hasDetachHandlers()) {
       performDetach()
@@ -47,8 +55,8 @@ export function setupLifecycle(options: LifecycleOptions = {}): void {
     shutdown(130)
   })
 
-  process.on('SIGTERM', () => shutdown(143))
-  process.on('SIGHUP', () => shutdown(129))
+  process.on('SIGTERM', () => signalDetachOrShutdown(143))
+  process.on('SIGHUP', () => signalDetachOrShutdown(129))
 
   process.on('uncaughtException', err => {
     process.stderr.write(`coordinator-tui: uncaught: ${String(err)}\n`)

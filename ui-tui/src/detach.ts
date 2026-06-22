@@ -62,9 +62,9 @@ function releaseStdoutForDetach(): void {
 
 /**
  * Detach the TUI without stopping Supervisor work.
- * Idempotent — safe to call from Ctrl+C, /quit, or SIGINT.
+ * Idempotent — safe to call from Ctrl+C, /quit, SIGINT, SIGTERM, or SIGHUP.
  */
-export function performDetach(): void {
+export function performDetach(exitCode = 0): void {
   if (detaching || !handlers) {
     return
   }
@@ -80,7 +80,7 @@ export function performDetach(): void {
   // resetTerminalModes() — its writeSync(fd, …) blocks on a full PTY
   // buffer when the master fd is unread.
   markCleanedUp()
-  process.exit(0)
+  process.exit(exitCode)
 }
 
 /** Reset for unit tests. */

@@ -403,28 +403,44 @@ class TuiPtyTests(unittest.TestCase):
             _cleanup_tui(pid, fd)
 
     def test_tui_sigterm_exits_cleanly(self) -> None:
-        """Killing TUI with SIGTERM exits within deadline with expected exit code."""
+        """SIGTERM exits within deadline with code 143 while PTY fd stays open."""
         pid, fd = _spawn_tui(self.socket_path, "proj-a")
         try:
-            _read_available(fd, timeout=1.0)
+            _wait_for_connection(fd)
             os.kill(pid, signal.SIGTERM)
-            time.sleep(1.0)
+            exit_code = _wait_for_exit(pid, time.time() + 10)
+            if exit_code is None:
+                self.fail("TUI did not exit after SIGTERM (PTY fd kept open)")
+            self.assertEqual(exit_code, 143, f"Expected SIGTERM exit code 143, got {exit_code}")
+            self.assertNotEqual(exit_code, -9, "SIGKILL must not be used for detach")
+            _assert_pty_terminal_restored(fd)
+        finally:
             try:
                 os.close(fd)
             except OSError:
                 pass
-            deadline = time.time() + 5
-            exit_code = _wait_for_exit(pid, deadline)
-            if exit_code is None:
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                    os.waitpid(pid, 0)
-                except (ProcessLookupError, ChildProcessError):
-                    pass
-                self.fail("TUI did not exit after SIGTERM within deadline")
-            self.assertEqual(exit_code, 143, f"Expected SIGTERM exit code 143, got {exit_code}")
+            try:
+                os.waitpid(pid, 0)
+            except ChildProcessError:
+                pass
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            sock.connect(self.socket_path)
+            msg = json.dumps({
+                "type": "request",
+                "protocol_version": 1,
+                "request_id": "ping-after-sigterm",
+                "project_id": "proj-a",
+                "method": "system.ping",
+                "params": {},
+            }) + "\n"
+            sock.sendall(msg.encode())
+            sock.settimeout(2)
+            data = sock.recv(4096).decode()
+            resp = json.loads([l for l in data.split("\n") if l.strip()][0])
+            self.assertTrue(resp["ok"], "Supervisor ping failed after SIGTERM detach")
         finally:
-            pass
+            sock.close()
 
     def test_tui_no_args_exits_with_usage(self) -> None:
         """TUI exits with usage message when invoked with no args."""
@@ -918,24 +934,84 @@ class TuiPtyTests(unittest.TestCase):
         self.assertEqual(manifest["build_hash"], expected)
 
     def test_terminal_cleanup_after_sigterm(self) -> None:
-        """Terminal cleanup (no hang) after SIGTERM."""
-        pid, fd = _spawn_tui(self.socket_path, "proj-a", cols=80, rows=24)
+        """SIGTERM exits cleanly with PTY fd open; terminal flags restored."""
+        pid, fd = _spawn_tui(self.socket_path, "proj-a")
         try:
             _wait_for_connection(fd)
             os.kill(pid, signal.SIGTERM)
-            time.sleep(1.0)
+            exit_code = _wait_for_exit(pid, time.time() + 10)
+            if exit_code is None:
+                self.fail("TUI did not exit after SIGTERM (PTY fd kept open)")
+            self.assertEqual(exit_code, 143, f"Expected SIGTERM exit code 143, got {exit_code}")
+            self.assertNotEqual(exit_code, -9, "SIGKILL must not be used for detach")
+            _assert_pty_terminal_restored(fd)
+        finally:
             try:
                 os.close(fd)
             except OSError:
                 pass
             try:
-                _, status = os.waitpid(pid, 0)
-                self.assertTrue(os.WIFEXITED(status) or os.WIFSIGNALED(status),
-                                f"Unexpected status after SIGTERM: {status}")
+                os.waitpid(pid, 0)
             except ChildProcessError:
                 pass
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            sock.connect(self.socket_path)
+            msg = json.dumps({
+                "type": "request",
+                "protocol_version": 1,
+                "request_id": "ping-after-sigterm-cleanup",
+                "project_id": "proj-a",
+                "method": "system.ping",
+                "params": {},
+            }) + "\n"
+            sock.sendall(msg.encode())
+            sock.settimeout(2)
+            data = sock.recv(4096).decode()
+            resp = json.loads([l for l in data.split("\n") if l.strip()][0])
+            self.assertTrue(resp["ok"], "Supervisor ping failed after SIGTERM detach")
         finally:
-            pass
+            sock.close()
+
+    def test_terminal_cleanup_after_sighup(self) -> None:
+        """SIGHUP exits cleanly with PTY fd open; terminal flags restored."""
+        pid, fd = _spawn_tui(self.socket_path, "proj-a")
+        try:
+            _wait_for_connection(fd)
+            os.kill(pid, signal.SIGHUP)
+            exit_code = _wait_for_exit(pid, time.time() + 10)
+            if exit_code is None:
+                self.fail("TUI did not exit after SIGHUP (PTY fd kept open)")
+            self.assertEqual(exit_code, 129, f"Expected SIGHUP exit code 129, got {exit_code}")
+            self.assertNotEqual(exit_code, -9, "SIGKILL must not be used for detach")
+            _assert_pty_terminal_restored(fd)
+        finally:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                os.waitpid(pid, 0)
+            except ChildProcessError:
+                pass
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            sock.connect(self.socket_path)
+            msg = json.dumps({
+                "type": "request",
+                "protocol_version": 1,
+                "request_id": "ping-after-sighup",
+                "project_id": "proj-a",
+                "method": "system.ping",
+                "params": {},
+            }) + "\n"
+            sock.sendall(msg.encode())
+            sock.settimeout(2)
+            data = sock.recv(4096).decode()
+            resp = json.loads([l for l in data.split("\n") if l.strip()][0])
+            self.assertTrue(resp["ok"], "Supervisor ping failed after SIGHUP detach")
+        finally:
+            sock.close()
 
     def test_foreign_event_does_not_enter_transcript(self) -> None:
         """Foreign-project event cannot enter transcript or activity state.
