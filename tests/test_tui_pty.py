@@ -69,6 +69,22 @@ def _read_available(fd: int, timeout: float = 2.0) -> str:
     return b"".join(chunks).decode("utf-8", errors="replace")
 
 
+def _pty_term_flags(fd: int) -> tuple[bool, bool]:
+    """Return (ICANON, ECHO) for the PTY slave line discipline."""
+    attrs = termios.tcgetattr(fd)
+    lflag = attrs[3]
+    return bool(lflag & termios.ICANON), bool(lflag & termios.ECHO)
+
+
+def _assert_pty_terminal_restored(fd: int) -> None:
+    """Assert canonical mode and echo are restored on the PTY."""
+    icanon, echo = _pty_term_flags(fd)
+    if not icanon:
+        raise AssertionError("ICANON not restored after detach")
+    if not echo:
+        raise AssertionError("ECHO not restored after detach")
+
+
 def _wait_for_exit(pid: int, deadline: float) -> int | None:
     """Wait for pid to exit before deadline. Returns exit code or None."""
     while time.time() < deadline:
@@ -90,8 +106,8 @@ def _spawn_tui(
     socket_path: str,
     project_id: str,
     *,
-    cols: int = 120,
-    rows: int = 40,
+    cols: int = 0,
+    rows: int = 0,
 ):
     """Spawn the TUI in a real pseudo-terminal.
 
@@ -99,9 +115,6 @@ def _spawn_tui(
     """
     env = {**os.environ, "NO_COLOR": "1", "TERM": "xterm-256color"}
     master_fd, slave_fd = pty.openpty()
-
-    winsize = struct.pack("HHHH", rows, cols, 0, 0)
-    fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, winsize)
 
     pid = os.fork()
     if pid == 0:
@@ -115,6 +128,13 @@ def _spawn_tui(
         os._exit(1)
 
     os.close(slave_fd)
+
+    # Apply size on the master after the child is running. Pre-fork TIOCSWINSZ on
+    # the slave leaves detach blocked on macOS when the PTY master is unread.
+    if cols > 0 and rows > 0:
+        _resize_pty(master_fd, cols, rows)
+        time.sleep(0.1)
+
     return pid, master_fd
 
 
@@ -251,6 +271,9 @@ def _type_enter_and_wait(fd: int, timeout: float = 5.0) -> None:
 
 def _type_ctrl_c(fd: int) -> None:
     """Press Ctrl+C."""
+    # Drain pending frames so the child event loop can read the byte; an unread
+    # PTY master otherwise blocks stdout and stalls detach.
+    _drain_pty(fd, quiet_time=0.2)
     os.write(fd, b"\x03")
     time.sleep(0.1)
 
@@ -782,28 +805,17 @@ class TuiPtyTests(unittest.TestCase):
             self.server.stop_work()
 
     def test_terminal_cleanup_after_ctrl_c(self) -> None:
-        """Ctrl+C exits TUI while PTY fd is open; Supervisor still responds.
-
-        Regression: closing the PTY fd before waiting for exit masks the
-        real Ctrl+C behavior. The fd must remain open so the exit is
-        caused solely by the Ctrl+C path.
-        """
-        pid, fd = _spawn_tui(self.socket_path, "proj-a", cols=80, rows=24)
+        """Ctrl+C exits cleanly with PTY fd open; terminal flags restored."""
+        pid, fd = _spawn_tui(self.socket_path, "proj-a")
         try:
             _wait_for_connection(fd)
             _type_ctrl_c(fd)
-            # Wait for exit with PTY fd OPEN — proves Ctrl+C caused the exit.
             exit_code = _wait_for_exit(pid, time.time() + 10)
             if exit_code is None:
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                    os.waitpid(pid, 0)
-                except (ProcessLookupError, ChildProcessError):
-                    pass
                 self.fail("TUI did not exit after Ctrl+C (PTY fd kept open)")
-            # Accept 0 (clean exit), 130 (SIGINT), or -9 (SIGKILL failsafe)
-            self.assertIn(exit_code, (0, 130, -9),
-                          f"Unexpected exit code after Ctrl+C: {exit_code}")
+            self.assertEqual(exit_code, 0, f"Expected clean exit 0 after Ctrl+C, got {exit_code}")
+            self.assertNotEqual(exit_code, -9, "SIGKILL must not be used for detach")
+            _assert_pty_terminal_restored(fd)
         finally:
             try:
                 os.close(fd)
@@ -833,31 +845,18 @@ class TuiPtyTests(unittest.TestCase):
             sock.close()
 
     def test_ctrl_c_when_disconnected_exits_promptly(self) -> None:
-        """Ctrl+C exits TUI when Supervisor socket is unavailable.
-
-        Regression: the fd must remain open so the exit is caused solely
-        by Ctrl+C, not by PTY fd closure.
-        """
+        """Ctrl+C exits cleanly when Supervisor socket is unavailable."""
         bogus_path = os.path.join(self.tmp_dir, "nonexistent.sock")
-        pid, fd = _spawn_tui(bogus_path, "proj-a", cols=80, rows=24)
+        pid, fd = _spawn_tui(bogus_path, "proj-a")
         try:
-            # Wait for TUI to start and Ink's stdin setup to complete.
-            # In disconnected state the TUI still renders the Composer,
-            # but Ink needs time to attach the readable listener.
             _read_available(fd, timeout=5.0)
             _type_ctrl_c(fd)
-            # Wait for exit with PTY fd OPEN.
             exit_code = _wait_for_exit(pid, time.time() + 10)
             if exit_code is None:
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                    os.waitpid(pid, 0)
-                except (ProcessLookupError, ChildProcessError):
-                    pass
                 self.fail("TUI did not exit after Ctrl+C while disconnected (PTY fd kept open)")
-            # Accept 0 (clean exit), 130 (SIGINT), or -9 (SIGKILL failsafe)
-            self.assertIn(exit_code, (0, 130, -9),
-                          f"Unexpected exit code after Ctrl+C: {exit_code}")
+            self.assertEqual(exit_code, 0, f"Expected clean exit 0, got {exit_code}")
+            self.assertNotEqual(exit_code, -9, "SIGKILL must not be used for detach")
+            _assert_pty_terminal_restored(fd)
         finally:
             try:
                 os.close(fd)
@@ -867,6 +866,48 @@ class TuiPtyTests(unittest.TestCase):
                 os.waitpid(pid, 0)
             except ChildProcessError:
                 pass
+
+    def test_pty_quit_exits_cleanly(self) -> None:
+        """Type /quit + Enter; clean exit with PTY fd open and terminal restored."""
+        pid, fd = _spawn_tui(self.socket_path, "proj-a")
+        try:
+            _wait_for_connection(fd)
+            _read_available(fd, timeout=0.5)
+            _type_string_and_wait(fd, "/quit")
+            _type_enter_and_wait(fd)
+            exit_code = _wait_for_exit(pid, time.time() + 10)
+            if exit_code is None:
+                self.fail("TUI did not exit after /quit (PTY fd kept open)")
+            self.assertEqual(exit_code, 0, f"Expected clean exit 0 after /quit, got {exit_code}")
+            self.assertNotEqual(exit_code, -9, "SIGKILL must not be used for detach")
+            _assert_pty_terminal_restored(fd)
+        finally:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                os.waitpid(pid, 0)
+            except ChildProcessError:
+                pass
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            sock.connect(self.socket_path)
+            msg = json.dumps({
+                "type": "request",
+                "protocol_version": 1,
+                "request_id": "ping-after-quit",
+                "project_id": "proj-a",
+                "method": "system.ping",
+                "params": {},
+            }) + "\n"
+            sock.sendall(msg.encode())
+            sock.settimeout(2)
+            data = sock.recv(4096).decode()
+            resp = json.loads([l for l in data.split("\n") if l.strip()][0])
+            self.assertTrue(resp["ok"], "Supervisor ping failed after /quit detach")
+        finally:
+            sock.close()
 
     def test_manifest_build_hash_matches_bundle(self) -> None:
         """manifest build_hash matches the bundled entry.js content."""

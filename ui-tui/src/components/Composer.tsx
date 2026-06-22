@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef } from 'react'
-import { Box, Text, useInput, useApp } from 'ink'
+import { Box, Text, useInput } from 'ink'
 import { completePartial } from '../slash.js'
 import { InputHistory } from '../inputHistory.js'
 
@@ -13,7 +13,6 @@ export function Composer({ onSubmit, onDetach, disabled = false }: ComposerProps
   const [input, setInput] = useState('')
   const [completions, setCompletions] = useState<string[]>([])
   const [history] = useState(() => new InputHistory())
-  const { exit } = useApp()
 
   // Ref mirrors state so useInput callbacks always read the latest input,
   // avoiding stale closures when React 18 batches rapid setInput calls.

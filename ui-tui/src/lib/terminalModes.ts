@@ -28,6 +28,9 @@ type ResettableStream = Pick<NodeJS.WriteStream, 'isTTY' | 'write'> & {
 }
 
 export function resetTerminalModes(stream: ResettableStream = process.stdout): boolean {
+  if ('destroyed' in stream && stream.destroyed) {
+    return false
+  }
   if (!stream.isTTY) {
     return false
   }

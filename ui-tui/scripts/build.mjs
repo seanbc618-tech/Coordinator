@@ -15,6 +15,16 @@ const out = resolve(distDir, 'entry.js')
 
 mkdirSync(distDir, { recursive: true })
 
+// Resolve Ink internals (e.g. instances registry) not listed in package exports.
+const resolveInkInternals = {
+  name: 'resolve-ink-internals',
+  setup(b) {
+    b.onResolve({ filter: /^ink\/build\// }, args => ({
+      path: resolve(root, 'node_modules', args.path),
+    }))
+  },
+}
+
 // Stub out react-devtools-core — only used in Ink dev mode.
 const stubDevtools = {
   name: 'stub-react-devtools-core',
@@ -40,7 +50,7 @@ await build({
   sourcemap: true,
   jsx: 'automatic',
   jsxImportSource: 'react',
-  plugins: [stubDevtools],
+  plugins: [resolveInkInternals, stubDevtools],
   banner: {
     js: "import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);"
   },

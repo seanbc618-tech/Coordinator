@@ -2,7 +2,8 @@
 // Adapted from Hermes Agent (MIT) by Nous Research.
 // See THIRD_PARTY_NOTICES.md for attribution.
 
-import { setupGracefulExit } from './lib/gracefulExit.js'
+import { registerInkUnmount } from './detach.js'
+import { setupLifecycle } from './lifecycle.js'
 import { resetTerminalModes } from './lib/terminalModes.js'
 
 export interface AppOptions {
@@ -24,30 +25,34 @@ export function createApp(options: AppOptions) {
       const { render } = await import('ink')
       const { App } = await import('./app.js')
 
-      setupGracefulExit({
-        cleanups: [
-          () => {
-            resetTerminalModes()
-          },
-        ],
-        onError: (_scope, err) => {
-          const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err)
-          process.stderr.write(`coordinator-tui: ${message}\n`)
-        },
-        onSignal: signal => {
-          resetTerminalModes()
-          process.stderr.write(`coordinator-tui: received ${signal}\n`)
-          // Hard-kill failsafe: if Ink's cleanup (stdin read during React
-          // unmount) blocks the graceful exit, force-terminate after 1s.
-          // SIGKILL bypasses all exit handlers.
-          setTimeout(() => {
-            process.kill(process.pid, 'SIGKILL')
-          }, 1000).unref()
-        },
+      setupLifecycle()
+
+      const instance = render(<App socketPath={socketPath} projectId={projectId} />, {
+        exitOnCtrlC: false,
       })
 
-      render(<App socketPath={socketPath} projectId={projectId} />, {
-        exitOnCtrlC: false,
+      registerInkUnmount(() => {
+        const instances = require('ink/build/instances.js').default as WeakMap<
+          NodeJS.WriteStream,
+          { isUnmounted: boolean; unmount: (error?: unknown) => void }
+        >
+        const ink = instances.get(process.stdout)
+        if (ink && !ink.isUnmounted) {
+          ink.unmount(null)
+        }
+      })
+
+      void instance.waitUntilExit().then(() => {
+        if (!process.stdout.destroyed) {
+          resetTerminalModes()
+        }
+        process.exit(0)
+      }).catch(err => {
+        process.stderr.write(`coordinator-tui: exit error: ${String(err)}\n`)
+        if (!process.stdout.destroyed) {
+          resetTerminalModes()
+        }
+        process.exit(1)
       })
     },
   }
@@ -71,7 +76,6 @@ if (process.argv[1] && !process.env.VITEST) {
 
   // Terminal cleanup
   resetTerminalModes()
-  process.on('exit', () => { resetTerminalModes() })
   process.stdout.write('\x1b[2J\x1b[H\x1b[3J')
 
   const app = createApp({ socketPath, projectId })

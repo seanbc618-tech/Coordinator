@@ -18,8 +18,8 @@ import {
 } from './store.js'
 import { AppLayout } from './components/AppLayout.js'
 import { Composer } from './components/Composer.js'
-import { setupLifecycle } from './lifecycle.js'
 import { decideSubmit } from './submitDecision.js'
+import { performDetach, registerDetachHandlers } from './detach.js'
 import type { TuiState } from './domain.js'
 import type { EventEnvelope } from './protocol.js'
 
@@ -43,13 +43,11 @@ export function App({ socketPath, projectId }: AppProps) {
   // null = no pending; string = command name awaiting re-entry.
   const pendingDestructiveRef = useRef<string | null>(null)
 
-  // Set up lifecycle cleanup
   useEffect(() => {
-    setupLifecycle({
-      onCleanup: () => {
-        client.close()
-      },
+    registerDetachHandlers({
+      closeClient: () => client.close(),
     })
+    return () => registerDetachHandlers(null)
   }, [client])
 
   // Connect and subscribe
@@ -101,8 +99,7 @@ export function App({ socketPath, projectId }: AppProps) {
 
     switch (decision.action) {
       case 'quit':
-        client.close()
-        process.exit(0)
+        performDetach()
         return
 
       case 'destructive-confirmed':
@@ -144,15 +141,8 @@ export function App({ socketPath, projectId }: AppProps) {
   }, [client])
 
   const handleDetach = useCallback(() => {
-    client.close()
-    // process.exit() blocks when Ink's 'exit' handler reads stdin
-    // during React unmount in a PTY. SIGKILL bypasses all handlers.
-    try {
-      process.kill(process.pid, 'SIGKILL')
-    } catch {
-      // already dead
-    }
-  }, [client])
+    performDetach()
+  }, [])
 
   return (
     <Box flexDirection="column" width="100%" height="100%">

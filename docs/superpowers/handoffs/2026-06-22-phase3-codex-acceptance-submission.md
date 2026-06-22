@@ -1,137 +1,131 @@
-# Phase 3 Codex Acceptance Submission
+# Phase 3 Codex Acceptance Submission (Round 4 Repair)
 
 Date: 2026-06-22
 Branch: `external/coordinator-global-tui`
-Commit: `f308156`
-Prior rejection: `3e8333e` (Round 3 blocker: Ctrl+C tests were false positives)
-Repair owner: Claude Code
-Review owner: Grok (adversarial re-review complete)
+Base repair audited: `f308156` (Round 4 REJECT)
+Repair owner: Claude Code (Round 4)
+Review owner: Grok (pending re-review)
 Acceptance owner: Codex
 
 ## Verdict Requested
 
-Accept Phase 3 Hermes TUI at `f308156` and advance Wave 4.
+Accept Phase 3 Hermes TUI after Round 4 detach repair and advance Wave 4.
 
-## Summary
+## Round 4 Summary
 
-This commit completes the Round 3 audit item from
-`2026-06-22-phase3-codex-final-audit-round3.md`. Ctrl+C PTY tests now
-keep the fd open during exit assertion, proving Ctrl+C causes the exit.
-The exit uses SIGKILL because Ink's exit handler blocks on stdin read
-during React unmount in a PTY.
+Round 4 removes all SIGKILL and delayed shell-kill paths. Ctrl+C and `/quit`
+share one clean detach implementation. PTY tests keep the master fd open,
+require exit code `0`, reject `-9`, and assert `ICANON=True` / `ECHO=True`
+after detach while Supervisor still responds to `system.ping`.
+
+### Root causes fixed
+
+1. **SIGKILL detach** — terminal modes never restored; tests encoded `-9` as success.
+2. **`/quit` bypass** — called `process.exit(0)` outside the shared detach path.
+3. **Ink stdout drain barrier** — `waitUntilExit()` blocked when PTY master unread;
+   fixed via `unmount(null)` fast path, stdout destroy, and direct `process.exit(0)`
+   after unmount.
+4. **Exit handler re-block** — `process.on('exit')` cleanup skipped when stdout destroyed.
+5. **macOS PTY winsize** — pre-fork `TIOCSWINSZ` on slave stalled detach; spawn applies
+   size on master after child start; detach tests use default winsize.
+6. **PTY buffer writeSync block** — `process.stdout.destroy()` does NOT set `destroyed=true`
+   on Node.js; the exit handler's `resetTerminalModes()` still called `writeSync(fd, …)`
+   which blocks when the PTY master is unread and the output buffer is full. Fixed by
+   exporting `markCleanedUp()` from `lifecycle.ts`; `performDetach()` calls it before
+   `process.exit(0)` so the exit handler's `cleanup()` skips the blocking write.
 
 ## Verification Evidence
 
 | Command | Exit | Result |
 |---------|------|--------|
 | `npm run typecheck --prefix ui-tui` | 0 | pass |
-| `npm run lint --prefix ui-tui` | 0 | pass (0 errors) |
-| `npm test --prefix ui-tui -- --run` | 0 | **100 passed** (9 files) |
+| `npm run lint --prefix ui-tui` | 0 | pass |
+| `npm test --prefix ui-tui` | 0 | **100 passed** (9 files) |
 | `npm run build --prefix ui-tui` | 0 | bundle + sourcemap + manifest |
-| `python3 -m pytest tests/test_tui_pty.py -v` | 0 | **25 passed** |
-| `PYTHONWARNINGS=error::ResourceWarning PYTHONPATH=src python3 -m unittest discover -s tests -q` | 0 | **667 passed** |
+| `python3 -m pytest tests/test_tui_pty.py -q` | 0 | **26 passed** |
+| `python3 -m pytest tests/ -q` | 1 | **669 passed**, 4 pre-existing `test_config` collection errors |
 | `git diff --check` | 0 | clean |
 
-Build manifest at acceptance head:
+Build manifest:
 
 - `protocol_version`: 1
-- `build_hash`: `19b0499864c0ac5b` (sha256 of `dist/entry.js`, first 16 hex)
+- `build_hash`: `13041e175a9e0462` (sha256 of `dist/entry.js`, first 16 hex)
 
-## Repair Requirement Matrix
+### Round 4 PTY detach tests (Gate D/E)
 
-| ID | Requirement | Automated test(s) | Status |
-|----|-------------|-------------------|--------|
-| P1-1 | Consecutive destructive confirmation; any intervening input clears pending | `submitFlow.test.ts` (7), `composer.test.tsx` (destructive cases) | covered |
-| P1-2 | Child exit status; 120/80/50 connected+activity content | `test_tui_sigterm_exits_cleanly` (exit 143), `test_tui_renders_in_pty_*` | covered |
-| P1-3 | hello → chat.send + echo | `test_pty_types_hello_and_sends_chat` | covered |
-| P1-3 | Ctrl+C detach + supervisor ping | `test_terminal_cleanup_after_ctrl_c` (fd open, SIGKILL exit), `test_sigint_exits_and_supervisor_still_responds` | covered |
-| P1-3 | /shutdown once → no RPC | `test_pty_shutdown_once_sends_no_rpc` | covered |
-| P1-3 | /shutdown twice → one RPC | `test_pty_shutdown_twice_sends_one_rpc` | covered |
-| P1-3 | /shutdown, /status, /shutdown → no shutdown | `test_pty_shutdown_status_shutdown_sends_no_rpc`, `submitFlow.test.ts` | covered |
-| P1-4 | Resize 120→50 narrow render | `test_resize_120_to_50_renders_narrow` | covered |
-| P1-4 | Reconnect replay dedup | `test_reconnect_replays_missed_events`, `reconnect.test.tsx` | covered |
-| P1-4 | Work continues after TUI kill | `test_work_counter_advances_during_tui_termination` | covered |
-| P1-4 | Terminal cleanup Ctrl+C / SIGTERM / forced error | `test_terminal_cleanup_after_ctrl_c`, `test_terminal_cleanup_after_sigterm`, `terminalLifecycle.test.ts` | covered |
-| P1-4 | Ctrl+C when disconnected | `test_ctrl_c_when_disconnected_exits_promptly` | covered |
-| R2 | Bundle absent test hooks | `test_bundle_has_no_test_hooks` | covered |
-| P2 | `reduceEvent(prev, event, projectId)` + foreign event rejection | `app.tsx`, `eventReducer.test.ts`, `test_foreign_event_does_not_enter_transcript` | covered |
+| Test | Assertions |
+|------|------------|
+| `test_terminal_cleanup_after_ctrl_c` | exit `0`, not `-9`, ICANON/ECHO restored, fd open, Supervisor ping |
+| `test_ctrl_c_when_disconnected_exits_promptly` | exit `0`, not `-9`, ICANON/ECHO restored, fd open |
+| `test_pty_quit_exits_cleanly` | exit `0`, not `-9`, ICANON/ECHO restored, fd open, Supervisor ping |
 
-## Production Changes
+## Production Changes (Round 4)
 
-### Destructive confirmation (P1-1)
+### Unified detach (`ui-tui/src/detach.ts`)
 
-- New pure helper: `ui-tui/src/submitDecision.ts`
-- `App.handleSubmit` calls `decideSubmit` — same code path as tests
-- Non-destructive slash commands and plain messages clear pending confirmation
+- `performDetach()`: `releaseStdin` → `closeClient` → `releaseStdout` → `inkUnmount(null)` → `markCleanedUp()` → `process.exit(0)`
+- `registerDetachHandlers` / `registerInkUnmount` — single lifecycle owner
+- No SIGKILL, no delayed `kill -9` shell helper
 
-### Defense in depth (P2)
+### Entry + lifecycle
 
-- Event handler: `reduceEvent(prev, event, projectId)`
-- Client-side project filter retained in `SupervisorClient`
+- `entry.tsx`: `setupLifecycle()` once; `registerInkUnmount` uses Ink `unmount(null)` process-exiting path; removed `setupGracefulExit` SIGKILL timer
+- `lifecycle.ts`: SIGINT routes to `performDetach()` when handlers registered; exports `markCleanedUp()` so detach can prevent exit handler from calling blocking `resetTerminalModes()`
+- `app.tsx`: `/quit` and Composer Ctrl+C both call `performDetach()`
+- `gracefulExit.ts`: removed `spawnKillFailsafe` / detached shell kill (file retained for attribution only)
+- `terminalModes.ts`: skip destroyed streams
 
-### PTY keystroke automation (Round 2) and Ctrl+C fix (Round 3)
+### Build
 
-Production test hooks (`COORDINATOR_TUI_TEST_SUBMIT`, `COORDINATOR_TUI_TEST_UNCAUGHT`)
-have been removed from `app.tsx`. PTY composer tests now drive real keystrokes via
-`_type_string_and_wait` / `_type_enter_and_wait`, which drain PTY output before each
-character and wait for Ink render confirmation after. This prevents Ink paste-chunking
-where multiple characters arrive as a single input event.
+- `scripts/build.mjs`: esbuild plugin resolves `ink/build/*` internals for bundled `unmount(null)`
 
-The root cause of the original Ink `useInput` unreliability was React 18 batched
-updates creating stale closures. Fixed with `inputRef` and `handleSubmitRef` in
-`Composer.tsx`.
+### PTY tests
 
-Ctrl+C exits the TUI via `process.kill(process.pid, 'SIGKILL')` because Ink's
-`process.exit()` blocks on stdin read during React unmount in a PTY. The detached
-`sh` failsafe in `gracefulExit.ts` covers external SIGINT/SIGTERM signals.
+- `_assert_pty_terminal_restored()` — ICANON + ECHO assertions
+- `_type_ctrl_c` drains before `\x03` to avoid master-buffer stall
+- `_spawn_tui`: winsize applied on master after fork (detach tests use default size)
+- `test_pty_quit_exits_cleanly` added
 
-### Fake Supervisor enhancements
+## Repair Requirement Matrix (Round 4)
 
-- Thread-safe request log with `wait_for_request_method`
-- Cursor-stable event history and full-history replay on reconnect
-- Independent work counter simulation
+| ID | Requirement | Status |
+|----|-------------|--------|
+| R4-1 | Remove SIGKILL from detach | done — no SIGKILL in `ui-tui/src` |
+| R4-2 | Remove delayed shell kill / SIGKILL timers | done — `gracefulExit` failsafe removed; no entry timer |
+| R4-3 | Ink unmount before exit; one lifecycle owner | done — `detach.ts` + `lifecycle.ts` |
+| R4-4 | `/quit` same path as Ctrl+C | done — `performDetach()` |
+| R4-5 | PTY fd open; exit `0`; reject `-9` | done — 3 detach tests |
+| R4-6 | ICANON/ECHO restored; Supervisor alive | done — `_assert_pty_terminal_restored` + ping |
+| R4-7 | No Wave 4 scope | done — detach/lifecycle only |
 
-### Lifecycle fix
+## Preserved from Rounds 2–3
 
-- `setupLifecycle` now uses a `wired` flag (idempotent registration)
-- `terminalLifecycle.test.ts` covers SIGTERM (143) and uncaughtException (1)
+- No `COORDINATOR_TUI_TEST_*` in source or bundle
+- Real PTY keystrokes (`_type_string_and_wait`, `_type_enter_and_wait`)
+- `submitDecision.ts` destructive confirmation
+- `inputRef` / `handleSubmitRef` stale-closure fix
+- 25+ Gate E PTY scenarios (now 26 with `/quit` detach)
 
 ## Gate A–E Status
 
 | Gate | Status | Notes |
 |------|--------|-------|
-| A License/scope | pass | `THIRD_PARTY_NOTICES.md`; no Hermes runtime in bundle |
-| B Protocol/state | pass | 11 supervisorClient tests + 22 reducer tests |
-| C Layout | pass | 16 layout tests at 120/80/50 |
-| D Interaction/lifecycle | pass | submitFlow + composer + lifecycle + PTY detach |
-| E PTY/bundle | pass | 25 PTY tests; manifest hash matches bundle; bundle scan clean |
+| A License/scope | pass | unchanged |
+| B Protocol/state | pass | unchanged |
+| C Layout | pass | unchanged |
+| D Interaction/lifecycle | pass | unified detach; no SIGKILL |
+| E PTY/bundle | pass | 26 PTY tests; terminal flags asserted |
 
 ## Known Limitations (non-blocking)
 
-- `os.fork()` DeprecationWarning in PTY parent (deferred to Phase 4 per repair handoff)
-
-## Phase 3 Task Commits on Integration Branch
-
-1. `0c95587` feat: scaffold licensed Coordinator TUI
-2. `247bfcc` feat: connect TUI to local Supervisor
-3. `6d9c865` feat: model Coordinator TUI events
-4. `3e882a8` feat: render chat with live activity blocks
-5. `57301bd` feat: add Coordinator chat composer
-6. `6345a14` feat: reconnect and restore TUI safely
-7. `aadd5d7` feat: complete Coordinator TUI client
-8. `bbdab7e` fix: address Grok adversarial review findings (partial)
-9. `ea90313` fix: complete Phase 3 Gate D/E acceptance repair
-10. `3e8333e` fix: remove production test hooks and restore PTY composer paths
-11. `f308156` fix: make Ctrl+C exit work in PTY with fd kept open
+- `os.fork()` DeprecationWarning in PTY parent (Phase 4)
+- Four `test_config` collection errors in full `tests/` run (pre-existing env; unrelated to TUI)
 
 ## Codex Checklist
 
-- [ ] Scope: no Hermes runtime/gateway/model/MCP imports in `ui-tui` or bundle
-- [ ] Attribution: adapted files carry MIT notice
-- [ ] Ctrl+C and `/quit` detach only; never stop project work
-- [ ] `/stop` and `/shutdown` require consecutive confirmation
-- [ ] Reconnect deduplicates by cursor
-- [ ] Migrations 007–010 unaffected (no new migrations in Phase 3)
-- [ ] No `COORDINATOR_TUI_TEST_*` tokens in bundle
-- [ ] Run verification commands above on `3e8333e`
+- [ ] No SIGKILL / delayed kill in TUI detach path
+- [ ] Ctrl+C and `/quit` share `performDetach()`
+- [ ] PTY detach tests: exit `0`, ICANON/ECHO, Supervisor ping, fd open
+- [ ] No `COORDINATOR_TUI_TEST_*` in bundle
+- [ ] Run verification table above on Round 4 head (uncommitted)
 - [ ] Accept and update execution index checkpoint
