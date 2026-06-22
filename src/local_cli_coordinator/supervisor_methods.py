@@ -8,17 +8,61 @@ shared sets. Event subscribers receive live events via the shared broker.
 from __future__ import annotations
 
 import queue
+import subprocess
 import uuid
+from pathlib import Path
 from typing import Any, Callable
 import sqlite3
 
 from .db import project_task_counts, project_list_tasks
+from .projects import ProjectDraft, inspect_project, register_project
 from .supervisor_events import EventBroker
 from .supervisor_protocol import (
     PROTOCOL_VERSION,
     RequestEnvelope,
     ResponseEnvelope,
 )
+
+DEFAULT_ALLOW_PUSH = False
+DEFAULT_MERGE_POLICY = "no_push"
+DEFAULT_REVIEW_POLICY = "full_review"
+DEFAULT_MAX_TASKS_PER_DAY = 24
+DEFAULT_MAX_TASK_RUNTIME_SECONDS = 1800
+
+
+def _git_root_identity(repo_root: Path) -> str | None:
+    """Return a stable identity for a repository based on its root commit."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-list", "--max-parents=0", "HEAD"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return None
+
+
+def _find_moved_project(
+    conn: sqlite3.Connection,
+    draft: ProjectDraft,
+) -> sqlite3.Row | None:
+    identity = _git_root_identity(draft.canonical_path)
+    if identity is None:
+        return None
+
+    canonical = str(draft.canonical_path)
+    for row in conn.execute("select id, canonical_path from projects"):
+        if row["canonical_path"] == canonical:
+            continue
+        stored_identity = _git_root_identity(Path(row["canonical_path"]))
+        if stored_identity == identity:
+            return row
+    return None
 
 
 class SupervisorMethods:
@@ -37,6 +81,8 @@ class SupervisorMethods:
         self._subscriptions: dict[str, int] = {}  # sub_id → broker token
         self._handlers: dict[str, Callable] = {
             "project.status": self._handle_project_status,
+            "project.inspect": self._handle_project_inspect,
+            "project.register": self._handle_project_register,
             "chat.send": self._handle_chat_send,
             "project.pause": self._handle_project_pause,
             "project.resume": self._handle_project_resume,
@@ -73,6 +119,136 @@ class SupervisorMethods:
                 error=f"unsupported method {request.method!r}",
             )
         return handler(conn, request)
+
+    @staticmethod
+    def _inspect_result(
+        draft: ProjectDraft,
+        *,
+        registered: bool = False,
+        project_id: str | None = None,
+        path_changed: bool = False,
+        stored_canonical_path: str | None = None,
+    ) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "canonical_path": str(draft.canonical_path),
+            "repo_id": draft.repo_id,
+            "default_branch": draft.default_branch,
+            "branch_prefix": draft.branch_prefix,
+            "verify_commands": list(draft.verify_commands),
+            "allow_push": DEFAULT_ALLOW_PUSH,
+            "merge_policy": DEFAULT_MERGE_POLICY,
+            "review_policy": DEFAULT_REVIEW_POLICY,
+            "max_tasks_per_day": DEFAULT_MAX_TASKS_PER_DAY,
+            "max_task_runtime_seconds": DEFAULT_MAX_TASK_RUNTIME_SECONDS,
+            "registered": registered,
+            "path_changed": path_changed,
+        }
+        if project_id is not None:
+            result["project_id"] = project_id
+        if stored_canonical_path is not None:
+            result["stored_canonical_path"] = stored_canonical_path
+        return result
+
+    def _handle_project_inspect(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        """Return an inspected project draft without writing to the registry."""
+        path = request.params.get("path")
+        if not isinstance(path, str) or not path.strip():
+            return self._error(request, "path is required")
+
+        try:
+            draft = inspect_project(Path(path))
+        except ValueError as exc:
+            return self._error(request, str(exc))
+
+        canonical = str(draft.canonical_path)
+        row = conn.execute(
+            "select id, canonical_path from projects where canonical_path = ?",
+            (canonical,),
+        ).fetchone()
+        if row is not None:
+            return self._ok(
+                request,
+                self._inspect_result(
+                    draft,
+                    registered=True,
+                    project_id=row["id"],
+                    path_changed=False,
+                ),
+            )
+
+        moved = _find_moved_project(conn, draft)
+        if moved is not None:
+            return self._ok(
+                request,
+                self._inspect_result(
+                    draft,
+                    registered=False,
+                    project_id=moved["id"],
+                    path_changed=True,
+                    stored_canonical_path=moved["canonical_path"],
+                ),
+            )
+
+        return self._ok(request, self._inspect_result(draft))
+
+    def _handle_project_register(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        """Register a project after explicit confirmation."""
+        if not request.params.get("confirmed"):
+            return self._error(request, "project registration requires confirmation")
+
+        path = request.params.get("path")
+        if not isinstance(path, str) or not path.strip():
+            return self._error(request, "path is required")
+
+        try:
+            fresh = inspect_project(Path(path))
+        except ValueError as exc:
+            return self._error(request, str(exc))
+
+        for field in ("canonical_path", "repo_id", "default_branch", "branch_prefix"):
+            submitted = request.params.get(field)
+            if submitted is None:
+                return self._error(request, f"{field} is required")
+            fresh_value = (
+                str(fresh.canonical_path)
+                if field == "canonical_path"
+                else getattr(fresh, field)
+            )
+            if submitted != fresh_value:
+                return self._error(request, f"draft field mismatch: {field}")
+
+        submitted_verify = request.params.get("verify_commands", [])
+        if not isinstance(submitted_verify, list):
+            return self._error(request, "verify_commands must be a list")
+        if list(fresh.verify_commands) != submitted_verify:
+            return self._error(request, "draft field mismatch: verify_commands")
+
+        existing = _find_moved_project(conn, fresh)
+        if existing is not None:
+            conn.execute(
+                """
+                update projects
+                set canonical_path = ?, default_branch = ?, branch_prefix = ?,
+                    verify_commands = ?, updated_at = current_timestamp
+                where id = ?
+                """,
+                (
+                    str(fresh.canonical_path),
+                    fresh.default_branch,
+                    fresh.branch_prefix,
+                    "\n".join(fresh.verify_commands),
+                    existing["id"],
+                ),
+            )
+            conn.commit()
+            return self._ok(request, {"project_id": existing["id"]})
+
+        project_id = register_project(conn, fresh, confirmed=True)
+        return self._ok(request, {"project_id": project_id})
 
     def _handle_project_status(
         self, conn: sqlite3.Connection, request: RequestEnvelope

@@ -9,6 +9,7 @@ import { resetTerminalModes } from './lib/terminalModes.js'
 export interface AppOptions {
   socketPath: string
   projectId: string
+  canonicalPath?: string
 }
 
 /**
@@ -16,18 +17,21 @@ export interface AppOptions {
  * Tests can call this to verify construction without spawning a process.
  */
 export function createApp(options: AppOptions) {
-  const { socketPath, projectId } = options
+  const { socketPath, projectId, canonicalPath } = options
 
   return {
     socketPath,
     projectId,
+    canonicalPath,
     async start() {
       const { render } = await import('ink')
       const { App } = await import('./app.js')
 
       setupLifecycle()
 
-      const instance = render(<App socketPath={socketPath} projectId={projectId} />, {
+      const instance = render(
+        <App socketPath={socketPath} projectId={projectId} canonicalPath={canonicalPath} />,
+        {
         exitOnCtrlC: false,
       })
 

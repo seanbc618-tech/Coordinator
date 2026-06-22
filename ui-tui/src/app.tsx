@@ -18,6 +18,7 @@ import {
 } from './store.js'
 import { AppLayout } from './components/AppLayout.js'
 import { Composer } from './components/Composer.js'
+import { ProjectOnboarding, type ProjectInspectDraft } from './components/ProjectOnboarding.js'
 import { decideSubmit } from './submitDecision.js'
 import { performDetach, registerDetachHandlers } from './detach.js'
 import type { TuiState } from './domain.js'
@@ -26,11 +27,23 @@ import type { EventEnvelope } from './protocol.js'
 interface AppProps {
   socketPath: string
   projectId: string
+  canonicalPath?: string
 }
 
-export function App({ socketPath, projectId }: AppProps) {
+type OnboardingPhase = 'pending' | 'confirm' | 'ready'
+
+export function needsProjectOnboarding(draft: ProjectInspectDraft): boolean {
+  return !draft.registered || draft.path_changed
+}
+
+export function App({ socketPath, projectId, canonicalPath }: AppProps) {
   const conn = useStore(connStateAtom)
   const [client] = useState(() => new SupervisorClient({ socketPath, projectId }))
+  const [activeProjectId, setActiveProjectId] = useState(projectId)
+  const [onboardingPhase, setOnboardingPhase] = useState<OnboardingPhase>(
+    canonicalPath ? 'pending' : 'ready',
+  )
+  const [onboardingDraft, setOnboardingDraft] = useState<ProjectInspectDraft | null>(null)
   const [tuiState, setTuiState] = useState<TuiState>({
     connectionState: 'connecting',
     transcript: [],
@@ -64,12 +77,57 @@ export function App({ socketPath, projectId }: AppProps) {
       // P1 fix: use functional update only — no stale closure writes to atoms.
       // Atoms are synced via the useEffect below.
       // P2: pass projectId for defense-in-depth foreign event rejection.
-      setTuiState(prev => reduceEvent(prev, event, projectId))
+      setTuiState(prev => reduceEvent(prev, event, activeProjectId))
     })
 
     client.connect()
 
-    // Load initial snapshot
+    return () => {
+      client.close()
+    }
+  }, [client, activeProjectId])
+
+  useEffect(() => {
+    if (!canonicalPath || onboardingPhase !== 'pending' || conn !== 'connected') {
+      return
+    }
+
+    let cancelled = false
+    void client.request('project.inspect', { path: canonicalPath }).then(resp => {
+      if (cancelled) return
+      if (!resp.ok || !resp.result) {
+        setOnboardingPhase('ready')
+        return
+      }
+
+      const draft = resp.result as unknown as ProjectInspectDraft
+      if (needsProjectOnboarding(draft)) {
+        setOnboardingDraft(draft)
+        setOnboardingPhase('confirm')
+        return
+      }
+
+      if (draft.project_id) {
+        setActiveProjectId(draft.project_id)
+      }
+      setOnboardingPhase('ready')
+    }).catch(() => {
+      if (!cancelled) {
+        setOnboardingPhase('ready')
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [canonicalPath, client, conn, onboardingPhase])
+
+  // Load initial snapshot once chat is available
+  useEffect(() => {
+    if (onboardingPhase !== 'ready' || conn !== 'connected') {
+      return
+    }
+
     client.request('project.snapshot').then(resp => {
       if (resp.ok && resp.result) {
         const snapshot = resp.result as { cursor?: number }
@@ -80,11 +138,7 @@ export function App({ socketPath, projectId }: AppProps) {
     }).catch(() => {
       // Snapshot failure is non-fatal on first connect
     })
-
-    return () => {
-      client.close()
-    }
-  }, [client])
+  }, [client, conn, onboardingPhase])
 
   // P1 fix: single source of truth — sync tuiState → atoms here only.
   useEffect(() => {
@@ -92,6 +146,36 @@ export function App({ socketPath, projectId }: AppProps) {
     activitiesAtom.set(tuiState.activities)
     lastCursorAtom.set(tuiState.lastCursor)
   }, [tuiState])
+
+  const handleOnboardingAccept = useCallback(() => {
+    if (!onboardingDraft || !canonicalPath) {
+      return
+    }
+
+    void client.request('project.register', {
+      confirmed: true,
+      path: canonicalPath,
+      canonical_path: onboardingDraft.canonical_path,
+      repo_id: onboardingDraft.repo_id,
+      default_branch: onboardingDraft.default_branch,
+      branch_prefix: onboardingDraft.branch_prefix,
+      verify_commands: onboardingDraft.verify_commands,
+    }).then(resp => {
+      if (!resp.ok || !resp.result) {
+        return
+      }
+      const result = resp.result as { project_id?: string }
+      if (result.project_id) {
+        setActiveProjectId(result.project_id)
+      }
+      setOnboardingDraft(null)
+      setOnboardingPhase('ready')
+    }).catch(() => {})
+  }, [canonicalPath, client, onboardingDraft])
+
+  const handleOnboardingReject = useCallback(() => {
+    performDetach()
+  }, [])
 
   const handleSubmit = useCallback((text: string) => {
     const decision = decideSubmit(text, pendingDestructiveRef.current)
@@ -144,9 +228,21 @@ export function App({ socketPath, projectId }: AppProps) {
     performDetach()
   }, [])
 
+  if (onboardingPhase === 'confirm' && onboardingDraft) {
+    return (
+      <Box flexDirection="column" width="100%" height="100%">
+        <ProjectOnboarding
+          draft={onboardingDraft}
+          onAccept={handleOnboardingAccept}
+          onReject={handleOnboardingReject}
+        />
+      </Box>
+    )
+  }
+
   return (
     <Box flexDirection="column" width="100%" height="100%">
-      <AppLayout projectId={projectId} />
+      <AppLayout projectId={activeProjectId} />
       <Composer onSubmit={handleSubmit} onDetach={handleDetach} disabled={conn !== 'connected'} />
     </Box>
   )
