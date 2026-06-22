@@ -728,9 +728,22 @@ def _cmd_supervisor_start(args: argparse.Namespace) -> int:
     paths = resolve_runtime_paths()
     paths.create()
     if not args.foreground:
-        print("Use --foreground to start the Supervisor in the foreground.")
-        print("Background daemon mode is not yet implemented.")
-        return 1
+        from .supervisor_process import SupervisorReadinessError, ensure_supervisor
+
+        try:
+            result = ensure_supervisor(paths)
+        except SupervisorReadinessError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        if result.attached:
+            print("Supervisor is running")
+        else:
+            print("Supervisor started")
+            print("Supervisor is running")
+        print(f"socket: {paths.socket}")
+        if result.pid is not None:
+            print(f"pid: {result.pid}")
+        return 0
 
     from .supervisor_server import SupervisorServer, SupervisorServerError
     from .supervisor_events import EventBroker

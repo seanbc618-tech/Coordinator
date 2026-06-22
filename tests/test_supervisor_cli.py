@@ -187,7 +187,11 @@ class SupervisorCliIntegrationTests(unittest.TestCase):
         self.assertEqual(duplicate.returncode, 1)
         self.assertIn("already running", duplicate.stderr)
 
-    def test_start_without_foreground_is_rejected(self) -> None:
+    def test_start_without_foreground_starts_detached(self) -> None:
         result = _run_cli_with_home(self.home, "supervisor", "start")
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("Use --foreground", result.stdout)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Supervisor is running", result.stdout)
+
+        status = _run_cli_with_home(self.home, "supervisor", "status")
+        self.assertEqual(status.returncode, 0, status.stderr)
+        self.assertIn("Supervisor is running", status.stdout)
