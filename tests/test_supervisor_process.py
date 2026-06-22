@@ -23,6 +23,7 @@ from local_cli_coordinator.supervisor_process import (
     ping_supervisor,
     startup_lock_path,
     supervisor_log_path,
+    supervisor_spawn_argv,
 )
 from local_cli_coordinator.supervisor_server import send_request
 from local_cli_coordinator.supervisor_protocol import PROTOCOL_VERSION, RequestEnvelope
@@ -265,7 +266,7 @@ class EnsureSupervisorTests(SupervisorProcessTestBase):
 
         with mock.patch(
             "local_cli_coordinator.supervisor_process._spawn_detached_supervisor",
-            return_value=hang,
+            return_value=hang.pid,
         ):
             with self.assertRaises(SupervisorReadinessError):
                 ensure_supervisor(self.paths, readiness_timeout=0.5, poll_interval=0.05)
@@ -320,7 +321,7 @@ class EnsureSupervisorTests(SupervisorProcessTestBase):
 
     def test_tui_detach_leaves_process_alive(self) -> None:
         script = (
-            "import os, sys\n"
+            "import os\n"
             "from pathlib import Path\n"
             "from local_cli_coordinator.runtime_paths import RuntimePaths\n"
             "from local_cli_coordinator.supervisor_process import ensure_supervisor\n"
@@ -349,25 +350,36 @@ class EnsureSupervisorTests(SupervisorProcessTestBase):
         self.assertTrue(response.ok)
         self.assertEqual(response.result.get("pong"), True)
 
-    def test_spawn_uses_argv_not_shell(self) -> None:
-        with mock.patch(
-            "local_cli_coordinator.supervisor_process.subprocess.Popen",
-            autospec=True,
-        ) as popen_mock:
-            popen_mock.return_value = mock.Mock(pid=4242, poll=lambda: None)
-            with mock.patch(
-                "local_cli_coordinator.supervisor_process._wait_until_ready",
-                return_value=None,
-            ):
-                ensure_supervisor(self.paths, readiness_timeout=1.0)
+    def test_detached_launcher_exit_has_no_resource_warning(self) -> None:
+        script = (
+            "import os\n"
+            "from pathlib import Path\n"
+            "from local_cli_coordinator.runtime_paths import RuntimePaths\n"
+            "from local_cli_coordinator.supervisor_process import ensure_supervisor\n"
+            "home = Path(os.environ['COORDINATOR_HOME'])\n"
+            "paths = RuntimePaths(home / 'config', home / 'data', home / 'state')\n"
+            "ensure_supervisor(paths)\n"
+        )
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(SRC)
+        env["COORDINATOR_HOME"] = str(self.home)
+        launcher = subprocess.run(
+            [sys.executable, "-W", "error::ResourceWarning", "-c", script],
+            cwd=ROOT,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        self.assertEqual(launcher.returncode, 0, launcher.stderr)
+        self.assertEqual(launcher.stderr, "")
+        self.assertTrue(ping_supervisor(self.paths))
+        self.assertIsNotNone(_live_supervisor_pid(self.home))
 
-        popen_mock.assert_called_once()
-        _, kwargs = popen_mock.call_args
-        self.assertNotIn("shell", kwargs)
-        command = popen_mock.call_args[0][0]
-        self.assertIsInstance(command, list)
+    def test_spawn_uses_argv_not_shell(self) -> None:
         self.assertEqual(
-            command,
+            supervisor_spawn_argv(),
             [
                 sys.executable,
                 "-m",
@@ -377,6 +389,15 @@ class EnsureSupervisorTests(SupervisorProcessTestBase):
                 "--foreground",
             ],
         )
+        with mock.patch(
+            "local_cli_coordinator.supervisor_process.os.fork",
+            return_value=4242,
+        ):
+            with mock.patch(
+                "local_cli_coordinator.supervisor_process._wait_until_ready",
+                return_value=None,
+            ):
+                ensure_supervisor(self.paths, readiness_timeout=1.0)
 
 
 class SupervisorStartCliTests(SupervisorProcessTestBase):

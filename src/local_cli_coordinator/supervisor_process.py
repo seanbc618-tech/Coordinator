@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import os
 import signal
-import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -24,7 +23,6 @@ DEFAULT_READINESS_TIMEOUT = 30.0
 DEFAULT_POLL_INTERVAL = 0.1
 STARTUP_LOCK_NAME = "supervisor-startup.lock"
 SUPERVISOR_LOG_NAME = "supervisor.log"
-_DETACHED_CHILD_WRAPPERS: list[subprocess.Popen[bytes]] = []
 
 
 class SupervisorProcessError(RuntimeError):
@@ -87,82 +85,86 @@ def _read_lock_pid(lock_path: Path) -> int | None:
         return None
 
 
-def _release_popen_wrapper(process: subprocess.Popen[bytes]) -> None:
-    """Retain a detached child wrapper so CPython does not emit ResourceWarning."""
-    for stream in (process.stdin, process.stdout, process.stderr):
-        if stream is not None:
-            try:
-                stream.close()
-            except OSError:
-                pass
-    if process.poll() is None:
-        _DETACHED_CHILD_WRAPPERS.append(process)
+def supervisor_spawn_argv() -> list[str]:
+    """Argv used to launch the detached foreground Supervisor."""
+    return [
+        sys.executable,
+        "-m",
+        "local_cli_coordinator",
+        "supervisor",
+        "start",
+        "--foreground",
+    ]
 
 
-def _spawn_detached_supervisor(paths: RuntimePaths) -> subprocess.Popen[bytes]:
+def _spawn_detached_supervisor(paths: RuntimePaths) -> int:
+    """Fork/exec a detached Supervisor without retaining a Popen wrapper."""
     paths.state_dir.mkdir(parents=True, exist_ok=True)
     log_path = supervisor_log_path(paths)
-    log_handle = open(log_path, "a", encoding="utf-8")
-    try:
-        process = subprocess.Popen(
-            [
-                sys.executable,
-                "-m",
-                "local_cli_coordinator",
-                "supervisor",
-                "start",
-                "--foreground",
-            ],
-            stdin=subprocess.DEVNULL,
-            stdout=log_handle,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-            close_fds=True,
-        )
-    finally:
-        log_handle.close()
-    return process
+    log_fd = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    argv = supervisor_spawn_argv()
+    env = os.environ.copy()
+
+    pid = os.fork()
+    if pid == 0:
+        try:
+            os.setsid()
+            os.dup2(log_fd, 1)
+            os.dup2(log_fd, 2)
+            if log_fd > 2:
+                os.close(log_fd)
+            os.execvpe(argv[0], argv, env)
+        except OSError:
+            os._exit(1)
+        os._exit(1)
+
+    os.close(log_fd)
+    if pid < 0:
+        raise SupervisorProcessError("failed to fork detached supervisor")
+    return pid
 
 
-def _terminate_process(process: subprocess.Popen[bytes]) -> None:
-    if process.poll() is not None:
-        return
+def _terminate_pid(pid: int) -> None:
     try:
-        os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+        os.killpg(os.getpgid(pid), signal.SIGTERM)
     except (ProcessLookupError, PermissionError, OSError):
         try:
-            process.terminate()
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            return
+    deadline = time.time() + 5.0
+    while time.time() < deadline:
+        try:
+            waited_pid, _status = os.waitpid(pid, os.WNOHANG)
+            if waited_pid != 0:
+                return
+        except ChildProcessError:
+            return
+        time.sleep(0.05)
+    try:
+        os.killpg(os.getpgid(pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            os.kill(pid, signal.SIGKILL)
         except OSError:
             return
     try:
-        process.wait(timeout=5.0)
-        return
-    except subprocess.TimeoutExpired:
-        pass
-    try:
-        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-    except (ProcessLookupError, PermissionError, OSError):
-        try:
-            process.kill()
-        except OSError:
-            return
-    try:
-        process.wait(timeout=2.0)
-    except subprocess.TimeoutExpired:
+        os.waitpid(pid, 0)
+    except ChildProcessError:
         pass
 
 
 def _cleanup_failed_start(
-    process: subprocess.Popen[bytes] | None,
+    child_pid: int | None,
     paths: RuntimePaths,
 ) -> None:
-    if process is not None:
-        _terminate_process(process)
+    if child_pid is not None:
+        _terminate_pid(child_pid)
 
     paths.socket.unlink(missing_ok=True)
 
     lock_pid = _read_lock_pid(paths.lock)
-    if process is not None and lock_pid == process.pid:
+    if child_pid is not None and lock_pid == child_pid:
         release_lock_at(paths.lock)
 
 
@@ -226,7 +228,7 @@ def ensure_supervisor(
             poll_interval=poll_interval,
         )
 
-    process: subprocess.Popen[bytes] | None = None
+    child_pid: int | None = None
     try:
         if ping_supervisor(paths):
             return EnsureSupervisorResult(
@@ -235,7 +237,7 @@ def ensure_supervisor(
                 pid=_read_lock_pid(paths.lock),
             )
 
-        process = _spawn_detached_supervisor(paths)
+        child_pid = _spawn_detached_supervisor(paths)
         try:
             _wait_until_ready(
                 paths,
@@ -243,16 +245,13 @@ def ensure_supervisor(
                 poll_interval=poll_interval,
             )
         except SupervisorReadinessError:
-            _cleanup_failed_start(process, paths)
+            _cleanup_failed_start(child_pid, paths)
             raise
-        result = EnsureSupervisorResult(
+        return EnsureSupervisorResult(
             attached=False,
             started=True,
-            pid=_read_lock_pid(paths.lock) or process.pid,
+            pid=_read_lock_pid(paths.lock) or child_pid,
         )
-        if process is not None:
-            _release_popen_wrapper(process)
-        return result
     finally:
         if isinstance(lock_result, LockInfo):
             release_lock_at(startup_lock)

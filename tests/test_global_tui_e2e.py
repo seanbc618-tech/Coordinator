@@ -356,9 +356,8 @@ class GlobalTuiE2ETests(unittest.TestCase):
                     _strip_ansi(onboarding),
                     f"{name}: onboarding screen missing",
                 )
-                _drain_pty(fd, quiet_time=0.3)
-                _type_enter_and_wait(fd)
-                _drain_pty(fd, quiet_time=0.3)
+                _drain_pty(fd, quiet_time=0.3, max_time=1.0)
+                os.write(fd, b"\r")
                 connected = _wait_for_connection(fd, timeout=45.0)
                 self.assertIn("connected", connected, f"{name}: TUI did not connect")
                 self.assertIn("proj-", _strip_ansi(connected), f"{name}: registered project id missing")
