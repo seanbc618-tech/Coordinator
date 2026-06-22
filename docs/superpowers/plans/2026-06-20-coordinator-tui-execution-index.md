@@ -130,6 +130,21 @@ does not reconstruct progress from chat history.
 - repair handoff:
   `../handoffs/2026-06-22-phase3-final-acceptance-repair.md`
 
+### 2026-06-22 Phase 3 Repair Submission
+
+- task: Wave 3 Gate D/E acceptance repair
+- owner: Claude Code implementation, Grok adversarial re-review, Codex acceptance
+- branch: `external/coordinator-global-tui`
+- commit: `ea90313`
+- focused tests: submitFlow, terminalLifecycle, 24 PTY gates
+- integration head: `ea90313`
+- TypeScript tests: 100 passed
+- PTY tests: 24 passed
+- Python tests: 667 passed with strict ResourceWarning policy
+- status: submitted for Codex acceptance
+- submission handoff:
+  `../handoffs/2026-06-22-phase3-codex-acceptance-submission.md`
+
 ## Final Acceptance
 
 - No unresolved task branches or unreviewed commits.
