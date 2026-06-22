@@ -12,10 +12,9 @@
 
 ## Ownership and Order
 
-- Claude Code: Tasks 1, 3, and 5.
-- Grok: Tasks 2 and 4.
-- Grok: Task 6 soak harness.
-- Claude Code: Task 7 docs/release integration.
+- Grok: primary implementer for Tasks 1 through 7, one focused commit per task.
+- Claude Code: read-only adversarial review after each task; it does not patch
+  production code. Rejected work returns to Grok for repair on the same branch.
 - Codex: review after Tasks 3, 5, and 7.
 - Start after Phases 1 through 3 are accepted.
 

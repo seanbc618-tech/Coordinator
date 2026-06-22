@@ -173,6 +173,28 @@ does not reconstruct progress from chat history.
 - submission handoff:
   `../handoffs/2026-06-22-phase3-codex-acceptance-submission.md`
 
+### 2026-06-22 Phase 3 Final Acceptance
+
+- task: Wave 3 Hermes TUI final lifecycle acceptance
+- owner: Grok repair, Codex acceptance
+- branch: `external/coordinator-global-tui`
+- integration head: `a08d304`
+- focused tests: 27 real PTY gates, 100 TypeScript tests
+- full tests: 670 Python tests with strict ResourceWarning policy
+- status: accepted; Wave 4 may start
+
+### 2026-06-22 Wave 4 Start
+
+- plan: `2026-06-20-global-tui-installation.md`
+- primary implementer: Grok, Tasks 1 through 7
+- adversarial reviewer: Claude Code, read-only after every task
+- Codex gates: after Tasks 3, 5, and 7
+- implementation handoff:
+  `../handoffs/2026-06-22-wave4-grok-implementation.md`
+- review handoff:
+  `../handoffs/2026-06-22-wave4-claude-review.md`
+- status: started from accepted baseline `a08d304`
+
 ## Final Acceptance
 
 - No unresolved task branches or unreviewed commits.
