@@ -145,7 +145,13 @@ export function App({ socketPath, projectId }: AppProps) {
 
   const handleDetach = useCallback(() => {
     client.close()
-    process.exit(0)
+    // process.exit() blocks when Ink's 'exit' handler reads stdin
+    // during React unmount in a PTY. SIGKILL bypasses all handlers.
+    try {
+      process.kill(process.pid, 'SIGKILL')
+    } catch {
+      // already dead
+    }
   }, [client])
 
   return (

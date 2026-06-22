@@ -37,6 +37,12 @@ export function createApp(options: AppOptions) {
         onSignal: signal => {
           resetTerminalModes()
           process.stderr.write(`coordinator-tui: received ${signal}\n`)
+          // Hard-kill failsafe: if Ink's cleanup (stdin read during React
+          // unmount) blocks the graceful exit, force-terminate after 1s.
+          // SIGKILL bypasses all exit handlers.
+          setTimeout(() => {
+            process.kill(process.pid, 'SIGKILL')
+          }, 1000).unref()
         },
       })
 

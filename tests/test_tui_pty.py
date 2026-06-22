@@ -782,30 +782,37 @@ class TuiPtyTests(unittest.TestCase):
             self.server.stop_work()
 
     def test_terminal_cleanup_after_ctrl_c(self) -> None:
-        """Terminal cleanup (no hang) after Ctrl+C; Supervisor still responds."""
+        """Ctrl+C exits TUI while PTY fd is open; Supervisor still responds.
+
+        Regression: closing the PTY fd before waiting for exit masks the
+        real Ctrl+C behavior. The fd must remain open so the exit is
+        caused solely by the Ctrl+C path.
+        """
         pid, fd = _spawn_tui(self.socket_path, "proj-a", cols=80, rows=24)
         try:
             _wait_for_connection(fd)
             _type_ctrl_c(fd)
-            time.sleep(2.0)
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-            exit_code = _wait_for_exit(pid, time.time() + 5)
+            # Wait for exit with PTY fd OPEN — proves Ctrl+C caused the exit.
+            exit_code = _wait_for_exit(pid, time.time() + 10)
             if exit_code is None:
                 try:
                     os.kill(pid, signal.SIGKILL)
                     os.waitpid(pid, 0)
                 except (ProcessLookupError, ChildProcessError):
                     pass
-                self.fail("TUI hung after Ctrl+C")
+                self.fail("TUI did not exit after Ctrl+C (PTY fd kept open)")
+            # Accept 0 (clean exit), 130 (SIGINT), or -9 (SIGKILL failsafe)
+            self.assertIn(exit_code, (0, 130, -9),
+                          f"Unexpected exit code after Ctrl+C: {exit_code}")
+        finally:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
             try:
                 os.waitpid(pid, 0)
             except ChildProcessError:
                 pass
-        finally:
-            pass
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
             sock.connect(self.socket_path)
@@ -828,32 +835,38 @@ class TuiPtyTests(unittest.TestCase):
     def test_ctrl_c_when_disconnected_exits_promptly(self) -> None:
         """Ctrl+C exits TUI when Supervisor socket is unavailable.
 
-        The TUI starts in 'connecting' or 'offline' state. Composer must
-        handle Ctrl+C even when disabled (disconnected). Asserts the TUI
-        exits within a reasonable deadline.
+        Regression: the fd must remain open so the exit is caused solely
+        by Ctrl+C, not by PTY fd closure.
         """
-        # Use a socket path that does not exist — TUI will be in connecting/offline.
         bogus_path = os.path.join(self.tmp_dir, "nonexistent.sock")
         pid, fd = _spawn_tui(bogus_path, "proj-a", cols=80, rows=24)
         try:
-            # Wait a moment for TUI to start and enter connecting state.
-            time.sleep(2.0)
+            # Wait for TUI to start and Ink's stdin setup to complete.
+            # In disconnected state the TUI still renders the Composer,
+            # but Ink needs time to attach the readable listener.
+            _read_available(fd, timeout=5.0)
             _type_ctrl_c(fd)
-            time.sleep(1.0)
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-            exit_code = _wait_for_exit(pid, time.time() + 5)
+            # Wait for exit with PTY fd OPEN.
+            exit_code = _wait_for_exit(pid, time.time() + 10)
             if exit_code is None:
                 try:
                     os.kill(pid, signal.SIGKILL)
                     os.waitpid(pid, 0)
                 except (ProcessLookupError, ChildProcessError):
                     pass
-                self.fail("TUI did not exit after Ctrl+C while disconnected")
+                self.fail("TUI did not exit after Ctrl+C while disconnected (PTY fd kept open)")
+            # Accept 0 (clean exit), 130 (SIGINT), or -9 (SIGKILL failsafe)
+            self.assertIn(exit_code, (0, 130, -9),
+                          f"Unexpected exit code after Ctrl+C: {exit_code}")
         finally:
-            pass
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                os.waitpid(pid, 0)
+            except ChildProcessError:
+                pass
 
     def test_manifest_build_hash_matches_bundle(self) -> None:
         """manifest build_hash matches the bundled entry.js content."""

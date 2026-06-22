@@ -38,7 +38,6 @@ export function Composer({ onSubmit, onDetach, disabled = false }: ComposerProps
     // Ctrl+C — detach (always handled, even when disconnected)
     if (key.ctrl && inputChar === 'c') {
       onDetach()
-      exit()
       return
     }
 
