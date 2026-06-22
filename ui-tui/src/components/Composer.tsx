@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react'
+import React, { useState, useCallback, useRef } from 'react'
 import { Box, Text, useInput, useApp } from 'ink'
 import { completePartial } from '../slash.js'
 import { InputHistory } from '../inputHistory.js'
@@ -15,28 +15,38 @@ export function Composer({ onSubmit, onDetach, disabled = false }: ComposerProps
   const [history] = useState(() => new InputHistory())
   const { exit } = useApp()
 
+  // Ref mirrors state so useInput callbacks always read the latest input,
+  // avoiding stale closures when React 18 batches rapid setInput calls.
+  const inputRef = useRef(input)
+  inputRef.current = input
+
   const handleSubmit = useCallback(() => {
-    const text = input.trim()
+    const text = inputRef.current.trim()
     if (!text) return
     history.push(text)
     onSubmit(text)
     setInput('')
     setCompletions([])
-  }, [input, onSubmit, history])
+  }, [onSubmit, history])
+
+  // Ref for handleSubmit so useInput always calls the latest version,
+  // avoiding stale closure when React 18 batches rapid input events.
+  const handleSubmitRef = useRef(handleSubmit)
+  handleSubmitRef.current = handleSubmit
 
   useInput((inputChar, key) => {
-    if (disabled) return
-
-    // Ctrl+C — detach (ctrl flag is set, inputChar is 'c')
+    // Ctrl+C — detach (always handled, even when disconnected)
     if (key.ctrl && inputChar === 'c') {
       onDetach()
       exit()
       return
     }
 
+    if (disabled) return
+
     // Enter — submit
     if (key.return) {
-      handleSubmit()
+      handleSubmitRef.current()
       return
     }
 
@@ -45,8 +55,8 @@ export function Composer({ onSubmit, onDetach, disabled = false }: ComposerProps
       if (completions.length > 0) {
         setInput(completions[0]!)
         setCompletions([])
-      } else if (input.startsWith('/')) {
-        const matches = completePartial(input)
+      } else if (inputRef.current.startsWith('/')) {
+        const matches = completePartial(inputRef.current)
         if (matches.length === 1) {
           setInput(matches[0]!)
           setCompletions([])
@@ -59,13 +69,13 @@ export function Composer({ onSubmit, onDetach, disabled = false }: ComposerProps
 
     // Up arrow — history
     if (key.upArrow) {
-      setInput(history.up(input))
+      setInput(history.up(inputRef.current))
       return
     }
 
     // Down arrow — history
     if (key.downArrow) {
-      setInput(history.down(input))
+      setInput(history.down(inputRef.current))
       return
     }
 

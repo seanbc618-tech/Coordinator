@@ -148,27 +148,6 @@ export function App({ socketPath, projectId }: AppProps) {
     process.exit(0)
   }, [client])
 
-  // Test-only hooks (env-gated) for real PTY integration tests.
-  const testScriptRanRef = useRef(false)
-  useEffect(() => {
-    if (conn !== 'connected' || testScriptRanRef.current) return
-
-    if (process.env.COORDINATOR_TUI_TEST_UNCAUGHT === '1') {
-      testScriptRanRef.current = true
-      setImmediate(() => {
-        throw new Error('COORDINATOR_TUI_TEST_UNCAUGHT')
-      })
-      return
-    }
-
-    const script = process.env.COORDINATOR_TUI_TEST_SUBMIT
-    if (!script) return
-    testScriptRanRef.current = true
-    for (const entry of script.split('|')) {
-      handleSubmit(entry)
-    }
-  }, [conn, handleSubmit])
-
   return (
     <Box flexDirection="column" width="100%" height="100%">
       <AppLayout projectId={projectId} />

@@ -92,15 +92,12 @@ def _spawn_tui(
     *,
     cols: int = 120,
     rows: int = 40,
-    extra_env: dict[str, str] | None = None,
 ):
     """Spawn the TUI in a real pseudo-terminal.
 
     Returns (pid, master_fd). Caller must kill and close.
     """
     env = {**os.environ, "NO_COLOR": "1", "TERM": "xterm-256color"}
-    if extra_env:
-        env.update(extra_env)
     master_fd, slave_fd = pty.openpty()
 
     winsize = struct.pack("HHHH", rows, cols, 0, 0)
@@ -174,16 +171,82 @@ def _type_char(fd: int, char: str, delay: float = 0.2) -> None:
     time.sleep(delay)
 
 
+def _drain_pty(fd: int, quiet_time: float = 0.3) -> None:
+    """Drain all pending PTY output until quiet for quiet_time seconds."""
+    deadline = time.time() + quiet_time
+    while time.time() < deadline:
+        remaining = deadline - time.time()
+        ready, _, _ = select.select([fd], [], [], min(remaining, 0.05))
+        if ready:
+            try:
+                os.read(fd, 4096)
+            except OSError:
+                break
+            deadline = time.time() + quiet_time  # reset quiet timer
+
+
+def _type_char_and_wait(fd: int, char: str, timeout: float = 5.0) -> None:
+    """Type a character and wait for Ink to fully process it.
+
+    1. Drain all pending output (from previous renders).
+    2. Write the character.
+    3. Wait for new render output (confirming the character was processed).
+    """
+    # Step 1: Drain until quiet.
+    _drain_pty(fd, quiet_time=0.2)
+    # Step 2: Write character.
+    os.write(fd, char.encode("utf-8"))
+    # Step 3: Wait for new render output.
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        remaining = deadline - time.time()
+        ready, _, _ = select.select([fd], [], [], min(remaining, 0.1))
+        if ready:
+            try:
+                os.read(fd, 4096)
+            except OSError:
+                break
+            # Got new output — character was processed.
+            return
+    # Timeout — continue anyway.
+
+
 def _type_string(fd: int, text: str, delay: float = 0.2) -> None:
     """Type a string character by character into the PTY."""
     for ch in text:
         _type_char(fd, ch, delay)
 
 
+def _type_string_and_wait(fd: int, text: str) -> None:
+    """Type a string, waiting for each character to be processed.
+
+    Uses _type_char_and_wait for each character to prevent Ink from
+    treating rapid input as a paste chunk.
+    """
+    for ch in text:
+        _type_char_and_wait(fd, ch)
+
+
 def _type_enter(fd: int) -> None:
     """Press Enter (carriage return)."""
     os.write(fd, b"\r")
     time.sleep(0.2)
+
+
+def _type_enter_and_wait(fd: int, timeout: float = 5.0) -> None:
+    """Press Enter and wait for the submit to be processed."""
+    _drain_pty(fd, quiet_time=0.2)
+    os.write(fd, b"\r")
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        remaining = deadline - time.time()
+        ready, _, _ = select.select([fd], [], [], min(remaining, 0.1))
+        if ready:
+            try:
+                os.read(fd, 4096)
+            except OSError:
+                break
+            return
 
 
 def _type_ctrl_c(fd: int) -> None:
@@ -447,48 +510,57 @@ class TuiPtyTests(unittest.TestCase):
         self.assertTrue(map_path.exists(), f"Source map not found: {map_path}")
         self.assertGreater(map_path.stat().st_size, 1000)
 
+    def test_bundle_has_no_test_hooks(self) -> None:
+        """Bundle must not contain production test hook env vars."""
+        bundle_path = UI_TUI / "dist" / "entry.js"
+        self.assertTrue(bundle_path.exists(), f"Bundle not found: {bundle_path}")
+        content = bundle_path.read_text()
+        self.assertNotIn("COORDINATOR_TUI_TEST_SUBMIT", content,
+                         "Test hook COORDINATOR_TUI_TEST_SUBMIT found in production bundle")
+        self.assertNotIn("COORDINATOR_TUI_TEST_UNCAUGHT", content,
+                         "Test hook COORDINATOR_TUI_TEST_UNCAUGHT found in production bundle")
+
     # ──────────────────────────────────────────────────────────────
     # P1-3: Real composer and detach behavior (PTY keystrokes)
     # ──────────────────────────────────────────────────────────────
 
     def test_pty_types_hello_and_sends_chat(self) -> None:
-        """Submit hello via production handleSubmit; assert one chat.send and echo."""
-        pid, fd = _spawn_tui(
-            self.socket_path,
-            "proj-a",
-            cols=80,
-            rows=24,
-            extra_env={"COORDINATOR_TUI_TEST_SUBMIT": "hello"},
-        )
+        """Type 'hello' + Enter via PTY; assert one chat.send RPC and echo."""
+        pid, fd = _spawn_tui(self.socket_path, "proj-a", cols=80, rows=24)
         try:
-            output = _wait_for_connection(fd)
-            time.sleep(1.5)
-            output += _read_available(fd, timeout=3.0)
+            _wait_for_connection(fd)
+            # Drain any buffered output after connection.
+            _read_available(fd, timeout=0.5)
+            # Type hello character by character, waiting for each to render.
+            _type_string_and_wait(fd, "hello")
+            _type_enter_and_wait(fd)
+            # Wait for chat.send to arrive at the server.
             self.assertTrue(
-                self.server.wait_for_request_method("chat.send", timeout=8),
-                "chat.send RPC not received",
+                self.server.wait_for_request_method("chat.send", timeout=10),
+                "chat.send RPC not received after typing hello+Enter",
             )
             requests = self.server.drain_requests()
             chat_sends = [p for m, p in requests if m == "chat.send"]
             self.assertEqual(len(chat_sends), 1, f"Expected one chat.send, got {requests}")
             self.assertEqual(chat_sends[0].get("text"), "hello")
+            # The fake supervisor echoes back "Received: hello" as a chat.message event.
+            # Read PTY output to verify the echo is rendered.
+            output = _read_available(fd, timeout=3.0)
             self.assertIn("Received: hello", _final_frame_text(output),
-                          "Echo not visible in PTY output")
+                          "Echo 'Received: hello' not visible in PTY output")
         finally:
             _cleanup_tui(pid, fd)
 
     def test_pty_shutdown_once_sends_no_rpc(self) -> None:
-        """Submit /shutdown once; assert no system.shutdown request."""
-        pid, fd = _spawn_tui(
-            self.socket_path,
-            "proj-a",
-            cols=80,
-            rows=24,
-            extra_env={"COORDINATOR_TUI_TEST_SUBMIT": "/shutdown"},
-        )
+        """Type /shutdown + Enter once; assert no system.shutdown request."""
+        pid, fd = _spawn_tui(self.socket_path, "proj-a", cols=80, rows=24)
         try:
             _wait_for_connection(fd)
-            time.sleep(2.0)
+            _read_available(fd, timeout=0.5)
+            _type_string_and_wait(fd, "/shutdown")
+            _type_enter_and_wait(fd)
+            # Wait a bit to confirm no RPC is sent (first invocation is pending).
+            time.sleep(3.0)
             requests = self.server.drain_requests()
             shutdowns = [m for m, _ in requests if m == "system.shutdown"]
             self.assertEqual(shutdowns, [], f"Unexpected shutdown RPCs: {requests}")
@@ -496,19 +568,19 @@ class TuiPtyTests(unittest.TestCase):
             _cleanup_tui(pid, fd)
 
     def test_pty_shutdown_twice_sends_one_rpc(self) -> None:
-        """Submit /shutdown twice; assert exactly one system.shutdown request."""
-        pid, fd = _spawn_tui(
-            self.socket_path,
-            "proj-a",
-            cols=80,
-            rows=24,
-            extra_env={"COORDINATOR_TUI_TEST_SUBMIT": "/shutdown|/shutdown"},
-        )
+        """Type /shutdown twice; assert exactly one system.shutdown request."""
+        pid, fd = _spawn_tui(self.socket_path, "proj-a", cols=80, rows=24)
         try:
             _wait_for_connection(fd)
-            time.sleep(2.0)
+            _read_available(fd, timeout=0.5)
+            # First /shutdown — enters pending confirmation state.
+            _type_string_and_wait(fd, "/shutdown")
+            _type_enter_and_wait(fd)
+            # Second /shutdown — confirms and sends RPC.
+            _type_string_and_wait(fd, "/shutdown")
+            _type_enter_and_wait(fd)
             self.assertTrue(
-                self.server.wait_for_request_method("system.shutdown", timeout=8),
+                self.server.wait_for_request_method("system.shutdown", timeout=10),
                 "system.shutdown RPC not received after confirmation",
             )
             requests = self.server.drain_requests()
@@ -518,17 +590,21 @@ class TuiPtyTests(unittest.TestCase):
             _cleanup_tui(pid, fd)
 
     def test_pty_shutdown_status_shutdown_sends_no_rpc(self) -> None:
-        """Submit /shutdown, /status, /shutdown; assert no shutdown request."""
-        pid, fd = _spawn_tui(
-            self.socket_path,
-            "proj-a",
-            cols=80,
-            rows=24,
-            extra_env={"COORDINATOR_TUI_TEST_SUBMIT": "/shutdown|/status|/shutdown"},
-        )
+        """Type /shutdown, /status, /shutdown; assert no shutdown, one status."""
+        pid, fd = _spawn_tui(self.socket_path, "proj-a", cols=80, rows=24)
         try:
             _wait_for_connection(fd)
-            time.sleep(2.5)
+            _read_available(fd, timeout=0.5)
+            # First /shutdown — pending.
+            _type_string_and_wait(fd, "/shutdown")
+            _type_enter_and_wait(fd)
+            # /status — clears pending destructive.
+            _type_string_and_wait(fd, "/status")
+            _type_enter_and_wait(fd)
+            # Second /shutdown — new pending (not confirmed).
+            _type_string_and_wait(fd, "/shutdown")
+            _type_enter_and_wait(fd)
+            time.sleep(3.0)
             requests = self.server.drain_requests()
             shutdowns = [m for m, _ in requests if m == "system.shutdown"]
             self.assertEqual(shutdowns, [], f"Unexpected shutdown RPCs: {requests}")
@@ -749,36 +825,35 @@ class TuiPtyTests(unittest.TestCase):
         finally:
             sock.close()
 
-    def test_terminal_cleanup_after_forced_error(self) -> None:
-        """Terminal cleanup (no hang) after forced application error."""
-        pid, fd = _spawn_tui(
-            self.socket_path,
-            "proj-a",
-            cols=80,
-            rows=24,
-            extra_env={"COORDINATOR_TUI_TEST_UNCAUGHT": "1"},
-        )
+    def test_ctrl_c_when_disconnected_exits_promptly(self) -> None:
+        """Ctrl+C exits TUI when Supervisor socket is unavailable.
+
+        The TUI starts in 'connecting' or 'offline' state. Composer must
+        handle Ctrl+C even when disabled (disconnected). Asserts the TUI
+        exits within a reasonable deadline.
+        """
+        # Use a socket path that does not exist — TUI will be in connecting/offline.
+        bogus_path = os.path.join(self.tmp_dir, "nonexistent.sock")
+        pid, fd = _spawn_tui(bogus_path, "proj-a", cols=80, rows=24)
         try:
-            _wait_for_connection(fd)
-            time.sleep(1.5)
+            # Wait a moment for TUI to start and enter connecting state.
+            time.sleep(2.0)
+            _type_ctrl_c(fd)
+            time.sleep(1.0)
             try:
                 os.close(fd)
             except OSError:
                 pass
-            exit_code = _wait_for_exit(pid, time.time() + 8)
+            exit_code = _wait_for_exit(pid, time.time() + 5)
             if exit_code is None:
                 try:
                     os.kill(pid, signal.SIGKILL)
                     os.waitpid(pid, 0)
                 except (ProcessLookupError, ChildProcessError):
                     pass
-                self.fail("TUI hung after forced uncaught exception")
-            self.assertEqual(exit_code, 1, f"Expected exit code 1 after uncaught error, got {exit_code}")
+                self.fail("TUI did not exit after Ctrl+C while disconnected")
         finally:
-            try:
-                os.waitpid(pid, 0)
-            except ChildProcessError:
-                pass
+            pass
 
     def test_manifest_build_hash_matches_bundle(self) -> None:
         """manifest build_hash matches the bundled entry.js content."""
