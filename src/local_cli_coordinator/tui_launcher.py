@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Callable
 
 from .db import connect, init_db
+from .global_migration import needs_first_run_migration, prompt_migration_or_exit
 from .projects import find_project_by_path
 from .runtime_paths import RuntimePaths, resolve_runtime_paths
 from .supervisor_process import SupervisorReadinessError, ensure_supervisor
@@ -112,7 +113,12 @@ def _run_tui_with_signal_forwarding(process: subprocess.Popen[bytes]) -> int:
                 continue
 
 
-def launch_tui(*, start_path: Path | None = None) -> int:
+def launch_tui(
+    *,
+    start_path: Path | None = None,
+    interactive: bool | None = None,
+    input_func: Callable[[str], str] | None = None,
+) -> int:
     """Resolve the current Git project and run the packaged Coordinator TUI."""
     try:
         git_root = resolve_git_root(start_path)
@@ -126,6 +132,24 @@ def launch_tui(*, start_path: Path | None = None) -> int:
         return 1
 
     paths = resolve_runtime_paths()
+    if needs_first_run_migration(paths):
+        from .global_migration import detect_legacy_root
+
+        legacy_root = detect_legacy_root(paths)
+        if legacy_root is None:
+            print("error: legacy migration required but source not found", file=sys.stderr)
+            return 1
+        if interactive is None:
+            interactive = sys.stdin.isatty()
+        result = prompt_migration_or_exit(
+            legacy_root,
+            paths,
+            interactive=interactive,
+            input_func=input_func,
+        )
+        if result is None:
+            return 1
+
     try:
         ensure_supervisor(paths)
     except SupervisorReadinessError as exc:
