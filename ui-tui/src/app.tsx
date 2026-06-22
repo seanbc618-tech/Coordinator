@@ -40,6 +40,8 @@ export function App({ socketPath, projectId, canonicalPath }: AppProps) {
   const conn = useStore(connStateAtom)
   const [client] = useState(() => new SupervisorClient({ socketPath, projectId }))
   const [activeProjectId, setActiveProjectId] = useState(projectId)
+  const activeProjectIdRef = useRef(activeProjectId)
+  activeProjectIdRef.current = activeProjectId
   const [onboardingPhase, setOnboardingPhase] = useState<OnboardingPhase>(
     canonicalPath ? 'pending' : 'ready',
   )
@@ -50,6 +52,19 @@ export function App({ socketPath, projectId, canonicalPath }: AppProps) {
     activities: new Map(),
     lastCursor: 0,
   })
+
+  const resetProjectScopedState = useCallback(() => {
+    const empty: TuiState = {
+      connectionState: 'connecting',
+      transcript: [],
+      activities: new Map(),
+      lastCursor: 0,
+    }
+    setTuiState(empty)
+    transcriptAtom.set(empty.transcript)
+    activitiesAtom.set(empty.activities)
+    lastCursorAtom.set(empty.lastCursor)
+  }, [])
 
   // P0: Destructive command confirmation state machine.
   // Tracks which destructive command is awaiting confirmation.
@@ -77,7 +92,7 @@ export function App({ socketPath, projectId, canonicalPath }: AppProps) {
       // P1 fix: use functional update only — no stale closure writes to atoms.
       // Atoms are synced via the useEffect below.
       // P2: pass projectId for defense-in-depth foreign event rejection.
-      setTuiState(prev => reduceEvent(prev, event, activeProjectId))
+      setTuiState(prev => reduceEvent(prev, event, activeProjectIdRef.current))
     })
 
     client.connect()
@@ -85,7 +100,7 @@ export function App({ socketPath, projectId, canonicalPath }: AppProps) {
     return () => {
       client.close()
     }
-  }, [client, activeProjectId])
+  }, [client])
 
   useEffect(() => {
     if (!canonicalPath || onboardingPhase !== 'pending' || conn !== 'connected') {
@@ -109,7 +124,8 @@ export function App({ socketPath, projectId, canonicalPath }: AppProps) {
 
       if (draft.project_id) {
         setActiveProjectId(draft.project_id)
-        client.setProjectId(draft.project_id)
+        client.rebind(draft.project_id)
+        resetProjectScopedState()
       }
       setOnboardingPhase('ready')
     }).catch(() => {
@@ -121,7 +137,7 @@ export function App({ socketPath, projectId, canonicalPath }: AppProps) {
     return () => {
       cancelled = true
     }
-  }, [canonicalPath, client, conn, onboardingPhase])
+  }, [canonicalPath, client, conn, onboardingPhase, resetProjectScopedState])
 
   // Load initial snapshot once chat is available
   useEffect(() => {
@@ -168,12 +184,13 @@ export function App({ socketPath, projectId, canonicalPath }: AppProps) {
       const result = resp.result as { project_id?: string }
       if (result.project_id) {
         setActiveProjectId(result.project_id)
-        client.setProjectId(result.project_id)
+        client.rebind(result.project_id)
+        resetProjectScopedState()
       }
       setOnboardingDraft(null)
       setOnboardingPhase('ready')
     }).catch(() => {})
-  }, [canonicalPath, client, onboardingDraft])
+  }, [canonicalPath, client, onboardingDraft, resetProjectScopedState])
 
   const handleOnboardingReject = useCallback(() => {
     performDetach()

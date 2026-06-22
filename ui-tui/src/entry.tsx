@@ -12,6 +12,31 @@ export interface AppOptions {
   canonicalPath?: string
 }
 
+export interface ParsedEntryArgs {
+  socketPath: string
+  projectId: string
+  canonicalPath?: string
+}
+
+/**
+ * Parse launcher argv: node entry.js <socketPath> <projectId> [canonicalPath]
+ */
+export function parseEntryArgs(argv: string[]): ParsedEntryArgs | null {
+  const socketPath = argv[2]
+  const projectId = argv[3]
+  const canonicalPath = argv[4]
+
+  if (!socketPath || !projectId) {
+    return null
+  }
+
+  return {
+    socketPath,
+    projectId,
+    canonicalPath: canonicalPath?.trim() ? canonicalPath : undefined,
+  }
+}
+
 /**
  * Application factory. Creates the TUI app without starting it.
  * Tests can call this to verify construction without spawning a process.
@@ -64,14 +89,12 @@ export function createApp(options: AppOptions) {
 
 // CLI invocation: node dist/entry.js <socketPath> <projectId> [canonicalPath]
 if (process.argv[1] && !process.env.VITEST) {
-  const socketPath = process.argv[2]
-  const projectId = process.argv[3]
-  const canonicalPath = process.argv[4]
-
-  if (!socketPath || !projectId) {
+  const parsed = parseEntryArgs(process.argv)
+  if (!parsed) {
     console.error('Usage: coordinator-tui <socketPath> <projectId> [canonicalPath]')
     process.exit(1)
   }
+  const { socketPath, projectId, canonicalPath } = parsed
 
   // TTY guard
   if (!process.stdin.isTTY) {

@@ -38490,6 +38490,9 @@ var init_supervisorClient = __esm({
       getLastCursor() {
         return this.lastCursor;
       }
+      getProjectId() {
+        return this.projectId;
+      }
       setProjectId(projectId) {
         if (this.projectId === projectId) {
           return;
@@ -38498,6 +38501,36 @@ var init_supervisorClient = __esm({
         if (this.state === "connected") {
           this.subscribe();
         }
+      }
+      /**
+       * Close the onboarding connection and reconnect scoped to a registered project.
+       */
+      rebind(projectId) {
+        if (this.closed) {
+          return;
+        }
+        this.disconnect();
+        this.projectId = projectId;
+        this.connect();
+      }
+      disconnect() {
+        if (this.reconnectTimer) {
+          clearTimeout(this.reconnectTimer);
+          this.reconnectTimer = null;
+        }
+        for (const [, req] of this.pending) {
+          clearTimeout(req.timer);
+          req.reject(new Error("client rebound"));
+        }
+        this.pending.clear();
+        if (this.socket) {
+          this.socket.destroy();
+          this.socket = null;
+        }
+        this.buffer = "";
+        this.lastCursor = 0;
+        this.reconnectAttempt = 0;
+        this.setState("offline");
       }
       onEvent(handler) {
         this.eventHandler = handler;
@@ -39359,6 +39392,8 @@ function App2({ socketPath, projectId, canonicalPath }) {
   const conn = useStore(connectionState);
   const [client] = (0, import_react32.useState)(() => new SupervisorClient({ socketPath, projectId }));
   const [activeProjectId, setActiveProjectId] = (0, import_react32.useState)(projectId);
+  const activeProjectIdRef = (0, import_react32.useRef)(activeProjectId);
+  activeProjectIdRef.current = activeProjectId;
   const [onboardingPhase, setOnboardingPhase] = (0, import_react32.useState)(
     canonicalPath ? "pending" : "ready"
   );
@@ -39369,6 +39404,18 @@ function App2({ socketPath, projectId, canonicalPath }) {
     activities: /* @__PURE__ */ new Map(),
     lastCursor: 0
   });
+  const resetProjectScopedState = (0, import_react32.useCallback)(() => {
+    const empty = {
+      connectionState: "connecting",
+      transcript: [],
+      activities: /* @__PURE__ */ new Map(),
+      lastCursor: 0
+    };
+    setTuiState(empty);
+    transcript.set(empty.transcript);
+    activities.set(empty.activities);
+    lastCursor.set(empty.lastCursor);
+  }, []);
   const pendingDestructiveRef = (0, import_react32.useRef)(null);
   (0, import_react32.useEffect)(() => {
     registerDetachHandlers({
@@ -39384,13 +39431,13 @@ function App2({ socketPath, projectId, canonicalPath }) {
       }
     });
     client.on("event", (event) => {
-      setTuiState((prev) => reduceEvent(prev, event, activeProjectId));
+      setTuiState((prev) => reduceEvent(prev, event, activeProjectIdRef.current));
     });
     client.connect();
     return () => {
       client.close();
     };
-  }, [client, activeProjectId]);
+  }, [client]);
   (0, import_react32.useEffect)(() => {
     if (!canonicalPath || onboardingPhase !== "pending" || conn !== "connected") {
       return;
@@ -39410,7 +39457,8 @@ function App2({ socketPath, projectId, canonicalPath }) {
       }
       if (draft.project_id) {
         setActiveProjectId(draft.project_id);
-        client.setProjectId(draft.project_id);
+        client.rebind(draft.project_id);
+        resetProjectScopedState();
       }
       setOnboardingPhase("ready");
     }).catch(() => {
@@ -39421,7 +39469,7 @@ function App2({ socketPath, projectId, canonicalPath }) {
     return () => {
       cancelled = true;
     };
-  }, [canonicalPath, client, conn, onboardingPhase]);
+  }, [canonicalPath, client, conn, onboardingPhase, resetProjectScopedState]);
   (0, import_react32.useEffect)(() => {
     if (onboardingPhase !== "ready" || conn !== "connected") {
       return;
@@ -39460,13 +39508,14 @@ function App2({ socketPath, projectId, canonicalPath }) {
       const result = resp.result;
       if (result.project_id) {
         setActiveProjectId(result.project_id);
-        client.setProjectId(result.project_id);
+        client.rebind(result.project_id);
+        resetProjectScopedState();
       }
       setOnboardingDraft(null);
       setOnboardingPhase("ready");
     }).catch(() => {
     });
-  }, [canonicalPath, client, onboardingDraft]);
+  }, [canonicalPath, client, onboardingDraft, resetProjectScopedState]);
   const handleOnboardingReject = (0, import_react32.useCallback)(() => {
     performDetach();
   }, []);
@@ -39556,6 +39605,19 @@ init_detach();
 init_lifecycle();
 init_terminalModes();
 var import_jsx_runtime10 = __toESM(require_jsx_runtime(), 1);
+function parseEntryArgs(argv) {
+  const socketPath = argv[2];
+  const projectId = argv[3];
+  const canonicalPath = argv[4];
+  if (!socketPath || !projectId) {
+    return null;
+  }
+  return {
+    socketPath,
+    projectId,
+    canonicalPath: canonicalPath?.trim() ? canonicalPath : void 0
+  };
+}
 function createApp(options) {
   const { socketPath, projectId, canonicalPath } = options;
   return {
@@ -39596,13 +39658,12 @@ function createApp(options) {
   };
 }
 if (process.argv[1] && !process.env.VITEST) {
-  const socketPath = process.argv[2];
-  const projectId = process.argv[3];
-  const canonicalPath = process.argv[4];
-  if (!socketPath || !projectId) {
+  const parsed = parseEntryArgs(process.argv);
+  if (!parsed) {
     console.error("Usage: coordinator-tui <socketPath> <projectId> [canonicalPath]");
     process.exit(1);
   }
+  const { socketPath, projectId, canonicalPath } = parsed;
   if (!process.stdin.isTTY) {
     console.log("coordinator-tui: no TTY");
     process.exit(0);
@@ -39617,7 +39678,8 @@ if (process.argv[1] && !process.env.VITEST) {
   void app.start();
 }
 export {
-  createApp
+  createApp,
+  parseEntryArgs
 };
 /*! Bundled license information:
 

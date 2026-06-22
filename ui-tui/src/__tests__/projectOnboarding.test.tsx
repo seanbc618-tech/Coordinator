@@ -93,10 +93,15 @@ describe('App onboarding integration', () => {
 
     vi.doMock('../supervisorClient.js', () => ({
       SupervisorClient: class extends EventEmitter {
+        projectId = '__onboarding__'
         connect() {
           queueMicrotask(() => this.emit('state', 'connected'))
         }
         close() {}
+        rebind(nextProjectId: string) {
+          this.projectId = nextProjectId
+          queueMicrotask(() => this.emit('state', 'connected'))
+        }
         request = request
       },
     }))
@@ -127,10 +132,15 @@ describe('App onboarding integration', () => {
 
     vi.doMock('../supervisorClient.js', () => ({
       SupervisorClient: class extends EventEmitter {
+        projectId = '__onboarding__'
         connect() {
           queueMicrotask(() => this.emit('state', 'connected'))
         }
         close() {}
+        rebind(nextProjectId: string) {
+          this.projectId = nextProjectId
+          queueMicrotask(() => this.emit('state', 'connected'))
+        }
         request = request
       },
     }))
@@ -165,10 +175,15 @@ describe('App onboarding integration', () => {
 
     vi.doMock('../supervisorClient.js', () => ({
       SupervisorClient: class extends EventEmitter {
+        projectId = '__onboarding__'
         connect() {
           queueMicrotask(() => this.emit('state', 'connected'))
         }
         close() {}
+        rebind(nextProjectId: string) {
+          this.projectId = nextProjectId
+          queueMicrotask(() => this.emit('state', 'connected'))
+        }
         request = request
       },
     }))
@@ -204,10 +219,15 @@ describe('App onboarding integration', () => {
 
     vi.doMock('../supervisorClient.js', () => ({
       SupervisorClient: class extends EventEmitter {
+        projectId = '__onboarding__'
         connect() {
           queueMicrotask(() => this.emit('state', 'connected'))
         }
         close() {}
+        rebind(nextProjectId: string) {
+          this.projectId = nextProjectId
+          queueMicrotask(() => this.emit('state', 'connected'))
+        }
         request = request
       },
     }))

@@ -67,6 +67,10 @@ export class SupervisorClient extends EventEmitter {
     return this.lastCursor
   }
 
+  getProjectId(): string {
+    return this.projectId
+  }
+
   setProjectId(projectId: string): void {
     if (this.projectId === projectId) {
       return
@@ -75,6 +79,38 @@ export class SupervisorClient extends EventEmitter {
     if (this.state === 'connected') {
       this.subscribe()
     }
+  }
+
+  /**
+   * Close the onboarding connection and reconnect scoped to a registered project.
+   */
+  rebind(projectId: string): void {
+    if (this.closed) {
+      return
+    }
+    this.disconnect()
+    this.projectId = projectId
+    this.connect()
+  }
+
+  private disconnect(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
+    for (const [, req] of this.pending) {
+      clearTimeout(req.timer)
+      req.reject(new Error('client rebound'))
+    }
+    this.pending.clear()
+    if (this.socket) {
+      this.socket.destroy()
+      this.socket = null
+    }
+    this.buffer = ''
+    this.lastCursor = 0
+    this.reconnectAttempt = 0
+    this.setState('offline')
   }
 
   onEvent(handler: (event: EventEnvelope) => void): void {
