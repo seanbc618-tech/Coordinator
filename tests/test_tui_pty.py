@@ -102,6 +102,33 @@ def _wait_for_exit(pid: int, deadline: float) -> int | None:
     return None
 
 
+def _wait_for_exit_draining(pid: int, fd: int, timeout: float) -> int | None:
+    """Wait for pid to exit while draining PTY output.
+
+    Detach paths write to stdout while the PTY master is unread; without
+    draining, the child blocks and never reaches process.exit().
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        ready, _, _ = select.select([fd], [], [], 0.05)
+        if ready:
+            try:
+                os.read(fd, 4096)
+            except OSError:
+                break
+        try:
+            wpid, status = os.waitpid(pid, os.WNOHANG)
+            if wpid != 0:
+                if os.WIFEXITED(status):
+                    return os.WEXITSTATUS(status)
+                if os.WIFSIGNALED(status):
+                    return -os.WTERMSIG(status)
+                return status
+        except ChildProcessError:
+            return 0
+    return None
+
+
 def _spawn_tui(
     socket_path: str,
     project_id: str,
@@ -191,10 +218,17 @@ def _type_char(fd: int, char: str, delay: float = 0.2) -> None:
     time.sleep(delay)
 
 
-def _drain_pty(fd: int, quiet_time: float = 0.3) -> None:
-    """Drain all pending PTY output until quiet for quiet_time seconds."""
+def _drain_pty(fd: int, quiet_time: float = 0.3, max_time: float | None = None) -> None:
+    """Drain pending PTY output until quiet for quiet_time seconds.
+
+    When max_time is set, stop after that many seconds even if output continues.
+    Live TUIs can render indefinitely; uncapped draining can stall detach helpers.
+    """
+    started = time.time()
     deadline = time.time() + quiet_time
     while time.time() < deadline:
+        if max_time is not None and time.time() - started >= max_time:
+            break
         remaining = deadline - time.time()
         ready, _, _ = select.select([fd], [], [], min(remaining, 0.05))
         if ready:
@@ -273,7 +307,7 @@ def _type_ctrl_c(fd: int) -> None:
     """Press Ctrl+C."""
     # Drain pending frames so the child event loop can read the byte; an unread
     # PTY master otherwise blocks stdout and stalls detach.
-    _drain_pty(fd, quiet_time=0.2)
+    _drain_pty(fd, quiet_time=0.2, max_time=1.0)
     os.write(fd, b"\x03")
     time.sleep(0.1)
 

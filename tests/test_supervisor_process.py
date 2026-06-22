@@ -120,6 +120,20 @@ class SupervisorProcessTestBase(unittest.TestCase):
             'max_consecutive_failures = 3\n'
         )
 
+    def _close_process_streams(self, process: subprocess.Popen[str]) -> None:
+        for stream in (process.stdout, process.stderr, process.stdin):
+            if stream is None:
+                continue
+            try:
+                if stream.readable():
+                    stream.read()
+            except (OSError, ValueError):
+                pass
+            try:
+                stream.close()
+            except OSError:
+                pass
+
     def tearDown(self) -> None:
         stop = _run_cli_with_home(self.home, "supervisor", "stop")
         if stop.returncode != 0:
@@ -138,6 +152,7 @@ class SupervisorProcessTestBase(unittest.TestCase):
                             process.kill()
                         process.wait(timeout=2.0)
         for process in self._processes:
+            self._close_process_streams(process)
             if process.poll() is None:
                 process.terminate()
                 try:

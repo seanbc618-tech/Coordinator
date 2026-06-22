@@ -24,6 +24,7 @@ DEFAULT_READINESS_TIMEOUT = 30.0
 DEFAULT_POLL_INTERVAL = 0.1
 STARTUP_LOCK_NAME = "supervisor-startup.lock"
 SUPERVISOR_LOG_NAME = "supervisor.log"
+_DETACHED_CHILD_WRAPPERS: list[subprocess.Popen[bytes]] = []
 
 
 class SupervisorProcessError(RuntimeError):
@@ -86,10 +87,23 @@ def _read_lock_pid(lock_path: Path) -> int | None:
         return None
 
 
+def _release_popen_wrapper(process: subprocess.Popen[bytes]) -> None:
+    """Retain a detached child wrapper so CPython does not emit ResourceWarning."""
+    for stream in (process.stdin, process.stdout, process.stderr):
+        if stream is not None:
+            try:
+                stream.close()
+            except OSError:
+                pass
+    if process.poll() is None:
+        _DETACHED_CHILD_WRAPPERS.append(process)
+
+
 def _spawn_detached_supervisor(paths: RuntimePaths) -> subprocess.Popen[bytes]:
     paths.state_dir.mkdir(parents=True, exist_ok=True)
     log_path = supervisor_log_path(paths)
-    with open(log_path, "a", encoding="utf-8") as log_handle:
+    log_handle = open(log_path, "a", encoding="utf-8")
+    try:
         process = subprocess.Popen(
             [
                 sys.executable,
@@ -105,6 +119,8 @@ def _spawn_detached_supervisor(paths: RuntimePaths) -> subprocess.Popen[bytes]:
             start_new_session=True,
             close_fds=True,
         )
+    finally:
+        log_handle.close()
     return process
 
 
@@ -229,11 +245,14 @@ def ensure_supervisor(
         except SupervisorReadinessError:
             _cleanup_failed_start(process, paths)
             raise
-        return EnsureSupervisorResult(
+        result = EnsureSupervisorResult(
             attached=False,
             started=True,
             pid=_read_lock_pid(paths.lock) or process.pid,
         )
+        if process is not None:
+            _release_popen_wrapper(process)
+        return result
     finally:
         if isinstance(lock_result, LockInfo):
             release_lock_at(startup_lock)

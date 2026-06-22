@@ -1,10 +1,12 @@
 """Tests for project onboarding Supervisor methods."""
 
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from unittest import TestCase
 
+from local_cli_coordinator.config import load_config
 from local_cli_coordinator.db import connect, init_db
 from local_cli_coordinator.projects import inspect_project, register_project
 from local_cli_coordinator.supervisor_methods import SupervisorMethods
@@ -77,6 +79,58 @@ class ProjectOnboardingMethodsTest(TestCase):
         self.assertEqual(resp.result["max_tasks_per_day"], 24)
         self.assertEqual(resp.result["max_task_runtime_seconds"], 1800)
 
+    def test_inspect_uses_repo_and_global_policy_when_configured(self) -> None:
+        config_root = Path(self.tmp.name) / "config-root"
+        config_dir = config_root / "config"
+        config_dir.mkdir(parents=True)
+        config_dir.joinpath("agents.toml").write_text(
+            '[agents.test]\n'
+            f'command = "{Path(sys.executable)}"\n'
+            'capabilities = ["code"]\n'
+            'max_concurrency = 1\n',
+            encoding="utf-8",
+        )
+        config_dir.joinpath("repos.toml").write_text(
+            '[repos.demo]\n'
+            f'path = "{self.repo.resolve()}"\n'
+            'default_branch = "main"\n'
+            'allow_push = true\n'
+            'merge_policy = "push_branch_only"\n'
+            'review_policy = "always_human"\n'
+            'verify_commands = ["make test"]\n',
+            encoding="utf-8",
+        )
+        config_dir.joinpath("policy.toml").write_text(
+            '[task_policy]\n'
+            'require_single_repo = true\n'
+            'require_acceptance_criteria = false\n'
+            'require_verification_commands = false\n'
+            'require_handoff_summary = false\n'
+            'max_files_touched = 10\n'
+            'max_expected_minutes = 30\n'
+            'max_attempts = 3\n'
+            'split_if_touches_multiple_subsystems = false\n'
+            'split_if_research_and_code_are_mixed = false\n'
+            'max_tasks_per_run = 1\n'
+            'max_tasks_per_day = 42\n'
+            'max_task_runtime_seconds = 900\n'
+            'max_consecutive_failures = 3\n',
+            encoding="utf-8",
+        )
+        config = load_config(config_root)
+        methods = SupervisorMethods(config=config)
+        resp = methods.handle(
+            self.conn,
+            _request("project.inspect", path=str(self.repo)),
+        )
+        self.assertTrue(resp.ok)
+        self.assertTrue(resp.result["allow_push"])
+        self.assertEqual(resp.result["merge_policy"], "push_branch_only")
+        self.assertEqual(resp.result["review_policy"], "always_human")
+        self.assertEqual(resp.result["verify_commands"], ["make test"])
+        self.assertEqual(resp.result["max_tasks_per_day"], 42)
+        self.assertEqual(resp.result["max_task_runtime_seconds"], 900)
+
     def test_inspect_detects_registered_project(self) -> None:
         project_id = register_project(self.conn, self.draft, confirmed=True)
         resp = self.methods.handle(
@@ -134,6 +188,67 @@ class ProjectOnboardingMethodsTest(TestCase):
         )
         self.assertFalse(resp.ok)
         self.assertIn("mismatch", resp.error.lower())
+
+    def test_register_accepts_policy_resolved_verify_commands(self) -> None:
+        config_root = Path(self.tmp.name) / "config-root"
+        config_dir = config_root / "config"
+        config_dir.mkdir(parents=True)
+        config_dir.joinpath("agents.toml").write_text(
+            '[agents.test]\n'
+            f'command = "{Path(sys.executable)}"\n'
+            'capabilities = ["code"]\n'
+            'max_concurrency = 1\n',
+            encoding="utf-8",
+        )
+        config_dir.joinpath("repos.toml").write_text(
+            '[repos.demo]\n'
+            f'path = "{self.repo.resolve()}"\n'
+            'default_branch = "main"\n'
+            'verify_commands = ["make test"]\n',
+            encoding="utf-8",
+        )
+        config_dir.joinpath("policy.toml").write_text(
+            '[task_policy]\n'
+            'require_single_repo = true\n'
+            'require_acceptance_criteria = false\n'
+            'require_verification_commands = false\n'
+            'require_handoff_summary = false\n'
+            'max_files_touched = 10\n'
+            'max_expected_minutes = 30\n'
+            'max_attempts = 3\n'
+            'split_if_touches_multiple_subsystems = false\n'
+            'split_if_research_and_code_are_mixed = false\n'
+            'max_tasks_per_run = 1\n'
+            'max_tasks_per_day = 24\n'
+            'max_consecutive_failures = 3\n',
+            encoding="utf-8",
+        )
+        config = load_config(config_root)
+        methods = SupervisorMethods(config=config)
+        inspect_resp = methods.handle(
+            self.conn,
+            _request("project.inspect", path=str(self.repo)),
+        )
+        self.assertTrue(inspect_resp.ok)
+        resp = methods.handle(
+            self.conn,
+            _request(
+                "project.register",
+                confirmed=True,
+                path=str(self.repo),
+                canonical_path=inspect_resp.result["canonical_path"],
+                repo_id=inspect_resp.result["repo_id"],
+                default_branch=inspect_resp.result["default_branch"],
+                branch_prefix=inspect_resp.result["branch_prefix"],
+                verify_commands=inspect_resp.result["verify_commands"],
+            ),
+        )
+        self.assertTrue(resp.ok, resp.error)
+        row = self.conn.execute(
+            "select verify_commands from projects where id = ?",
+            (resp.result["project_id"],),
+        ).fetchone()
+        self.assertEqual(row["verify_commands"], "make test")
 
     def test_register_confirmed_creates_project(self) -> None:
         resp = self.methods.handle(

@@ -790,7 +790,7 @@ def _cmd_supervisor_start(args: argparse.Namespace) -> int:
     # Assemble shared components
     broker = EventBroker()
     capacity = SharedCapacity()
-    methods = SupervisorMethods(broker=broker)
+    methods = SupervisorMethods(broker=broker, config=config)
     scheduler = FairProjectScheduler(project_ids)
 
     sup = MultiProjectSupervisor(

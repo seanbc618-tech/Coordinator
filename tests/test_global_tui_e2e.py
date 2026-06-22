@@ -46,6 +46,7 @@ from tests.test_tui_pty import (
     _type_string_and_wait,
     _wait_for_connection,
     _wait_for_exit,
+    _wait_for_exit_draining,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -355,17 +356,13 @@ class GlobalTuiE2ETests(unittest.TestCase):
                     _strip_ansi(onboarding),
                     f"{name}: onboarding screen missing",
                 )
+                _drain_pty(fd, quiet_time=0.3)
                 _type_enter_and_wait(fd)
+                _drain_pty(fd, quiet_time=0.3)
                 connected = _wait_for_connection(fd, timeout=45.0)
                 self.assertIn("connected", connected, f"{name}: TUI did not connect")
-                registered = _wait_for_text(
-                    fd,
-                    "proj-",
-                    timeout=30.0,
-                )
-                connected += registered
+                self.assertIn("proj-", _strip_ansi(connected), f"{name}: registered project id missing")
                 self.assertNotIn("__onboarding__", _final_frame_text(connected), f"{name}: still onboarding")
-                connected += _wait_for_connection(fd, timeout=30.0)
                 time.sleep(1.0)
                 _drain_pty(fd, quiet_time=0.3)
 
@@ -413,15 +410,15 @@ class GlobalTuiE2ETests(unittest.TestCase):
             _drain_pty(detach_fd, quiet_time=0.3)
             _type_string_and_wait(detach_fd, "/quit")
             _type_enter_and_wait(detach_fd)
-            exit_code = _wait_for_exit(detach_pid, time.time() + 15.0)
+            exit_code = _wait_for_exit_draining(detach_pid, detach_fd, timeout=15.0)
             if exit_code is None:
+                _drain_pty(detach_fd, quiet_time=0.2, max_time=1.0)
                 _type_ctrl_c(detach_fd)
-                time.sleep(2.0)
-                try:
-                    os.close(detach_fd)
-                except OSError:
-                    pass
-                exit_code = _wait_for_exit(detach_pid, time.time() + 10.0)
+                exit_code = _wait_for_exit_draining(detach_pid, detach_fd, timeout=10.0)
+            try:
+                os.close(detach_fd)
+            except OSError:
+                pass
             self.assertIsNotNone(exit_code, f"{detach_name}: detach did not exit")
             self.assertEqual(exit_code, 0, f"{detach_name}: expected clean detach, got {exit_code}")
             try:

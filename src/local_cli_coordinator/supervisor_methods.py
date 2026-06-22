@@ -7,6 +7,7 @@ shared sets. Event subscribers receive live events via the shared broker.
 
 from __future__ import annotations
 
+import dataclasses
 import queue
 import subprocess
 import uuid
@@ -14,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable
 import sqlite3
 
+from .config import CoordinatorConfig, RepoConfig
 from .db import project_task_counts, project_list_tasks
 from .projects import ProjectDraft, inspect_project, register_project
 from .supervisor_events import EventBroker
@@ -28,6 +30,64 @@ DEFAULT_MERGE_POLICY = "no_push"
 DEFAULT_REVIEW_POLICY = "full_review"
 DEFAULT_MAX_TASKS_PER_DAY = 24
 DEFAULT_MAX_TASK_RUNTIME_SECONDS = 1800
+
+
+def _match_repo_config(
+    draft: ProjectDraft,
+    config: CoordinatorConfig | None,
+) -> RepoConfig | None:
+    if config is None:
+        return None
+    canonical = draft.canonical_path.resolve()
+    for repo in config.repos.values():
+        if repo.path.resolve() == canonical:
+            return repo
+    return None
+
+
+def resolve_inspect_policy(
+    draft: ProjectDraft,
+    *,
+    config: CoordinatorConfig | None = None,
+) -> dict[str, Any]:
+    """Resolve effective onboarding policy for a repository inspection."""
+    repo = _match_repo_config(draft, config)
+    policy = config.policy if config is not None else None
+
+    if repo is not None:
+        return {
+            "verify_commands": list(repo.verify_commands),
+            "allow_push": repo.allow_push,
+            "merge_policy": repo.merge_policy,
+            "review_policy": repo.review_policy,
+            "max_tasks_per_day": (
+                policy.max_tasks_per_day
+                if policy is not None
+                else DEFAULT_MAX_TASKS_PER_DAY
+            ),
+            "max_task_runtime_seconds": (
+                policy.max_task_runtime_seconds
+                if policy is not None
+                else DEFAULT_MAX_TASK_RUNTIME_SECONDS
+            ),
+        }
+
+    return {
+        "verify_commands": list(draft.verify_commands),
+        "allow_push": DEFAULT_ALLOW_PUSH,
+        "merge_policy": DEFAULT_MERGE_POLICY,
+        "review_policy": DEFAULT_REVIEW_POLICY,
+        "max_tasks_per_day": (
+            policy.max_tasks_per_day
+            if policy is not None
+            else DEFAULT_MAX_TASKS_PER_DAY
+        ),
+        "max_task_runtime_seconds": (
+            policy.max_task_runtime_seconds
+            if policy is not None
+            else DEFAULT_MAX_TASK_RUNTIME_SECONDS
+        ),
+    }
 
 
 def _git_root_identity(repo_root: Path) -> str | None:
@@ -73,8 +133,14 @@ class SupervisorMethods:
     Pause/stop state is delegated to shared sets owned by the supervisor.
     """
 
-    def __init__(self, broker: EventBroker | None = None) -> None:
+    def __init__(
+        self,
+        broker: EventBroker | None = None,
+        *,
+        config: CoordinatorConfig | None = None,
+    ) -> None:
         self._broker = broker or EventBroker()
+        self._config = config
         self._paused: set[str] = set()
         self._stopped: set[str] = set()
         self._live_queues: dict[str, queue.Queue] = {}
@@ -120,8 +186,8 @@ class SupervisorMethods:
             )
         return handler(conn, request)
 
-    @staticmethod
     def _inspect_result(
+        self,
         draft: ProjectDraft,
         *,
         registered: bool = False,
@@ -129,17 +195,18 @@ class SupervisorMethods:
         path_changed: bool = False,
         stored_canonical_path: str | None = None,
     ) -> dict[str, Any]:
+        policy = resolve_inspect_policy(draft, config=self._config)
         result: dict[str, Any] = {
             "canonical_path": str(draft.canonical_path),
             "repo_id": draft.repo_id,
             "default_branch": draft.default_branch,
             "branch_prefix": draft.branch_prefix,
-            "verify_commands": list(draft.verify_commands),
-            "allow_push": DEFAULT_ALLOW_PUSH,
-            "merge_policy": DEFAULT_MERGE_POLICY,
-            "review_policy": DEFAULT_REVIEW_POLICY,
-            "max_tasks_per_day": DEFAULT_MAX_TASKS_PER_DAY,
-            "max_task_runtime_seconds": DEFAULT_MAX_TASK_RUNTIME_SECONDS,
+            "verify_commands": policy["verify_commands"],
+            "allow_push": policy["allow_push"],
+            "merge_policy": policy["merge_policy"],
+            "review_policy": policy["review_policy"],
+            "max_tasks_per_day": policy["max_tasks_per_day"],
+            "max_task_runtime_seconds": policy["max_task_runtime_seconds"],
             "registered": registered,
             "path_changed": path_changed,
         }
@@ -224,8 +291,14 @@ class SupervisorMethods:
         submitted_verify = request.params.get("verify_commands", [])
         if not isinstance(submitted_verify, list):
             return self._error(request, "verify_commands must be a list")
-        if list(fresh.verify_commands) != submitted_verify:
+        expected_verify = resolve_inspect_policy(fresh, config=self._config)["verify_commands"]
+        if expected_verify != submitted_verify:
             return self._error(request, "draft field mismatch: verify_commands")
+
+        effective = dataclasses.replace(
+            fresh,
+            verify_commands=tuple(str(cmd) for cmd in expected_verify),
+        )
 
         existing = _find_moved_project(conn, fresh)
         if existing is not None:
@@ -237,17 +310,17 @@ class SupervisorMethods:
                 where id = ?
                 """,
                 (
-                    str(fresh.canonical_path),
-                    fresh.default_branch,
-                    fresh.branch_prefix,
-                    "\n".join(fresh.verify_commands),
+                    str(effective.canonical_path),
+                    effective.default_branch,
+                    effective.branch_prefix,
+                    "\n".join(effective.verify_commands),
                     existing["id"],
                 ),
             )
             conn.commit()
             return self._ok(request, {"project_id": existing["id"]})
 
-        project_id = register_project(conn, fresh, confirmed=True)
+        project_id = register_project(conn, effective, confirmed=True)
         return self._ok(request, {"project_id": project_id})
 
     def _handle_project_status(
