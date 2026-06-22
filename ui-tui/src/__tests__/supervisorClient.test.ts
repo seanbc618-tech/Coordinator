@@ -242,6 +242,56 @@ describe('SupervisorClient', () => {
     await expect(client.request('system.ping')).rejects.toThrow('not connected')
   })
 
+  it('rebind creates exactly one replacement connection and subscription', async () => {
+    let connections = 0
+    const requests: Array<[string, string]> = []
+
+    await new Promise<void>(resolve => {
+      server = createServer(sock => {
+        connections += 1
+        let buf = ''
+        sock.on('data', chunk => {
+          buf += chunk.toString()
+          let idx: number
+          while ((idx = buf.indexOf('\n')) !== -1) {
+            const line = buf.slice(0, idx)
+            buf = buf.slice(idx + 1)
+            if (!line.trim()) continue
+            const parsed = JSON.parse(line)
+            if (parsed.type !== 'request') continue
+            requests.push([parsed.method, parsed.project_id])
+            if (parsed.method === 'events.subscribe') {
+              sock.write(makeResponse(parsed.request_id, { subscription_id: 'sub-1', replayed: [] }))
+            } else {
+              sock.write(makeResponse(parsed.request_id))
+            }
+          }
+        })
+      })
+      server.listen(socketPath, resolve)
+    })
+
+    const client = new SupervisorClient({
+      socketPath,
+      projectId: '__onboarding__',
+      reconnectBaseMs: 50,
+      reconnectMaxMs: 50,
+      requestTimeoutMs: 2000,
+    })
+    clients.push(client)
+    client.connect()
+    await new Promise<void>(resolve => client.on('state', s => { if (s === 'connected') resolve() }))
+    await new Promise(r => setTimeout(r, 50))
+
+    client.rebind('proj-new')
+    await new Promise<void>(resolve => client.on('state', s => { if (s === 'connected') resolve() }))
+    await new Promise(r => setTimeout(r, 200))
+
+    expect(connections).toBe(2)
+    expect(requests.filter(([method, projectId]) => method === 'events.subscribe' && projectId === '__onboarding__')).toHaveLength(1)
+    expect(requests.filter(([method, projectId]) => method === 'events.subscribe' && projectId === 'proj-new')).toHaveLength(1)
+  })
+
   it('close() rejects pending requests', async () => {
     await startServer(() => {
       // Never respond

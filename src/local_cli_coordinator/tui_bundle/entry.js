@@ -38475,6 +38475,7 @@ var init_supervisorClient = __esm({
       reconnectAttempt = 0;
       reconnectTimer = null;
       closed = false;
+      socketGeneration = 0;
       eventHandler = null;
       constructor(options) {
         super();
@@ -38524,9 +38525,11 @@ var init_supervisorClient = __esm({
         }
         this.pending.clear();
         if (this.socket) {
+          this.socket.removeAllListeners();
           this.socket.destroy();
           this.socket = null;
         }
+        this.socketGeneration += 1;
         this.buffer = "";
         this.lastCursor = 0;
         this.reconnectAttempt = 0;
@@ -38537,23 +38540,30 @@ var init_supervisorClient = __esm({
       }
       connect() {
         if (this.closed) return;
+        const generation = ++this.socketGeneration;
         this.setState("connecting");
-        this.socket = connect(this.socketPath);
-        this.socket.on("connect", () => {
+        const socket = connect(this.socketPath);
+        this.socket = socket;
+        socket.on("connect", () => {
+          if (this.closed || generation !== this.socketGeneration) return;
+          if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+          }
           this.reconnectAttempt = 0;
           this.setState("connected");
           this.subscribe();
         });
-        this.socket.on("data", (data) => {
+        socket.on("data", (data) => {
+          if (generation !== this.socketGeneration) return;
           this.buffer += data.toString();
           this.processBuffer();
         });
-        this.socket.on("close", () => {
-          if (!this.closed) {
-            this.scheduleReconnect();
-          }
+        socket.on("close", () => {
+          if (this.closed || generation !== this.socketGeneration) return;
+          this.scheduleReconnect();
         });
-        this.socket.on("error", () => {
+        socket.on("error", () => {
         });
       }
       async request(method, params = {}) {
@@ -38596,9 +38606,11 @@ var init_supervisorClient = __esm({
         }
         this.pending.clear();
         if (this.socket) {
+          this.socket.removeAllListeners();
           this.socket.destroy();
           this.socket = null;
         }
+        this.socketGeneration += 1;
         this.setState("offline");
       }
       setState(state) {
@@ -38644,14 +38656,17 @@ var init_supervisorClient = __esm({
         this.emit("event", event);
       }
       scheduleReconnect() {
+        if (this.closed) return;
         this.setState("reconnecting");
         const delay = Math.min(
           this.reconnectBaseMs * 2 ** this.reconnectAttempt,
           this.reconnectMaxMs
         );
         this.reconnectAttempt += 1;
+        const generation = this.socketGeneration;
         this.reconnectTimer = setTimeout(() => {
           this.reconnectTimer = null;
+          if (this.closed || generation !== this.socketGeneration) return;
           this.connect();
         }, delay);
       }

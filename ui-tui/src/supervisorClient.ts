@@ -48,6 +48,7 @@ export class SupervisorClient extends EventEmitter {
   private reconnectAttempt = 0
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private closed = false
+  private socketGeneration = 0
   private eventHandler: ((event: EventEnvelope) => void) | null = null
 
   constructor(options: SupervisorClientOptions) {
@@ -104,9 +105,11 @@ export class SupervisorClient extends EventEmitter {
     }
     this.pending.clear()
     if (this.socket) {
+      this.socket.removeAllListeners()
       this.socket.destroy()
       this.socket = null
     }
+    this.socketGeneration += 1
     this.buffer = ''
     this.lastCursor = 0
     this.reconnectAttempt = 0
@@ -119,27 +122,34 @@ export class SupervisorClient extends EventEmitter {
 
   connect(): void {
     if (this.closed) return
+    const generation = ++this.socketGeneration
     this.setState('connecting')
-    this.socket = connect(this.socketPath)
+    const socket = connect(this.socketPath)
+    this.socket = socket
 
-    this.socket.on('connect', () => {
+    socket.on('connect', () => {
+      if (this.closed || generation !== this.socketGeneration) return
+      if (this.reconnectTimer) {
+        clearTimeout(this.reconnectTimer)
+        this.reconnectTimer = null
+      }
       this.reconnectAttempt = 0
       this.setState('connected')
       this.subscribe()
     })
 
-    this.socket.on('data', data => {
+    socket.on('data', data => {
+      if (generation !== this.socketGeneration) return
       this.buffer += data.toString()
       this.processBuffer()
     })
 
-    this.socket.on('close', () => {
-      if (!this.closed) {
-        this.scheduleReconnect()
-      }
+    socket.on('close', () => {
+      if (this.closed || generation !== this.socketGeneration) return
+      this.scheduleReconnect()
     })
 
-    this.socket.on('error', () => {
+    socket.on('error', () => {
       // 'close' will follow
     })
   }
@@ -189,9 +199,11 @@ export class SupervisorClient extends EventEmitter {
     }
     this.pending.clear()
     if (this.socket) {
+      this.socket.removeAllListeners()
       this.socket.destroy()
       this.socket = null
     }
+    this.socketGeneration += 1
     this.setState('offline')
   }
 
@@ -247,14 +259,17 @@ export class SupervisorClient extends EventEmitter {
   }
 
   private scheduleReconnect(): void {
+    if (this.closed) return
     this.setState('reconnecting')
     const delay = Math.min(
       this.reconnectBaseMs * 2 ** this.reconnectAttempt,
       this.reconnectMaxMs,
     )
     this.reconnectAttempt += 1
+    const generation = this.socketGeneration
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null
+      if (this.closed || generation !== this.socketGeneration) return
       this.connect()
     }, delay)
   }

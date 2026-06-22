@@ -28,6 +28,7 @@ describe('App onboarding real SupervisorClient', () => {
   let socketPath: string
   let unmountApp: (() => void) | undefined
   const recorded: Array<{ method: string; projectId: string | null }> = []
+  let connections = 0
 
   afterEach(async () => {
     unmountApp?.()
@@ -43,6 +44,7 @@ describe('App onboarding real SupervisorClient', () => {
       await rm(tmpDir, { recursive: true, force: true })
     }
     recorded.length = 0
+    connections = 0
     vi.resetModules()
   })
 
@@ -53,6 +55,7 @@ describe('App onboarding real SupervisorClient', () => {
 
     await new Promise<void>(resolve => {
       server = createServer(sock => {
+        connections += 1
         let buf = ''
         sock.on('error', () => {})
         sock.on('data', data => {
@@ -112,12 +115,15 @@ describe('App onboarding real SupervisorClient', () => {
     })
 
     await vi.waitFor(() => {
-      const subscribes = recorded.filter(r => r.method === 'events.subscribe')
-      expect(subscribes.length).toBeGreaterThan(1)
-      expect(subscribes.at(-1)?.projectId).toBe('proj-new')
-    }, { timeout: 3000 })
+      expect(recorded.filter(r => r.method === 'project.register').length).toBeGreaterThan(0)
+    })
+    await new Promise(resolve => setTimeout(resolve, 300))
+    const subscribes = recorded.filter(r => r.method === 'events.subscribe')
+    expect(connections).toBe(2)
+    expect(subscribes.filter(r => r.projectId === '__onboarding__')).toHaveLength(1)
+    expect(subscribes.filter(r => r.projectId === 'proj-new')).toHaveLength(1)
     const snapshot = recorded.filter(r => r.method === 'project.snapshot').at(-1)
-    const subscribe = recorded.filter(r => r.method === 'events.subscribe').at(-1)
+    const subscribe = subscribes.filter(r => r.projectId === 'proj-new').at(-1)
     expect(snapshot?.projectId).toBe('proj-new')
     expect(subscribe?.projectId).toBe('proj-new')
     expect(recorded.filter(r => r.method === 'project.inspect').every(r => r.projectId === '__onboarding__')).toBe(true)
