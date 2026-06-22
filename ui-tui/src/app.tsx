@@ -109,6 +109,7 @@ export function App({ socketPath, projectId, canonicalPath }: AppProps) {
 
       if (draft.project_id) {
         setActiveProjectId(draft.project_id)
+        client.setProjectId(draft.project_id)
       }
       setOnboardingPhase('ready')
     }).catch(() => {
@@ -167,6 +168,7 @@ export function App({ socketPath, projectId, canonicalPath }: AppProps) {
       const result = resp.result as { project_id?: string }
       if (result.project_id) {
         setActiveProjectId(result.project_id)
+        client.setProjectId(result.project_id)
       }
       setOnboardingDraft(null)
       setOnboardingPhase('ready')

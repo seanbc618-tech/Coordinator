@@ -266,6 +266,14 @@ class SupervisorMethods:
     def _handle_chat_send(
         self, conn: sqlite3.Connection, request: RequestEnvelope
     ) -> ResponseEnvelope:
+        text = request.params.get("text", "")
+        if isinstance(text, str) and text.strip():
+            self._broker.publish(
+                conn,
+                request.project_id,
+                "chat.message",
+                {"role": "coordinator", "text": f"Received: {text}"},
+            )
         return self._ok(request, {"received": True})
 
     def _handle_project_pause(

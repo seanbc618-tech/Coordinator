@@ -35,7 +35,7 @@ export interface SupervisorClientOptions {
 
 export class SupervisorClient extends EventEmitter {
   private readonly socketPath: string
-  private readonly projectId: string
+  private projectId: string
   private readonly requestTimeoutMs: number
   private readonly reconnectBaseMs: number
   private readonly reconnectMaxMs: number
@@ -65,6 +65,16 @@ export class SupervisorClient extends EventEmitter {
 
   getLastCursor(): number {
     return this.lastCursor
+  }
+
+  setProjectId(projectId: string): void {
+    if (this.projectId === projectId) {
+      return
+    }
+    this.projectId = projectId
+    if (this.state === 'connected') {
+      this.subscribe()
+    }
   }
 
   onEvent(handler: (event: EventEnvelope) => void): void {

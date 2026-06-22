@@ -38490,6 +38490,15 @@ var init_supervisorClient = __esm({
       getLastCursor() {
         return this.lastCursor;
       }
+      setProjectId(projectId) {
+        if (this.projectId === projectId) {
+          return;
+        }
+        this.projectId = projectId;
+        if (this.state === "connected") {
+          this.subscribe();
+        }
+      }
       onEvent(handler) {
         this.eventHandler = handler;
       }
@@ -39215,6 +39224,89 @@ var init_Composer = __esm({
   }
 });
 
+// src/components/ProjectOnboarding.tsx
+function formatVerifyCommands(commands) {
+  if (commands.length === 0) {
+    return "(none detected)";
+  }
+  return commands.join(", ");
+}
+function ProjectOnboarding({ draft, onAccept, onReject }) {
+  use_input_default((_input, key) => {
+    if (key.escape) {
+      onReject();
+      return;
+    }
+    if (key.return) {
+      onAccept();
+    }
+  });
+  return /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(Box_default, { flexDirection: "column", width: "100%", paddingX: 1, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { bold: true, children: "Register this project?" }),
+    /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { children: " " }),
+    draft.path_changed && draft.stored_canonical_path ? /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(Text, { color: "yellow", children: [
+      "Repository moved from ",
+      draft.stored_canonical_path,
+      ". Confirm the new location."
+    ] }) : null,
+    draft.path_changed && draft.stored_canonical_path ? /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { children: " " }) : null,
+    /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(Text, { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { dimColor: true, children: "Canonical path: " }),
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { children: draft.canonical_path })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(Text, { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { dimColor: true, children: "Repo id: " }),
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { children: draft.repo_id })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(Text, { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { dimColor: true, children: "Default branch: " }),
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { children: draft.default_branch })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(Text, { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { dimColor: true, children: "Branch prefix: " }),
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { children: draft.branch_prefix })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(Text, { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { dimColor: true, children: "Verify commands: " }),
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { children: formatVerifyCommands(draft.verify_commands) })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { children: " " }),
+    /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { bold: true, children: "Policies" }),
+    /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(Text, { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { dimColor: true, children: "Push: " }),
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { children: draft.allow_push ? "allow_push" : "no push" })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(Text, { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { dimColor: true, children: "Merge: " }),
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { children: draft.merge_policy })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(Text, { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { dimColor: true, children: "Review: " }),
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { children: draft.review_policy })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { children: " " }),
+    /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { bold: true, children: "Budget defaults" }),
+    /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(Text, { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { dimColor: true, children: "Max tasks per day: " }),
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { children: draft.max_tasks_per_day })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(Text, { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { dimColor: true, children: "Max task runtime (seconds): " }),
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { children: draft.max_task_runtime_seconds })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { children: " " }),
+    /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { dimColor: true, children: "Enter accept \xB7 Esc reject and exit" })
+  ] });
+}
+var import_jsx_runtime8;
+var init_ProjectOnboarding = __esm({
+  async "src/components/ProjectOnboarding.tsx"() {
+    "use strict";
+    await init_build2();
+    import_jsx_runtime8 = __toESM(require_jsx_runtime(), 1);
+  }
+});
+
 // src/submitDecision.ts
 function decideSubmit(text, pendingDestructive) {
   const parsed = parse(text);
@@ -39257,11 +39349,20 @@ var init_submitDecision = __esm({
 // src/app.tsx
 var app_exports = {};
 __export(app_exports, {
-  App: () => App2
+  App: () => App2,
+  needsProjectOnboarding: () => needsProjectOnboarding
 });
-function App2({ socketPath, projectId }) {
+function needsProjectOnboarding(draft) {
+  return !draft.registered || draft.path_changed;
+}
+function App2({ socketPath, projectId, canonicalPath }) {
   const conn = useStore(connectionState);
   const [client] = (0, import_react32.useState)(() => new SupervisorClient({ socketPath, projectId }));
+  const [activeProjectId, setActiveProjectId] = (0, import_react32.useState)(projectId);
+  const [onboardingPhase, setOnboardingPhase] = (0, import_react32.useState)(
+    canonicalPath ? "pending" : "ready"
+  );
+  const [onboardingDraft, setOnboardingDraft] = (0, import_react32.useState)(null);
   const [tuiState, setTuiState] = (0, import_react32.useState)({
     connectionState: "connecting",
     transcript: [],
@@ -39283,9 +39384,48 @@ function App2({ socketPath, projectId }) {
       }
     });
     client.on("event", (event) => {
-      setTuiState((prev) => reduceEvent(prev, event, projectId));
+      setTuiState((prev) => reduceEvent(prev, event, activeProjectId));
     });
     client.connect();
+    return () => {
+      client.close();
+    };
+  }, [client, activeProjectId]);
+  (0, import_react32.useEffect)(() => {
+    if (!canonicalPath || onboardingPhase !== "pending" || conn !== "connected") {
+      return;
+    }
+    let cancelled = false;
+    void client.request("project.inspect", { path: canonicalPath }).then((resp) => {
+      if (cancelled) return;
+      if (!resp.ok || !resp.result) {
+        setOnboardingPhase("ready");
+        return;
+      }
+      const draft = resp.result;
+      if (needsProjectOnboarding(draft)) {
+        setOnboardingDraft(draft);
+        setOnboardingPhase("confirm");
+        return;
+      }
+      if (draft.project_id) {
+        setActiveProjectId(draft.project_id);
+        client.setProjectId(draft.project_id);
+      }
+      setOnboardingPhase("ready");
+    }).catch(() => {
+      if (!cancelled) {
+        setOnboardingPhase("ready");
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [canonicalPath, client, conn, onboardingPhase]);
+  (0, import_react32.useEffect)(() => {
+    if (onboardingPhase !== "ready" || conn !== "connected") {
+      return;
+    }
     client.request("project.snapshot").then((resp) => {
       if (resp.ok && resp.result) {
         const snapshot = resp.result;
@@ -39295,15 +39435,41 @@ function App2({ socketPath, projectId }) {
       }
     }).catch(() => {
     });
-    return () => {
-      client.close();
-    };
-  }, [client]);
+  }, [client, conn, onboardingPhase]);
   (0, import_react32.useEffect)(() => {
     transcript.set(tuiState.transcript);
     activities.set(tuiState.activities);
     lastCursor.set(tuiState.lastCursor);
   }, [tuiState]);
+  const handleOnboardingAccept = (0, import_react32.useCallback)(() => {
+    if (!onboardingDraft || !canonicalPath) {
+      return;
+    }
+    void client.request("project.register", {
+      confirmed: true,
+      path: canonicalPath,
+      canonical_path: onboardingDraft.canonical_path,
+      repo_id: onboardingDraft.repo_id,
+      default_branch: onboardingDraft.default_branch,
+      branch_prefix: onboardingDraft.branch_prefix,
+      verify_commands: onboardingDraft.verify_commands
+    }).then((resp) => {
+      if (!resp.ok || !resp.result) {
+        return;
+      }
+      const result = resp.result;
+      if (result.project_id) {
+        setActiveProjectId(result.project_id);
+        client.setProjectId(result.project_id);
+      }
+      setOnboardingDraft(null);
+      setOnboardingPhase("ready");
+    }).catch(() => {
+    });
+  }, [canonicalPath, client, onboardingDraft]);
+  const handleOnboardingReject = (0, import_react32.useCallback)(() => {
+    performDetach();
+  }, []);
   const handleSubmit = (0, import_react32.useCallback)((text) => {
     const decision = decideSubmit(text, pendingDestructiveRef.current);
     pendingDestructiveRef.current = decision.newPending;
@@ -39351,12 +39517,22 @@ function App2({ socketPath, projectId }) {
   const handleDetach = (0, import_react32.useCallback)(() => {
     performDetach();
   }, []);
-  return /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(Box_default, { flexDirection: "column", width: "100%", height: "100%", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(AppLayout, { projectId }),
-    /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Composer, { onSubmit: handleSubmit, onDetach: handleDetach, disabled: conn !== "connected" })
+  if (onboardingPhase === "confirm" && onboardingDraft) {
+    return /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(Box_default, { flexDirection: "column", width: "100%", height: "100%", children: /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
+      ProjectOnboarding,
+      {
+        draft: onboardingDraft,
+        onAccept: handleOnboardingAccept,
+        onReject: handleOnboardingReject
+      }
+    ) });
+  }
+  return /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)(Box_default, { flexDirection: "column", width: "100%", height: "100%", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(AppLayout, { projectId: activeProjectId }),
+    /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(Composer, { onSubmit: handleSubmit, onDetach: handleDetach, disabled: conn !== "connected" })
   ] });
 }
-var import_react32, import_jsx_runtime8;
+var import_react32, import_jsx_runtime9;
 var init_app = __esm({
   async "src/app.tsx"() {
     "use strict";
@@ -39368,9 +39544,10 @@ var init_app = __esm({
     init_store();
     await init_AppLayout();
     await init_Composer();
+    await init_ProjectOnboarding();
     init_submitDecision();
     init_detach();
-    import_jsx_runtime8 = __toESM(require_jsx_runtime(), 1);
+    import_jsx_runtime9 = __toESM(require_jsx_runtime(), 1);
   }
 });
 
@@ -39378,19 +39555,23 @@ var init_app = __esm({
 init_detach();
 init_lifecycle();
 init_terminalModes();
-var import_jsx_runtime9 = __toESM(require_jsx_runtime(), 1);
+var import_jsx_runtime10 = __toESM(require_jsx_runtime(), 1);
 function createApp(options) {
-  const { socketPath, projectId } = options;
+  const { socketPath, projectId, canonicalPath } = options;
   return {
     socketPath,
     projectId,
+    canonicalPath,
     async start() {
       const { render: render2 } = await init_build2().then(() => build_exports);
       const { App: App3 } = await init_app().then(() => app_exports);
       setupLifecycle();
-      const instance = render2(/* @__PURE__ */ (0, import_jsx_runtime9.jsx)(App3, { socketPath, projectId }), {
-        exitOnCtrlC: false
-      });
+      const instance = render2(
+        /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(App3, { socketPath, projectId, canonicalPath }),
+        {
+          exitOnCtrlC: false
+        }
+      );
       registerInkUnmount(() => {
         const instances2 = (init_instances(), __toCommonJS(instances_exports)).default;
         const ink = instances2.get(process.stdout);
@@ -39417,8 +39598,9 @@ function createApp(options) {
 if (process.argv[1] && !process.env.VITEST) {
   const socketPath = process.argv[2];
   const projectId = process.argv[3];
+  const canonicalPath = process.argv[4];
   if (!socketPath || !projectId) {
-    console.error("Usage: coordinator-tui <socketPath> <projectId>");
+    console.error("Usage: coordinator-tui <socketPath> <projectId> [canonicalPath]");
     process.exit(1);
   }
   if (!process.stdin.isTTY) {
@@ -39427,7 +39609,11 @@ if (process.argv[1] && !process.env.VITEST) {
   }
   resetTerminalModes();
   process.stdout.write("\x1B[2J\x1B[H\x1B[3J");
-  const app = createApp({ socketPath, projectId });
+  const app = createApp({
+    socketPath,
+    projectId,
+    canonicalPath: canonicalPath || void 0
+  });
   void app.start();
 }
 export {

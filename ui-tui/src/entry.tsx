@@ -62,13 +62,14 @@ export function createApp(options: AppOptions) {
   }
 }
 
-// CLI invocation: node dist/entry.js <socketPath> <projectId>
+// CLI invocation: node dist/entry.js <socketPath> <projectId> [canonicalPath]
 if (process.argv[1] && !process.env.VITEST) {
   const socketPath = process.argv[2]
   const projectId = process.argv[3]
+  const canonicalPath = process.argv[4]
 
   if (!socketPath || !projectId) {
-    console.error('Usage: coordinator-tui <socketPath> <projectId>')
+    console.error('Usage: coordinator-tui <socketPath> <projectId> [canonicalPath]')
     process.exit(1)
   }
 
@@ -82,6 +83,10 @@ if (process.argv[1] && !process.env.VITEST) {
   resetTerminalModes()
   process.stdout.write('\x1b[2J\x1b[H\x1b[3J')
 
-  const app = createApp({ socketPath, projectId })
+  const app = createApp({
+    socketPath,
+    projectId,
+    canonicalPath: canonicalPath || undefined,
+  })
   void app.start()
 }
