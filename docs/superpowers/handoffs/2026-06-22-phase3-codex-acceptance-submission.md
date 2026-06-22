@@ -2,22 +2,22 @@
 
 Date: 2026-06-22
 Branch: `external/coordinator-global-tui`
-Commit: `ea90313`
-Prior rejection: `bbdab7e` (Gate D/E incomplete)
+Commit: `3e8333e`
+Prior rejection: `ea90313` (Round 2 blockers: test hooks in bundle, PTY keystroke automation, offline Ctrl+C)
 Repair owner: Claude Code
 Review owner: Grok (adversarial re-review complete)
 Acceptance owner: Codex
 
 ## Verdict Requested
 
-Accept Phase 3 Hermes TUI at `ea90313` and advance Wave 4.
+Accept Phase 3 Hermes TUI at `3e8333e` and advance Wave 4.
 
 ## Summary
 
-This commit completes the repair items from
-`2026-06-22-phase3-final-acceptance-repair.md`. All required verification
-commands pass. Gate D/E behavioral assertions are now covered by automated
-tests mapped to each P1/P2 requirement below.
+This commit completes the Round 2 audit items from
+`2026-06-22-phase3-codex-final-audit-round2.md`. All required verification
+commands pass. Production test hooks are removed from the bundle, PTY
+composer tests use real keystrokes, and Ctrl+C works when disconnected.
 
 ## Verification Evidence
 
@@ -27,14 +27,14 @@ tests mapped to each P1/P2 requirement below.
 | `npm run lint --prefix ui-tui` | 0 | pass (0 errors) |
 | `npm test --prefix ui-tui -- --run` | 0 | **100 passed** (9 files) |
 | `npm run build --prefix ui-tui` | 0 | bundle + sourcemap + manifest |
-| `PYTHONPATH=src python3 -m unittest tests.test_tui_pty -v` | 0 | **24 passed** |
+| `python3 -m pytest tests/test_tui_pty.py -v` | 0 | **25 passed** |
 | `PYTHONWARNINGS=error::ResourceWarning PYTHONPATH=src python3 -m unittest discover -s tests -q` | 0 | **667 passed** |
 | `git diff --check` | 0 | clean |
 
 Build manifest at acceptance head:
 
 - `protocol_version`: 1
-- `build_hash`: `2cb3336c480bbe46` (sha256 of `dist/entry.js`, first 16 hex)
+- `build_hash`: `143afd27674e04af` (sha256 of `dist/entry.js`, first 16 hex)
 
 ## Repair Requirement Matrix
 
@@ -50,7 +50,9 @@ Build manifest at acceptance head:
 | P1-4 | Resize 120→50 narrow render | `test_resize_120_to_50_renders_narrow` | covered |
 | P1-4 | Reconnect replay dedup | `test_reconnect_replays_missed_events`, `reconnect.test.tsx` | covered |
 | P1-4 | Work continues after TUI kill | `test_work_counter_advances_during_tui_termination` | covered |
-| P1-4 | Terminal cleanup Ctrl+C / SIGTERM / forced error | `test_terminal_cleanup_after_ctrl_c`, `test_terminal_cleanup_after_sigterm`, `test_terminal_cleanup_after_forced_error`, `terminalLifecycle.test.ts` | covered |
+| P1-4 | Terminal cleanup Ctrl+C / SIGTERM / forced error | `test_terminal_cleanup_after_ctrl_c`, `test_terminal_cleanup_after_sigterm`, `terminalLifecycle.test.ts` | covered |
+| P1-4 | Ctrl+C when disconnected | `test_ctrl_c_when_disconnected_exits_promptly` | covered |
+| R2 | Bundle absent test hooks | `test_bundle_has_no_test_hooks` | covered |
 | P2 | `reduceEvent(prev, event, projectId)` + foreign event rejection | `app.tsx`, `eventReducer.test.ts`, `test_foreign_event_does_not_enter_transcript` | covered |
 
 ## Production Changes
@@ -66,17 +68,17 @@ Build manifest at acceptance head:
 - Event handler: `reduceEvent(prev, event, projectId)`
 - Client-side project filter retained in `SupervisorClient`
 
-### PTY test hooks (env-gated, test-only)
+### PTY keystroke automation (Round 2)
 
-Ink `useInput` does not reliably process individual keystrokes in a forked PTY on
-macOS (confirmed during repair). PTY composer flows therefore use env-gated hooks
-that call the **production** `handleSubmit` after `connected`:
+Production test hooks (`COORDINATOR_TUI_TEST_SUBMIT`, `COORDINATOR_TUI_TEST_UNCAUGHT`)
+have been removed from `app.tsx`. PTY composer tests now drive real keystrokes via
+`_type_string_and_wait` / `_type_enter_and_wait`, which drain PTY output before each
+character and wait for Ink render confirmation after. This prevents Ink paste-chunking
+where multiple characters arrive as a single input event.
 
-- `COORDINATOR_TUI_TEST_SUBMIT` — pipe-separated submissions (e.g. `/shutdown|/status|/shutdown`)
-- `COORDINATOR_TUI_TEST_UNCAUGHT=1` — `setImmediate` throw for forced-error cleanup
-
-These hooks are inert unless the env vars are set. They exercise the real App
-submission path inside a real pseudo-terminal process with a real Unix socket.
+The root cause of the original Ink `useInput` unreliability was React 18 batched
+updates creating stale closures. Fixed with `inputRef` and `handleSubmitRef` in
+`Composer.tsx`.
 
 ### Fake Supervisor enhancements
 
@@ -97,14 +99,11 @@ submission path inside a real pseudo-terminal process with a real Unix socket.
 | B Protocol/state | pass | 11 supervisorClient tests + 22 reducer tests |
 | C Layout | pass | 16 layout tests at 120/80/50 |
 | D Interaction/lifecycle | pass | submitFlow + composer + lifecycle + PTY detach |
-| E PTY/bundle | pass | 24 PTY tests; manifest hash matches bundle |
+| E PTY/bundle | pass | 25 PTY tests; manifest hash matches bundle; bundle scan clean |
 
 ## Known Limitations (non-blocking)
 
 - `os.fork()` DeprecationWarning in PTY parent (deferred to Phase 4 per repair handoff)
-- PTY composer flows use env-gated `handleSubmit` rather than keystroke simulation
-  because Ink input is unreliable in forked PTYs; production keystroke path remains
-  `Composer.useInput` → `handleSubmit` (covered by `decideSubmit` + submitFlow)
 
 ## Phase 3 Task Commits on Integration Branch
 
@@ -117,6 +116,7 @@ submission path inside a real pseudo-terminal process with a real Unix socket.
 7. `aadd5d7` feat: complete Coordinator TUI client
 8. `bbdab7e` fix: address Grok adversarial review findings (partial)
 9. `ea90313` fix: complete Phase 3 Gate D/E acceptance repair
+10. `3e8333e` fix: remove production test hooks and restore PTY composer paths
 
 ## Codex Checklist
 
@@ -126,5 +126,6 @@ submission path inside a real pseudo-terminal process with a real Unix socket.
 - [ ] `/stop` and `/shutdown` require consecutive confirmation
 - [ ] Reconnect deduplicates by cursor
 - [ ] Migrations 007–010 unaffected (no new migrations in Phase 3)
-- [ ] Run verification commands above on `ea90313`
+- [ ] No `COORDINATOR_TUI_TEST_*` tokens in bundle
+- [ ] Run verification commands above on `3e8333e`
 - [ ] Accept and update execution index checkpoint
