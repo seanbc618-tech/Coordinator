@@ -120,6 +120,16 @@ does not reconstruct progress from chat history.
 - Phase 3 review handoff:
   `../handoffs/2026-06-22-phase3-grok-adversarial-review.md`
 
+### 2026-06-22 Phase 3 Acceptance Checkpoint
+
+- integration head reviewed: `bbdab7e`
+- TypeScript tests: 83 passed
+- PTY tests: 9 passed, but Gate D/E behavioral assertions are incomplete
+- Python tests: 652 passed with strict ResourceWarning policy
+- status: rejected pending final Gate D/E repair
+- repair handoff:
+  `../handoffs/2026-06-22-phase3-final-acceptance-repair.md`
+
 ## Final Acceptance
 
 - No unresolved task branches or unreviewed commits.
