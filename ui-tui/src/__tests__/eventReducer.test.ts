@@ -187,4 +187,28 @@ describe('reduceEvent', () => {
     state = reduceEvent(state, makeEvent(2, 'task.output', { task_id: 't1', output: lines }))
     expect(state.activities.get('t1')!.output.length).toBeLessThanOrEqual(200)
   })
+
+  it('rejects foreign-project event when projectId is set', () => {
+    const state = freshState()
+    const foreignEvent = makeEvent(1, 'chat.message', { role: 'coordinator', text: 'intrusion' }, 'proj-other')
+    const result = reduceEvent(state, foreignEvent, 'proj-a')
+    expect(result).toBe(state) // same reference — rejected
+    expect(result.transcript).toHaveLength(0)
+  })
+
+  it('accepts matching-project event when projectId is set', () => {
+    const state = freshState()
+    const event = makeEvent(1, 'chat.message', { role: 'coordinator', text: 'hello' }, 'proj-a')
+    const result = reduceEvent(state, event, 'proj-a')
+    expect(result.transcript).toHaveLength(1)
+    expect(result.transcript[0]).toMatchObject({ text: 'hello' })
+  })
+
+  it('rejects foreign-project activity event', () => {
+    const state = freshState()
+    const foreignEvent = makeEvent(1, 'task.created', { task_id: 't1', title: 'Hack' }, 'proj-other')
+    const result = reduceEvent(state, foreignEvent, 'proj-a')
+    expect(result).toBe(state)
+    expect(result.activities.size).toBe(0)
+  })
 })

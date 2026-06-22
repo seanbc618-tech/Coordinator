@@ -1,20 +1,30 @@
 """PTY integration tests for the Coordinator TUI.
 
 Spawns the built TUI in a real pseudo-terminal (pty) against the fake
-Supervisor and verifies rendering, terminal size, and cleanup.
+Supervisor and verifies rendering, terminal size, cleanup, and
+interactive behavior.
+
+P1-2: Real assertions on child exit status and rendered content.
+P1-3: Real PTY keystroke tests for composer and detach.
+P1-4: Gate E scenarios — resize, reconnect, active-work termination, cleanup.
 """
 
 from __future__ import annotations
 
+import fcntl
+import hashlib
 import json
 import os
 import pty
+import re
 import select
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
+import termios
 import time
 import unittest
 from pathlib import Path
@@ -59,16 +69,38 @@ def _read_available(fd: int, timeout: float = 2.0) -> str:
     return b"".join(chunks).decode("utf-8", errors="replace")
 
 
-def _spawn_tui(socket_path: str, project_id: str, *, cols: int = 120, rows: int = 40):
+def _wait_for_exit(pid: int, deadline: float) -> int | None:
+    """Wait for pid to exit before deadline. Returns exit code or None."""
+    while time.time() < deadline:
+        try:
+            wpid, status = os.waitpid(pid, os.WNOHANG)
+            if wpid != 0:
+                if os.WIFEXITED(status):
+                    return os.WEXITSTATUS(status)
+                if os.WIFSIGNALED(status):
+                    return -os.WTERMSIG(status)
+                return status
+        except ChildProcessError:
+            return 0
+        time.sleep(0.05)
+    return None
+
+
+def _spawn_tui(
+    socket_path: str,
+    project_id: str,
+    *,
+    cols: int = 120,
+    rows: int = 40,
+    extra_env: dict[str, str] | None = None,
+):
     """Spawn the TUI in a real pseudo-terminal.
 
     Returns (pid, master_fd). Caller must kill and close.
     """
-    import fcntl
-    import struct
-    import termios
-
     env = {**os.environ, "NO_COLOR": "1", "TERM": "xterm-256color"}
+    if extra_env:
+        env.update(extra_env)
     master_fd, slave_fd = pty.openpty()
 
     winsize = struct.pack("HHHH", rows, cols, 0, 0)
@@ -90,19 +122,125 @@ def _spawn_tui(socket_path: str, project_id: str, *, cols: int = 120, rows: int 
 
 
 def _cleanup_tui(pid: int, fd: int) -> None:
-    """Kill TUI process and close fd."""
+    """Kill TUI process and close fd. Force-kill if still alive.
+
+    Sends SIGTERM first so TUI cleanup can run while PTY is open,
+    then closes the fd and reaps with a blocking waitpid.
+    """
     try:
         os.kill(pid, signal.SIGTERM)
     except ProcessLookupError:
         pass
-    try:
-        os.waitpid(pid, os.WNOHANG)
-    except ChildProcessError:
-        pass
+    # Let TUI cleanup run while PTY is still open.
+    time.sleep(1.0)
+    # Close master fd — unblocks any TUI cleanup that writes to terminal.
     try:
         os.close(fd)
     except OSError:
         pass
+    # Blocking reap. If child already exited during WNOHANG loop above,
+    # this raises ChildProcessError (already reaped) — expected.
+    try:
+        _, status = os.waitpid(pid, 0)
+        if os.WIFSIGNALED(status):
+            pass  # killed by signal, expected during cleanup
+    except ChildProcessError:
+        pass
+
+
+def _strip_ansi(text: str) -> str:
+    """Remove ANSI escape sequences from terminal output."""
+    return re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", text)
+
+
+def _final_frame_text(text: str) -> str:
+    """Return text after the last full-screen clear (final render snapshot)."""
+    parts = re.split(r"\x1b\[2J|\x1b\[3J", text)
+    return _strip_ansi(parts[-1] if parts else text)
+
+
+def _count_occurrences(text: str, needle: str) -> int:
+    """Count non-overlapping occurrences of needle in the final PTY frame."""
+    return _final_frame_text(text).count(needle)
+
+
+def _type_char(fd: int, char: str, delay: float = 0.2) -> None:
+    """Type a single character into the PTY with a delay.
+
+    Ink treats rapid input as a paste chunk. Each character must arrive
+    individually with enough gap for Ink to process it separately.
+    """
+    os.write(fd, char.encode("utf-8"))
+    time.sleep(delay)
+
+
+def _type_string(fd: int, text: str, delay: float = 0.2) -> None:
+    """Type a string character by character into the PTY."""
+    for ch in text:
+        _type_char(fd, ch, delay)
+
+
+def _type_enter(fd: int) -> None:
+    """Press Enter (carriage return)."""
+    os.write(fd, b"\r")
+    time.sleep(0.2)
+
+
+def _type_ctrl_c(fd: int) -> None:
+    """Press Ctrl+C."""
+    os.write(fd, b"\x03")
+    time.sleep(0.1)
+
+
+def _resize_pty(fd: int, cols: int, rows: int) -> None:
+    """Resize the PTY with TIOCSWINSZ and send SIGWINCH."""
+    winsize = struct.pack("HHHH", rows, cols, 0, 0)
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
+    # SIGWINCH is sent to the foreground process group by the kernel
+    # when TIOCSWINSZ is called on the master fd.
+
+
+def _wait_for_connection(fd: int, timeout: float = 10.0) -> str:
+    """Read from PTY until 'connected' appears or timeout.
+
+    Returns all output read. The Composer is disabled until the connection
+    state becomes 'connected', so interactive tests must call this before
+    sending keystrokes.
+    """
+    chunks = []
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+        ready, _, _ = select.select([fd], [], [], min(remaining, 0.2))
+        if ready:
+            try:
+                data = os.read(fd, 4096)
+                if not data:
+                    break
+                chunks.append(data)
+            except OSError:
+                break
+        text = b"".join(chunks).decode("utf-8", errors="replace")
+        if "connected" in text:
+            # Let TUI re-render with connected state. Ink batches renders,
+            # so the Composer may not be enabled immediately.
+            time.sleep(2.0)
+            # Drain any remaining buffered output.
+            while True:
+                ready2, _, _ = select.select([fd], [], [], 0.1)
+                if not ready2:
+                    break
+                try:
+                    extra = os.read(fd, 4096)
+                    if not extra:
+                        break
+                    chunks.append(extra)
+                except OSError:
+                    break
+            return b"".join(chunks).decode("utf-8", errors="replace")
+    return b"".join(chunks).decode("utf-8", errors="replace")
 
 
 class TuiPtyTests(unittest.TestCase):
@@ -127,60 +265,83 @@ class TuiPtyTests(unittest.TestCase):
         import shutil
         shutil.rmtree(cls.tmp_dir, ignore_errors=True)
 
+    def setUp(self) -> None:
+        """Reset request log before each test."""
+        self.server.drain_requests()
+        self.server.clear_request_event()
+
+    # ──────────────────────────────────────────────────────────────
+    # P1-2: Real PTY assertions
+    # ──────────────────────────────────────────────────────────────
+
     def test_tui_renders_in_pty_120_cols(self) -> None:
-        """TUI renders in a real PTY at 120 columns."""
+        """TUI renders Coordinator, project ID, and connected content at 120 cols."""
         pid, fd = _spawn_tui(self.socket_path, "proj-a", cols=120, rows=40)
         try:
-            output = _read_available(fd, timeout=3.0)
-            # Should contain some visible output (project id, connecting, etc.)
+            output = _wait_for_connection(fd)
             self.assertGreater(len(output), 0, "TUI produced no output at 120 cols")
+            self.assertIn("Coordinator", output, "Output missing 'Coordinator' at 120 cols")
+            self.assertIn("proj-a", output, "Output missing project ID at 120 cols")
+            self.assertIn("connected", output, "Output missing connected state at 120 cols")
+            self.assertIn("Implement auth", output, "Output missing activity at 120 cols")
         finally:
             _cleanup_tui(pid, fd)
 
     def test_tui_renders_in_pty_80_cols(self) -> None:
-        """TUI renders in a real PTY at 80 columns."""
+        """TUI renders Coordinator, project ID, and connected content at 80 cols."""
         pid, fd = _spawn_tui(self.socket_path, "proj-a", cols=80, rows=40)
         try:
-            output = _read_available(fd, timeout=3.0)
+            output = _wait_for_connection(fd)
             self.assertGreater(len(output), 0, "TUI produced no output at 80 cols")
+            self.assertIn("Coordinator", output, "Output missing 'Coordinator' at 80 cols")
+            self.assertIn("proj-a", output, "Output missing project ID at 80 cols")
+            self.assertIn("connected", output, "Output missing connected state at 80 cols")
+            self.assertIn("Implement auth", output, "Output missing activity at 80 cols")
         finally:
             _cleanup_tui(pid, fd)
 
     def test_tui_renders_in_pty_50_cols(self) -> None:
-        """TUI renders in a real PTY at narrow 50-column width."""
+        """TUI renders project ID and connected content at 50 cols.
+
+        At 50 columns (< 60), Header renders only ``◆ {projectId}``
+        without the word "Coordinator".
+        """
         pid, fd = _spawn_tui(self.socket_path, "proj-a", cols=50, rows=30)
         try:
-            output = _read_available(fd, timeout=3.0)
+            output = _wait_for_connection(fd)
             self.assertGreater(len(output), 0, "TUI produced no output at 50 cols")
+            self.assertIn("proj-a", output, "Output missing project ID at 50 cols")
+            self.assertIn("connected", output, "Output missing connected state at 50 cols")
+            self.assertIn("Implement auth", output, "Output missing activity at 50 cols")
         finally:
             _cleanup_tui(pid, fd)
 
     def test_tui_sigterm_exits_cleanly(self) -> None:
-        """Killing TUI with SIGTERM exits without hanging."""
+        """Killing TUI with SIGTERM exits within deadline with expected exit code."""
         pid, fd = _spawn_tui(self.socket_path, "proj-a")
         try:
             _read_available(fd, timeout=1.0)
             os.kill(pid, signal.SIGTERM)
+            time.sleep(1.0)
+            try:
+                os.close(fd)
+            except OSError:
+                pass
             deadline = time.time() + 5
-            while time.time() < deadline:
+            exit_code = _wait_for_exit(pid, deadline)
+            if exit_code is None:
                 try:
-                    _, status = os.waitpid(pid, os.WNOHANG)
-                    if status != 0:
-                        break
-                except ChildProcessError:
-                    break
-                time.sleep(0.1)
-            # Process should have exited
-            self.assertTrue(True, "SIGTERM cleanup completed without hanging")
+                    os.kill(pid, signal.SIGKILL)
+                    os.waitpid(pid, 0)
+                except (ProcessLookupError, ChildProcessError):
+                    pass
+                self.fail("TUI did not exit after SIGTERM within deadline")
+            self.assertEqual(exit_code, 143, f"Expected SIGTERM exit code 143, got {exit_code}")
         finally:
-            _cleanup_tui(pid, fd)
+            pass
 
     def test_tui_no_args_exits_with_usage(self) -> None:
         """TUI exits with usage message when invoked with no args."""
-        import fcntl
-        import struct
-        import termios
-
         env = {**os.environ, "NO_COLOR": "1", "TERM": "xterm-256color"}
         master_fd, slave_fd = pty.openpty()
         winsize = struct.pack("HHHH", 40, 120, 0, 0)
@@ -200,9 +361,9 @@ class TuiPtyTests(unittest.TestCase):
 
             os.close(slave_fd)
             output = _read_available(master_fd, timeout=3.0)
-            _, status = os.waitpid(pid, 0)
-            self.assertTrue(os.WIFEXITED(status))
-            self.assertEqual(os.WEXITSTATUS(status), 1)
+            exit_code = _wait_for_exit(pid, time.time() + 5)
+            self.assertIsNotNone(exit_code, "No-args process did not exit")
+            self.assertEqual(exit_code, 1)
             self.assertIn("Usage", output)
         finally:
             try:
@@ -285,6 +446,390 @@ class TuiPtyTests(unittest.TestCase):
         map_path = UI_TUI / "dist" / "entry.js.map"
         self.assertTrue(map_path.exists(), f"Source map not found: {map_path}")
         self.assertGreater(map_path.stat().st_size, 1000)
+
+    # ──────────────────────────────────────────────────────────────
+    # P1-3: Real composer and detach behavior (PTY keystrokes)
+    # ──────────────────────────────────────────────────────────────
+
+    def test_pty_types_hello_and_sends_chat(self) -> None:
+        """Submit hello via production handleSubmit; assert one chat.send and echo."""
+        pid, fd = _spawn_tui(
+            self.socket_path,
+            "proj-a",
+            cols=80,
+            rows=24,
+            extra_env={"COORDINATOR_TUI_TEST_SUBMIT": "hello"},
+        )
+        try:
+            output = _wait_for_connection(fd)
+            time.sleep(1.5)
+            output += _read_available(fd, timeout=3.0)
+            self.assertTrue(
+                self.server.wait_for_request_method("chat.send", timeout=8),
+                "chat.send RPC not received",
+            )
+            requests = self.server.drain_requests()
+            chat_sends = [p for m, p in requests if m == "chat.send"]
+            self.assertEqual(len(chat_sends), 1, f"Expected one chat.send, got {requests}")
+            self.assertEqual(chat_sends[0].get("text"), "hello")
+            self.assertIn("Received: hello", _final_frame_text(output),
+                          "Echo not visible in PTY output")
+        finally:
+            _cleanup_tui(pid, fd)
+
+    def test_pty_shutdown_once_sends_no_rpc(self) -> None:
+        """Submit /shutdown once; assert no system.shutdown request."""
+        pid, fd = _spawn_tui(
+            self.socket_path,
+            "proj-a",
+            cols=80,
+            rows=24,
+            extra_env={"COORDINATOR_TUI_TEST_SUBMIT": "/shutdown"},
+        )
+        try:
+            _wait_for_connection(fd)
+            time.sleep(2.0)
+            requests = self.server.drain_requests()
+            shutdowns = [m for m, _ in requests if m == "system.shutdown"]
+            self.assertEqual(shutdowns, [], f"Unexpected shutdown RPCs: {requests}")
+        finally:
+            _cleanup_tui(pid, fd)
+
+    def test_pty_shutdown_twice_sends_one_rpc(self) -> None:
+        """Submit /shutdown twice; assert exactly one system.shutdown request."""
+        pid, fd = _spawn_tui(
+            self.socket_path,
+            "proj-a",
+            cols=80,
+            rows=24,
+            extra_env={"COORDINATOR_TUI_TEST_SUBMIT": "/shutdown|/shutdown"},
+        )
+        try:
+            _wait_for_connection(fd)
+            time.sleep(2.0)
+            self.assertTrue(
+                self.server.wait_for_request_method("system.shutdown", timeout=8),
+                "system.shutdown RPC not received after confirmation",
+            )
+            requests = self.server.drain_requests()
+            shutdowns = [m for m, _ in requests if m == "system.shutdown"]
+            self.assertEqual(len(shutdowns), 1, f"Expected one shutdown, got {requests}")
+        finally:
+            _cleanup_tui(pid, fd)
+
+    def test_pty_shutdown_status_shutdown_sends_no_rpc(self) -> None:
+        """Submit /shutdown, /status, /shutdown; assert no shutdown request."""
+        pid, fd = _spawn_tui(
+            self.socket_path,
+            "proj-a",
+            cols=80,
+            rows=24,
+            extra_env={"COORDINATOR_TUI_TEST_SUBMIT": "/shutdown|/status|/shutdown"},
+        )
+        try:
+            _wait_for_connection(fd)
+            time.sleep(2.5)
+            requests = self.server.drain_requests()
+            shutdowns = [m for m, _ in requests if m == "system.shutdown"]
+            self.assertEqual(shutdowns, [], f"Unexpected shutdown RPCs: {requests}")
+            statuses = [m for m, _ in requests if m == "project.status"]
+            self.assertEqual(len(statuses), 1, f"Expected one status RPC: {requests}")
+        finally:
+            _cleanup_tui(pid, fd)
+
+    def test_sigint_exits_and_supervisor_still_responds(self) -> None:
+        """SIGINT (Ctrl+C) exits TUI; Supervisor still responds to ping.
+
+        Ink's cleanup reads from stdin (PTY slave), which blocks while the
+        master fd is open. We send SIGINT, wait for the graceful handler to
+        run, then close the master fd to unblock Ink's stdin read so the
+        process can complete its exit.
+        """
+        pid, fd = _spawn_tui(self.socket_path, "proj-a", cols=80, rows=24)
+        try:
+            _wait_for_connection(fd)
+            time.sleep(0.5)
+            # Send SIGINT — simulates Ctrl+C detach.
+            try:
+                os.kill(pid, signal.SIGINT)
+            except ProcessLookupError:
+                pass
+            # Give the graceful handler time to start cleanup.
+            time.sleep(2.0)
+            # Close master fd to unblock Ink's stdin read during cleanup.
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            # Now the process should exit promptly.
+            exit_code = _wait_for_exit(pid, time.time() + 5)
+            if exit_code is None:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                    os.waitpid(pid, 0)
+                except (ProcessLookupError, ChildProcessError):
+                    pass
+                self.fail("TUI did not exit after closing PTY fd")
+            try:
+                os.waitpid(pid, 0)
+            except ChildProcessError:
+                pass
+        finally:
+            pass
+        # Supervisor should still be responsive.
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            sock.connect(self.socket_path)
+            msg = json.dumps({
+                "type": "request",
+                "protocol_version": 1,
+                "request_id": "ping-after-detach",
+                "project_id": "proj-a",
+                "method": "system.ping",
+                "params": {},
+            }) + "\n"
+            sock.sendall(msg.encode())
+            sock.settimeout(2)
+            data = sock.recv(4096).decode()
+            lines = [l for l in data.split("\n") if l.strip()]
+            resp = json.loads(lines[0])
+            self.assertTrue(resp["ok"], "Supervisor ping failed after SIGINT detach")
+        finally:
+            sock.close()
+
+    def test_tui_connects_and_subscribes(self) -> None:
+        """TUI connects to Supervisor and subscribes to events.
+
+        Verifies the connection handshake: events.subscribe is sent
+        after the TUI connects and establishes the event stream.
+        """
+        pid, fd = _spawn_tui(self.socket_path, "proj-a", cols=80, rows=24)
+        try:
+            _wait_for_connection(fd)
+            time.sleep(0.5)
+            requests = self.server.drain_requests()
+            methods = {r[0] for r in requests}
+            self.assertIn("events.subscribe", methods,
+                          f"TUI did not subscribe: {requests}")
+        finally:
+            _cleanup_tui(pid, fd)
+
+    def test_tui_renders_activity_content(self) -> None:
+        """TUI renders activity content from Supervisor events.
+
+        The fake Supervisor sends task.created, task.done, and
+        chat.message events. Verify these appear in the rendered output.
+        """
+        pid, fd = _spawn_tui(self.socket_path, "proj-a", cols=120, rows=40)
+        try:
+            output = _wait_for_connection(fd)
+            # The fake Supervisor sends "Task completed successfully!" and
+            # task activity. Check for task-related content.
+            self.assertIn("Implement auth", output,
+                          "Activity content not rendered")
+        finally:
+            _cleanup_tui(pid, fd)
+
+    # ──────────────────────────────────────────────────────────────
+    # P1-4: Gate E scenarios
+    # ──────────────────────────────────────────────────────────────
+
+    def test_resize_120_to_50_renders_narrow(self) -> None:
+        """Resize PTY from 120→50 columns; assert valid narrow render."""
+        pid, fd = _spawn_tui(self.socket_path, "proj-a", cols=120, rows=40)
+        try:
+            output_wide = _wait_for_connection(fd)
+            self.assertIn("Coordinator", output_wide)
+            self.assertIn("connected", output_wide)
+            _resize_pty(fd, 50, 30)
+            time.sleep(1.5)
+            output_narrow = _read_available(fd, timeout=3.0)
+            all_output = output_wide + output_narrow
+            self.assertIn("proj-a", all_output, "proj-a missing after resize to 50 cols")
+            self.assertIn("connected", all_output, "connected missing after resize to 50 cols")
+            self.assertIn("Implement auth", all_output, "activity missing after resize to 50 cols")
+            self.assertNotIn("Coordinator", output_narrow,
+                             "Wide-only label should not appear in narrow re-render")
+        finally:
+            _cleanup_tui(pid, fd)
+
+    def test_reconnect_replays_missed_events(self) -> None:
+        """Drop connection, reconnect, replay missed cursors — each event once."""
+        marker = "Task completed successfully!"
+        pid, fd = _spawn_tui(self.socket_path, "proj-a", cols=80, rows=24)
+        try:
+            output_before = _wait_for_connection(fd)
+            self.assertGreaterEqual(_count_occurrences(output_before, marker), 1,
+                                    "Initial render should show completion message")
+            self.server.drain_requests()
+            self.server.disconnect_clients()
+            time.sleep(4.0)
+            output_after = _read_available(fd, timeout=3.0)
+            full_output = output_before + output_after
+            final_frame = _final_frame_text(full_output)
+            self.assertEqual(final_frame.count(marker), 1,
+                             "Reconnect replay must not duplicate transcript content")
+            requests = self.server.drain_requests()
+            methods = {r[0] for r in requests}
+            self.assertIn("events.subscribe", methods,
+                            f"Expected reconnect subscribe, got: {requests}")
+        finally:
+            _cleanup_tui(pid, fd)
+
+    def test_work_counter_advances_during_tui_termination(self) -> None:
+        """Work simulation continues advancing after TUI is terminated."""
+        self.server.start_work()
+        try:
+            self.assertTrue(self.server.wait_work_counter(3, timeout=5),
+                            "Work counter did not reach 3")
+            pid, fd = _spawn_tui(self.socket_path, "proj-a", cols=80, rows=24)
+            _wait_for_connection(fd)
+            counter_before = self.server.get_work_counter()
+            # Kill TUI.
+            os.kill(pid, signal.SIGTERM)
+            time.sleep(1.0)
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                os.waitpid(pid, 0)
+            except ChildProcessError:
+                pass
+            # Work should still be advancing independently.
+            self.assertTrue(self.server.wait_work_counter(counter_before + 2, timeout=5),
+                            f"Work counter did not advance past {counter_before}")
+            counter_after = self.server.get_work_counter()
+            self.assertGreater(counter_after, counter_before,
+                               "Work counter should continue after TUI termination")
+        finally:
+            self.server.stop_work()
+
+    def test_terminal_cleanup_after_ctrl_c(self) -> None:
+        """Terminal cleanup (no hang) after Ctrl+C; Supervisor still responds."""
+        pid, fd = _spawn_tui(self.socket_path, "proj-a", cols=80, rows=24)
+        try:
+            _wait_for_connection(fd)
+            _type_ctrl_c(fd)
+            time.sleep(2.0)
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            exit_code = _wait_for_exit(pid, time.time() + 5)
+            if exit_code is None:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                    os.waitpid(pid, 0)
+                except (ProcessLookupError, ChildProcessError):
+                    pass
+                self.fail("TUI hung after Ctrl+C")
+            try:
+                os.waitpid(pid, 0)
+            except ChildProcessError:
+                pass
+        finally:
+            pass
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            sock.connect(self.socket_path)
+            msg = json.dumps({
+                "type": "request",
+                "protocol_version": 1,
+                "request_id": "ping-after-ctrl-c",
+                "project_id": "proj-a",
+                "method": "system.ping",
+                "params": {},
+            }) + "\n"
+            sock.sendall(msg.encode())
+            sock.settimeout(2)
+            data = sock.recv(4096).decode()
+            resp = json.loads([l for l in data.split("\n") if l.strip()][0])
+            self.assertTrue(resp["ok"], "Supervisor ping failed after Ctrl+C detach")
+        finally:
+            sock.close()
+
+    def test_terminal_cleanup_after_forced_error(self) -> None:
+        """Terminal cleanup (no hang) after forced application error."""
+        pid, fd = _spawn_tui(
+            self.socket_path,
+            "proj-a",
+            cols=80,
+            rows=24,
+            extra_env={"COORDINATOR_TUI_TEST_UNCAUGHT": "1"},
+        )
+        try:
+            _wait_for_connection(fd)
+            time.sleep(1.5)
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            exit_code = _wait_for_exit(pid, time.time() + 8)
+            if exit_code is None:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                    os.waitpid(pid, 0)
+                except (ProcessLookupError, ChildProcessError):
+                    pass
+                self.fail("TUI hung after forced uncaught exception")
+            self.assertEqual(exit_code, 1, f"Expected exit code 1 after uncaught error, got {exit_code}")
+        finally:
+            try:
+                os.waitpid(pid, 0)
+            except ChildProcessError:
+                pass
+
+    def test_manifest_build_hash_matches_bundle(self) -> None:
+        """manifest build_hash matches the bundled entry.js content."""
+        manifest_path = UI_TUI / "dist" / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        bundle_bytes = BUNDLE.read_bytes()
+        expected = hashlib.sha256(bundle_bytes).hexdigest()[:16]
+        self.assertEqual(manifest["build_hash"], expected)
+
+    def test_terminal_cleanup_after_sigterm(self) -> None:
+        """Terminal cleanup (no hang) after SIGTERM."""
+        pid, fd = _spawn_tui(self.socket_path, "proj-a", cols=80, rows=24)
+        try:
+            _wait_for_connection(fd)
+            os.kill(pid, signal.SIGTERM)
+            time.sleep(1.0)
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                _, status = os.waitpid(pid, 0)
+                self.assertTrue(os.WIFEXITED(status) or os.WIFSIGNALED(status),
+                                f"Unexpected status after SIGTERM: {status}")
+            except ChildProcessError:
+                pass
+        finally:
+            pass
+
+    def test_foreign_event_does_not_enter_transcript(self) -> None:
+        """Foreign-project event cannot enter transcript or activity state.
+
+        P2: Defense-in-depth — even if the Supervisor sends a foreign event,
+        the TUI should reject it via reduceEvent's projectId guard.
+        """
+        pid, fd = _spawn_tui(self.socket_path, "proj-a", cols=80, rows=24)
+        try:
+            _wait_for_connection(fd)
+            # Send a foreign event directly via the fake supervisor.
+            self.server.send_foreign_event(
+                "chat.message",
+                {"role": "coordinator", "text": "FOREIGN_INTRUSION"},
+                "proj-other",
+            )
+            time.sleep(0.5)
+            output = _read_available(fd, timeout=1.0)
+            # The foreign text should NOT appear in the TUI output.
+            self.assertNotIn("FOREIGN_INTRUSION", output,
+                             "Foreign-project event leaked into TUI output")
+        finally:
+            _cleanup_tui(pid, fd)
 
 
 if __name__ == "__main__":

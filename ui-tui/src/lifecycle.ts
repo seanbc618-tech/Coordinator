@@ -11,10 +11,12 @@ interface LifecycleOptions {
   onCleanup?: () => void | Promise<void>
 }
 
+let wired = false
 let cleaned = false
 
 export function setupLifecycle(options: LifecycleOptions = {}): void {
-  if (cleaned) return
+  if (wired) return
+  wired = true
 
   const cleanup = () => {
     if (cleaned) return
@@ -50,4 +52,5 @@ export function isCleanedUp(): boolean {
 /** Reset for testing. */
 export function _resetLifecycleForTesting(): void {
   cleaned = false
+  wired = false
 }

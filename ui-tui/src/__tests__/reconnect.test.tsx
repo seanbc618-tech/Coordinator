@@ -79,38 +79,36 @@ describe('reconnect and cursor replay', () => {
     })
   }
 
-  it('sends last cursor on reconnect subscribe', async () => {
-    let subscribeCursor: number | undefined
+  it('sends after_cursor on subscribe and receives only newer events', async () => {
+    const subscribeCursors: number[] = []
     await startServer((data, respond) => {
       const parsed = JSON.parse(data)
       if (parsed.type === 'request') {
         if (parsed.method === 'events.subscribe') {
-          subscribeCursor = parsed.params.after_cursor
+          subscribeCursors.push(parsed.params.after_cursor ?? 0)
         }
         respond(makeResponse(parsed.request_id))
         if (parsed.method === 'events.subscribe') {
-          respond(makeEvent(5, 'tick_scheduled'))
-          respond(makeEvent(6, 'cycle_complete'))
+          respond(makeEvent(4, 'tick_scheduled'))
+          respond(makeEvent(5, 'cycle_complete'))
+          respond(makeEvent(6, 'chat.message'))
         }
       }
     })
 
     const client = new SupervisorClient({ socketPath, projectId: 'proj-a', requestTimeoutMs: 2000 })
-
-    // Simulate having cursor 3 from a previous session
     const received: EventEnvelope[] = []
     client.onEvent(e => received.push(e))
 
     client.connect()
     await new Promise<void>(resolve => client.on('state', s => { if (s === 'connected') resolve() }))
 
-    // Manually set cursor (simulating replay from store)
-    // The client will send after_cursor: 0 on first connect
     await client.request('events.subscribe', { after_cursor: 3 })
     await new Promise(r => setTimeout(r, 200))
 
-    // Events with cursor > 3 should be received
-    expect(received.length).toBeGreaterThanOrEqual(0) // May or may not depending on timing
+    expect(subscribeCursors).toContain(3)
+    expect(received.map(e => e.cursor)).toEqual([4, 5, 6])
+    expect(client.getLastCursor()).toBe(6)
     client.close()
   })
 

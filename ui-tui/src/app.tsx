@@ -18,8 +18,8 @@ import {
 } from './store.js'
 import { AppLayout } from './components/AppLayout.js'
 import { Composer } from './components/Composer.js'
-import { parse } from './slash.js'
 import { setupLifecycle } from './lifecycle.js'
+import { decideSubmit } from './submitDecision.js'
 import type { TuiState } from './domain.js'
 import type { EventEnvelope } from './protocol.js'
 
@@ -65,7 +65,8 @@ export function App({ socketPath, projectId }: AppProps) {
     client.on('event', (event: EventEnvelope) => {
       // P1 fix: use functional update only — no stale closure writes to atoms.
       // Atoms are synced via the useEffect below.
-      setTuiState(prev => reduceEvent(prev, event))
+      // P2: pass projectId for defense-in-depth foreign event rejection.
+      setTuiState(prev => reduceEvent(prev, event, projectId))
     })
 
     client.connect()
@@ -95,58 +96,50 @@ export function App({ socketPath, projectId }: AppProps) {
   }, [tuiState])
 
   const handleSubmit = useCallback((text: string) => {
-    const parsed = parse(text)
+    const decision = decideSubmit(text, pendingDestructiveRef.current)
+    pendingDestructiveRef.current = decision.newPending
 
-    if (parsed.type === 'command') {
-      if (parsed.command.name === '/quit') {
+    switch (decision.action) {
+      case 'quit':
         client.close()
         process.exit(0)
         return
-      }
 
-      // P0: Destructive confirmation state machine.
-      if (parsed.command.destructive) {
-        const pending = pendingDestructiveRef.current
-
-        if (pending === parsed.command.name) {
-          // Second entry confirmed — execute.
-          pendingDestructiveRef.current = null
-          setTuiState(prev => ({
-            ...prev,
-            transcript: [
-              ...prev.transcript,
-              { id: `conf-${Date.now()}`, kind: 'message', role: 'system', text: `${parsed.command.name} confirmed.` },
-            ],
-          }))
-          void client.request(parsed.command.method, { args: parsed.args }).catch(() => {})
-        } else {
-          // First entry — ask for confirmation, do NOT send RPC.
-          pendingDestructiveRef.current = parsed.command.name
-          setTuiState(prev => ({
-            ...prev,
-            transcript: [
-              ...prev.transcript,
-              { id: `pend-${Date.now()}`, kind: 'message', role: 'system', text: `Confirm: ${parsed.command.name}? Type ${parsed.command.name} again to proceed.` },
-            ],
-          }))
-        }
+      case 'destructive-confirmed':
+        setTuiState(prev => ({
+          ...prev,
+          transcript: [
+            ...prev.transcript,
+            { id: `conf-${Date.now()}`, kind: 'message', role: 'system', text: `${decision.commandName} confirmed.` },
+          ],
+        }))
+        void client.request(decision.method, { args: decision.args }).catch(() => {})
         return
-      }
 
-      // Non-destructive command — send immediately.
-      void client.request(parsed.command.method, { args: parsed.args }).catch(() => {})
-    } else {
-      // Plain message — send as chat.
-      // Clear any pending destructive on freeform input.
-      pendingDestructiveRef.current = null
-      setTuiState(prev => ({
-        ...prev,
-        transcript: [
-          ...prev.transcript,
-          { id: `user-${Date.now()}`, kind: 'message', role: 'user', text },
-        ],
-      }))
-      void client.request('chat.send', { text }).catch(() => {})
+      case 'destructive-pending':
+        setTuiState(prev => ({
+          ...prev,
+          transcript: [
+            ...prev.transcript,
+            { id: `pend-${Date.now()}`, kind: 'message', role: 'system', text: `Confirm: ${decision.commandName}? Type ${decision.commandName} again to proceed.` },
+          ],
+        }))
+        return
+
+      case 'send':
+        void client.request(decision.method, { args: decision.args }).catch(() => {})
+        return
+
+      case 'chat':
+        setTuiState(prev => ({
+          ...prev,
+          transcript: [
+            ...prev.transcript,
+            { id: `user-${Date.now()}`, kind: 'message', role: 'user', text: decision.text },
+          ],
+        }))
+        void client.request('chat.send', { text: decision.text }).catch(() => {})
+        return
     }
   }, [client])
 
@@ -154,6 +147,27 @@ export function App({ socketPath, projectId }: AppProps) {
     client.close()
     process.exit(0)
   }, [client])
+
+  // Test-only hooks (env-gated) for real PTY integration tests.
+  const testScriptRanRef = useRef(false)
+  useEffect(() => {
+    if (conn !== 'connected' || testScriptRanRef.current) return
+
+    if (process.env.COORDINATOR_TUI_TEST_UNCAUGHT === '1') {
+      testScriptRanRef.current = true
+      setImmediate(() => {
+        throw new Error('COORDINATOR_TUI_TEST_UNCAUGHT')
+      })
+      return
+    }
+
+    const script = process.env.COORDINATOR_TUI_TEST_SUBMIT
+    if (!script) return
+    testScriptRanRef.current = true
+    for (const entry of script.split('|')) {
+      handleSubmit(entry)
+    }
+  }, [conn, handleSubmit])
 
   return (
     <Box flexDirection="column" width="100%" height="100%">

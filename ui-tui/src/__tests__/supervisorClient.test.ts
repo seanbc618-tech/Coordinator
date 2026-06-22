@@ -6,10 +6,6 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { SupervisorClient } from '../supervisorClient.js'
 import { PROTOCOL_VERSION, encodeEnvelope, type EventEnvelope, type ResponseEnvelope } from '../protocol.js'
 
-function tmpSocket(): string {
-  return join(tmpdir(), `coord-test-${process.pid}-${Math.random().toString(36).slice(2)}.sock`)
-}
-
 function makeResponse(requestId: string, result: Record<string, unknown> = {}): string {
   const resp: ResponseEnvelope = {
     type: 'response',

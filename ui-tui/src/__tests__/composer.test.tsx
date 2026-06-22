@@ -1,6 +1,7 @@
-import { describe, expect, it, beforeEach } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { InputHistory } from '../inputHistory.js'
-import { parse, completePartial } from '../slash.js'
+import { completePartial } from '../slash.js'
+import { decideSubmit } from '../submitDecision.js'
 
 /**
  * Composer interaction tests.
@@ -63,84 +64,100 @@ describe('Composer: history', () => {
 })
 
 describe('Composer: destructive confirmation state machine', () => {
-  /**
-   * Simulates the App's destructive confirmation logic.
-   * This is the same algorithm as app.tsx handleSubmit.
-   */
-  function simulateSubmit(
-    input: string,
-    pendingDestructive: string | null,
-  ): { confirmed: boolean; newPending: string | null; message: string } {
-    const parsed = parse(input)
-
-    if (parsed.type === 'command' && parsed.command.destructive) {
-      if (pendingDestructive === parsed.command.name) {
-        // Confirmed
-        return {
-          confirmed: true,
-          newPending: null,
-          message: `${parsed.command.name} confirmed.`,
-        }
-      } else {
-        // First entry — request confirmation
-        return {
-          confirmed: false,
-          newPending: parsed.command.name,
-          message: `Confirm: ${parsed.command.name}? Type ${parsed.command.name} again to proceed.`,
-        }
-      }
-    }
-
-    // Non-destructive or plain message
-    return {
-      confirmed: false,
-      newPending: null,
-      message: '',
-    }
-  }
+  // Tests exercise the real decideSubmit production helper.
 
   it('/stop first entry does NOT confirm', () => {
-    const result = simulateSubmit('/stop', null)
-    expect(result.confirmed).toBe(false)
-    expect(result.newPending).toBe('/stop')
-    expect(result.message).toContain('Confirm')
+    const d = decideSubmit('/stop', null)
+    expect(d.action).toBe('destructive-pending')
+    expect(d.newPending).toBe('/stop')
   })
 
   it('/stop second entry confirms', () => {
-    const result = simulateSubmit('/stop', '/stop')
-    expect(result.confirmed).toBe(true)
-    expect(result.newPending).toBe(null)
+    const d = decideSubmit('/stop', '/stop')
+    expect(d.action).toBe('destructive-confirmed')
+    expect(d.newPending).toBe(null)
   })
 
   it('/shutdown first entry does NOT confirm', () => {
-    const result = simulateSubmit('/shutdown', null)
-    expect(result.confirmed).toBe(false)
-    expect(result.newPending).toBe('/shutdown')
+    const d = decideSubmit('/shutdown', null)
+    expect(d.action).toBe('destructive-pending')
+    expect(d.newPending).toBe('/shutdown')
   })
 
   it('/shutdown second entry confirms', () => {
-    const result = simulateSubmit('/shutdown', '/shutdown')
-    expect(result.confirmed).toBe(true)
+    const d = decideSubmit('/shutdown', '/shutdown')
+    expect(d.action).toBe('destructive-confirmed')
   })
 
   it('different destructive command resets pending', () => {
-    // User types /stop, then /shutdown — /shutdown should not confirm
-    const result = simulateSubmit('/shutdown', '/stop')
-    expect(result.confirmed).toBe(false)
-    expect(result.newPending).toBe('/shutdown')
+    const d = decideSubmit('/shutdown', '/stop')
+    expect(d.action).toBe('destructive-pending')
+    expect(d.newPending).toBe('/shutdown')
+  })
+
+  it('/stop, /stop → one project.stop RPC', () => {
+    let d = decideSubmit('/stop', null)
+    expect(d.action).toBe('destructive-pending')
+    d = decideSubmit('/stop', d.newPending)
+    expect(d.action).toBe('destructive-confirmed')
+    expect(d.method).toBe('project.stop')
+  })
+
+  it('/stop, /status, /stop → zero project.stop RPCs', () => {
+    let d = decideSubmit('/stop', null)
+    expect(d.action).toBe('destructive-pending')
+    d = decideSubmit('/status', d.newPending)
+    expect(d.action).toBe('send')
+    expect(d.newPending).toBe(null) // cleared by non-destructive
+    d = decideSubmit('/stop', d.newPending)
+    expect(d.action).toBe('destructive-pending') // new confirmation cycle
+    expect(d.newPending).toBe('/stop')
+  })
+
+  it('/shutdown, hello, /shutdown → zero system.shutdown RPCs', () => {
+    let d = decideSubmit('/shutdown', null)
+    expect(d.action).toBe('destructive-pending')
+    d = decideSubmit('hello', d.newPending)
+    expect(d.action).toBe('chat')
+    expect(d.newPending).toBe(null) // cleared by plain message
+    d = decideSubmit('/shutdown', d.newPending)
+    expect(d.action).toBe('destructive-pending') // new cycle, no confirmation
+  })
+
+  it('/stop, /shutdown → zero destructive RPCs', () => {
+    let d = decideSubmit('/stop', null)
+    expect(d.action).toBe('destructive-pending')
+    expect(d.newPending).toBe('/stop')
+    d = decideSubmit('/shutdown', d.newPending)
+    expect(d.action).toBe('destructive-pending')
+    expect(d.newPending).toBe('/shutdown') // resets to new command
+  })
+
+  it('/shutdown, reconnect, /shutdown → zero system.shutdown RPCs', () => {
+    let d = decideSubmit('/shutdown', null)
+    expect(d.action).toBe('destructive-pending')
+    // Simulate reconnect clearing pending
+    d = decideSubmit('/shutdown', null) // reconnect cleared it
+    expect(d.action).toBe('destructive-pending')
+    expect(d.newPending).toBe('/shutdown')
   })
 
   it('plain message clears pending destructive', () => {
-    // This is tested by the App logic: non-destructive input clears pending
-    const parsed = parse('hello')
-    expect(parsed.type).toBe('message')
-    // App clears pendingDestructive on plain messages
+    const d = decideSubmit('hello', '/stop')
+    expect(d.action).toBe('chat')
+    expect(d.newPending).toBe(null)
   })
 
   it('non-destructive command does not enter pending', () => {
-    const result = simulateSubmit('/status', null)
-    expect(result.confirmed).toBe(false)
-    expect(result.newPending).toBe(null)
+    const d = decideSubmit('/status', null)
+    expect(d.action).toBe('send')
+    expect(d.newPending).toBe(null)
+  })
+
+  it('non-destructive command clears pending destructive', () => {
+    const d = decideSubmit('/status', '/shutdown')
+    expect(d.action).toBe('send')
+    expect(d.newPending).toBe(null)
   })
 })
 
