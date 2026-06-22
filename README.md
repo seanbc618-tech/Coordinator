@@ -4,6 +4,30 @@ A local loop coordinator for running CLI agents against small, verified tasks
 with discovery, independent evaluation, durable memory, budget caps,
 scheduling, and human review points.
 
+## Getting Started
+
+Install from a built wheel, then open the TUI from any Git repository:
+
+```bash
+python3 -m build
+pip install --force-reinstall dist/local_cli_coordinator-*.whl
+cd /path/to/your/project
+coordinator
+```
+
+The global `coordinator` command starts a detached Supervisor (if needed) and
+opens the terminal UI for the current project. Administrative subcommands such as
+`coordinator status` and `coordinator migrate` work as before.
+
+### Documentation
+
+| Guide | Contents |
+|---|---|
+| [docs/install.md](docs/install.md) | Wheel install, upgrade, uninstall, global paths, Supervisor lifecycle |
+| [docs/tui.md](docs/tui.md) | Daily TUI use, onboarding, slash commands, detach vs stop |
+| [docs/migration.md](docs/migration.md) | Legacy migration, backups, rollback, source preservation |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | Common install and runtime issues |
+
 ## Loop Overview
 
 The coordinator implements a full loop pipeline:
@@ -277,22 +301,16 @@ Project registration is idempotent and requires explicit confirmation.
 
 ## Legacy Migration
 
-Migrate from a single-root Coordinator installation to global paths:
+Migrate from a single-root Coordinator installation to global paths. See
+[docs/migration.md](docs/migration.md) for backups, rollback, and recovery.
 
 ```bash
-# Dry run (validates without writing)
 coordinator migrate --source /path/to/legacy --dry-run
-
-# Full migration
 coordinator migrate --source /path/to/legacy --yes
 ```
 
-Migration safety:
-- Copies to a staging directory first; validates the database before touching
-  live directories.
-- Backs up all three target dirs (config, data, state) before overwrite.
-- On failure, restores from backup and deletes newly-created directories.
-- Never deletes the source.
+First `coordinator` launch also offers interactive migration when global state is
+empty. The original source directory is never deleted automatically.
 
 ## Single Fallback Recovery
 
@@ -398,42 +416,32 @@ roadmap_context_max_chars = 20000
 ## TUI (Terminal UI)
 
 The Coordinator TUI provides a conversational interface with live activity
-monitoring. It is built with React Ink (TypeScript) and communicates with the
-Supervisor over a Unix socket.
+monitoring. It is built with React Ink (TypeScript), packaged inside the Python
+wheel, and launched by the global `coordinator` command.
 
-### Development Commands
+See [docs/tui.md](docs/tui.md) for operator instructions and
+[docs/install.md](docs/install.md) for installation.
+
+### Quick usage
 
 ```bash
-# Install dependencies
+cd /path/to/your/project
+coordinator          # opens TUI for this repo
+coordinator status   # administrative CLI (unchanged)
+```
+
+### Development commands
+
+```bash
 npm install --prefix ui-tui
-
-# Typecheck
 npm run typecheck --prefix ui-tui
-
-# Lint
 npm run lint --prefix ui-tui
-
-# Run TUI tests
 npm test --prefix ui-tui -- --run
-
-# Build production bundle
 npm run build --prefix ui-tui
-
-# Run PTY integration tests
 PYTHONPATH=src python3 -m unittest tests.test_tui_pty -v
 ```
 
-### Usage
-
-The TUI connects to a running Supervisor via a Unix socket and project ID:
-
-```bash
-# Start the Supervisor first
-PYTHONPATH=src python3 -m local_cli_coordinator supervisor start --foreground
-
-# Then connect the TUI (Phase 4 will add the global launcher)
-node ui-tui/dist/entry.js ~/.local/state/coordinator/supervisor.sock <project-id>
-```
+Rebuild after UI changes: `npm run build --prefix ui-tui && pip install --force-reinstall .`
 
 ### Architecture
 
@@ -442,9 +450,3 @@ node ui-tui/dist/entry.js ~/.local/state/coordinator/supervisor.sock <project-id
 - `eventReducer.ts` — pure reducer: Supervisor events → TUI state
 - `components/` — React Ink layout (Header, Transcript, ActivityBlock, Composer, Footer)
 - `lifecycle.ts` — idempotent terminal cleanup on detach/signal/crash
-
-### Non-Goals (Phase 3)
-
-- Global no-argument launcher (Phase 4)
-- Multiple independent Supervisors
-- Network-accessible Supervisor
