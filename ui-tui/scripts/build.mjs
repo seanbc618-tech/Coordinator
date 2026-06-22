@@ -77,5 +77,30 @@ const manifest = {
 }
 writeFileSync(resolve(distDir, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n')
 
+// Copy the production bundle into Python package data for wheel installs.
+const packageBundleDir = resolve(root, '..', 'src', 'local_cli_coordinator', 'tui_bundle')
+mkdirSync(packageBundleDir, { recursive: true })
+
+const sourceMapPolicy = {
+  ship_source_maps: true,
+  bundle_source_map: 'entry.js.map',
+}
+writeFileSync(
+  resolve(packageBundleDir, 'source_map_policy.json'),
+  JSON.stringify(sourceMapPolicy, null, 2) + '\n',
+)
+
+const packageArtifacts = [
+  [resolve(distDir, 'entry.js'), 'entry.js'],
+  [resolve(distDir, 'manifest.json'), 'manifest.json'],
+  [resolve(distDir, 'entry.js.map'), 'entry.js.map'],
+  [resolve(root, '..', 'THIRD_PARTY_NOTICES.md'), 'THIRD_PARTY_NOTICES.md'],
+]
+
+for (const [source, name] of packageArtifacts) {
+  writeFileSync(resolve(packageBundleDir, name), readFileSync(source))
+}
+
 console.log(`built ${out}`)
 console.log(`manifest: protocol_version=1, build_hash=${buildHash}`)
+console.log(`packaged bundle data in ${packageBundleDir}`)
