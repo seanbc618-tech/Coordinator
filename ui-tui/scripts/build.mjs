@@ -67,19 +67,33 @@ if (body.startsWith('#!')) {
 const bundleContent = readFileSync(out, 'utf8')
 const buildHash = createHash('sha256').update(bundleContent).digest('hex').slice(0, 16)
 
+// Copy the production bundle into Python package data for wheel installs.
+const packageBundleDir = resolve(root, '..', 'src', 'local_cli_coordinator', 'tui_bundle')
+mkdirSync(packageBundleDir, { recursive: true })
+
+function preservedBuiltAt(manifestPath) {
+  try {
+    const existing = JSON.parse(readFileSync(manifestPath, 'utf8'))
+    if (existing.build_hash === buildHash && existing.built_at) {
+      return existing.built_at
+    }
+  } catch {
+    // Missing or corrupt manifest — use a fresh timestamp below.
+  }
+  return new Date().toISOString()
+}
+
+const builtAt = preservedBuiltAt(resolve(packageBundleDir, 'manifest.json'))
+
 // Write manifest.json with protocol version and build hash.
 const manifest = {
   protocol_version: 1,
   build_hash: buildHash,
   bundle: 'entry.js',
   source_map: 'entry.js.map',
-  built_at: new Date().toISOString(),
+  built_at: builtAt,
 }
 writeFileSync(resolve(distDir, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n')
-
-// Copy the production bundle into Python package data for wheel installs.
-const packageBundleDir = resolve(root, '..', 'src', 'local_cli_coordinator', 'tui_bundle')
-mkdirSync(packageBundleDir, { recursive: true })
 
 const sourceMapPolicy = {
   ship_source_maps: true,
