@@ -49,18 +49,21 @@ export function formatSlashResponse(
     }
 
     case 'project.goal': {
-      if (result.status === 'no goal' || result.goal == null) {
-        return 'Goal — none. Use /goal <objective> to create one.'
-      }
       if (typeof result.message === 'string') {
         return result.message
+      }
+      if (result.status === 'no goal') {
+        return 'Goal — none. Use /goal <objective> to create one.'
+      }
+      if (result.status === 'draft') {
+        return `Goal draft ${result.goal_id}: ${result.progress_summary}`
       }
       const goal = result.goal as Record<string, unknown> | undefined
       if (goal) {
         return `Goal ${goal.id} [${goal.status}] ${goal.title}\n${goal.objective}`
       }
-      if (result.status === 'draft') {
-        return `Goal draft ${result.goal_id}: ${result.progress_summary}`
+      if (result.goal == null) {
+        return 'Goal — none. Use /goal <objective> to create one.'
       }
       return JSON.stringify(result, null, 2)
     }

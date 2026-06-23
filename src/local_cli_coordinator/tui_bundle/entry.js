@@ -39394,6 +39394,72 @@ var init_submitDecision = __esm({
   }
 });
 
+// src/slashDisplay.ts
+function formatSlashResponse(method, result) {
+  if (!result) {
+    return "(empty response)";
+  }
+  switch (method) {
+    case "project.status": {
+      const counts = result.counts ?? {};
+      const countText = Object.keys(counts).length ? Object.entries(counts).map(([k, v]) => `${k}: ${v}`).join(", ") : "no tasks";
+      const goal = result.goal;
+      const goalText = goal ? `goal ${goal.id} [${goal.status}] ${goal.title}` : "no goal";
+      const flags = [
+        result.paused ? "paused" : null,
+        result.stopped ? "stopped" : null
+      ].filter(Boolean).join(", ");
+      return `Status \u2014 tasks: ${countText}; ${goalText}${flags ? `; ${flags}` : ""}`;
+    }
+    case "project.tasks": {
+      const tasks = result.tasks ?? [];
+      if (!tasks.length) {
+        return "Tasks \u2014 (none)";
+      }
+      return [
+        "Tasks:",
+        ...tasks.map((t) => `- ${t.id} [${t.state}] ${t.title}`)
+      ].join("\n");
+    }
+    case "project.logs": {
+      const tail = String(result.log_tail ?? "").trim();
+      const run = result.commander_run;
+      const runText = run ? `Latest Commander run: ${run.status} (${run.trigger})` : "Latest Commander run: (none)";
+      const logText = tail || "(supervisor log empty)";
+      return `${runText}
+--- supervisor log ---
+${logText}`;
+    }
+    case "project.goal": {
+      if (typeof result.message === "string") {
+        return result.message;
+      }
+      if (result.status === "no goal") {
+        return "Goal \u2014 none. Use /goal <objective> to create one.";
+      }
+      if (result.status === "draft") {
+        return `Goal draft ${result.goal_id}: ${result.progress_summary}`;
+      }
+      const goal = result.goal;
+      if (goal) {
+        return `Goal ${goal.id} [${goal.status}] ${goal.title}
+${goal.objective}`;
+      }
+      if (result.goal == null) {
+        return "Goal \u2014 none. Use /goal <objective> to create one.";
+      }
+      return JSON.stringify(result, null, 2);
+    }
+    default:
+      return JSON.stringify(result, null, 2);
+  }
+}
+var init_slashDisplay = __esm({
+  "src/slashDisplay.ts"() {
+    "use strict";
+  }
+});
+
 // src/app.tsx
 var app_exports = {};
 __export(app_exports, {
@@ -39562,7 +39628,21 @@ function App2({ socketPath, projectId, canonicalPath }) {
         }));
         return;
       case "send":
-        void client.request(decision.method, { args: decision.args }).catch(() => {
+        void client.request(decision.method, { args: decision.args }).then((resp) => {
+          const text2 = resp.ok ? formatSlashResponse(decision.method, resp.result) : resp.error ?? "request failed";
+          setTuiState((prev) => ({
+            ...prev,
+            transcript: [
+              ...prev.transcript,
+              {
+                id: `slash-${Date.now()}`,
+                kind: "message",
+                role: "system",
+                text: text2
+              }
+            ]
+          }));
+        }).catch(() => {
         });
         return;
       case "chat":
@@ -39610,6 +39690,7 @@ var init_app = __esm({
     await init_Composer();
     await init_ProjectOnboarding();
     init_submitDecision();
+    init_slashDisplay();
     init_detach();
     import_jsx_runtime9 = __toESM(require_jsx_runtime(), 1);
   }
