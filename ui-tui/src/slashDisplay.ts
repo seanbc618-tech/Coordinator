@@ -34,8 +34,47 @@ export function formatSlashResponse(
       }
       return [
         'Tasks:',
-        ...tasks.map(t => `- ${t.id} [${t.state}] ${t.title}`),
+        ...tasks.map(t => {
+          const note = t.latest_note ? ` — ${t.latest_note}` : ''
+          const goal = t.goal ? `\n  Goal: ${String(t.goal).slice(0, 120)}` : ''
+          return `- ${t.id} [${t.state}] ${t.title}${note}${goal}`
+        }),
       ].join('\n')
+    }
+
+    case 'project.task': {
+      const task = result.task as Record<string, unknown> | undefined
+      if (!task) {
+        return '(task not found)'
+      }
+      const lines = [
+        `Task ${task.id} [${task.state}] ${task.title}`,
+        `Goal: ${task.goal}`,
+      ]
+      const verify = (task.verification_commands as string[] | undefined) ?? []
+      if (verify.length) {
+        lines.push('Verify:')
+        lines.push(...verify.map(cmd => `- ${cmd}`))
+      }
+      const latest = result.latest_event as Record<string, unknown> | null | undefined
+      if (latest) {
+        lines.push(
+          `Last event: ${latest.old_state} -> ${latest.new_state}: ${latest.note}`,
+        )
+      }
+      const attempt = result.latest_attempt as Record<string, unknown> | null | undefined
+      if (attempt) {
+        lines.push(
+          `Latest attempt: ${attempt.agent_id} exit=${attempt.exit_code} ${attempt.result_class}`,
+        )
+        if (attempt.log_path) {
+          lines.push(`Log: ${attempt.log_path}`)
+        }
+      }
+      if (task.worktree_path) {
+        lines.push(`Worktree: ${task.worktree_path}`)
+      }
+      return lines.join('\n')
     }
 
     case 'project.logs': {

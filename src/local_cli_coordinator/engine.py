@@ -74,6 +74,69 @@ def _read_optional_text(path: Path) -> str | None:
     return text or None
 
 
+def _is_report_only_task(task: dict) -> bool:
+    capabilities = {
+        part.strip()
+        for part in str(task.get("capabilities", "")).split(",")
+        if part.strip()
+    }
+    text = " ".join([
+        str(task.get("title", "")),
+        str(task.get("goal", "")),
+        str(task.get("acceptance_criteria", "")),
+    ]).lower()
+    edit_caps = {"code", "implementation", "frontend", "backend"}
+    markers = (
+        "report",
+        "baseline",
+        "acceptance checks",
+        "without changing code",
+        "read-only",
+    )
+    return (
+        "tests" in capabilities
+        and not (capabilities & edit_caps)
+        and any(marker in text for marker in markers)
+    )
+
+
+def _git_info_exclude_path(worktree: Path) -> Path | None:
+    git_path = worktree / ".git"
+    if git_path.is_file():
+        text = git_path.read_text(encoding="utf-8").strip()
+        if text.startswith("gitdir: "):
+            gitdir = Path(text.split("gitdir: ", 1)[1].strip())
+            if not gitdir.is_absolute():
+                gitdir = (worktree / gitdir).resolve()
+            return gitdir / "info" / "exclude"
+        return None
+    if git_path.is_dir():
+        return git_path / "info" / "exclude"
+    return None
+
+
+def _ensure_coordinator_git_exclude(worktree: Path) -> None:
+    exclude_path = _git_info_exclude_path(worktree)
+    if exclude_path is None:
+        return
+    exclude_path.parent.mkdir(parents=True, exist_ok=True)
+    marker = "# Coordinator runtime prompts\n.coordinator/\n"
+    existing = exclude_path.read_text(encoding="utf-8") if exclude_path.exists() else ""
+    if ".coordinator/" not in existing:
+        with exclude_path.open("a", encoding="utf-8") as handle:
+            if existing and not existing.endswith("\n"):
+                handle.write("\n")
+            handle.write(marker)
+
+
+def _worktree_prompt_path(worktree: Path, task_id: str, prompt: Path) -> Path:
+    worktree_prompt = worktree / ".coordinator" / task_id / "prompt.md"
+    worktree_prompt.parent.mkdir(parents=True, exist_ok=True)
+    worktree_prompt.write_text(prompt.read_text(encoding="utf-8"), encoding="utf-8")
+    _ensure_coordinator_git_exclude(worktree)
+    return worktree_prompt
+
+
 def _resolve_memory_path(root: Path, path: Path) -> Path:
     return path if path.is_absolute() else root / path
 
@@ -815,8 +878,10 @@ def _process_task(
         )
         return True
     prompt = _write_prompt(task, run_dir, root, repo)
+    worktree_prompt = _worktree_prompt_path(worktree, task["id"], prompt)
+    add_artifact(conn, task["id"], "worktree_prompt", worktree_prompt)
     agent_result, classified, attempt_id = run_worker_attempt(
-        conn, config, task["id"], agent, prompt, worktree, run_dir,
+        conn, config, task["id"], agent, worktree_prompt, worktree, run_dir,
         reporter=reporter,
     )
 
@@ -838,7 +903,7 @@ def _process_task(
                 actor=fallback_agent.id,
             ))
             agent_result, classified, attempt_id = run_worker_attempt(
-                conn, config, task["id"], fallback_agent, prompt, worktree, run_dir,
+                conn, config, task["id"], fallback_agent, worktree_prompt, worktree, run_dir,
                 fallback_from_attempt_id=attempt_id,
                 reporter=reporter,
             )
@@ -872,6 +937,46 @@ def _process_task(
         return True
 
     changed_files = collect_changed_files_since(worktree, base_commit)
+    if not changed_files and _is_report_only_task(task):
+        commands = [
+            line for line in task["verification_commands"].splitlines() if line
+        ] or repo.verify_commands
+        transition_task(conn, task["id"], "verifying", "running report-only verification")
+        verification = run_verification(
+            commands,
+            worktree,
+            run_dir,
+            timeout_seconds=config.policy.max_task_runtime_seconds,
+            reporter=reporter,
+            task_id=task["id"],
+        )
+        add_artifact(conn, task["id"], "verifier_log", verification.log_path)
+        if verification.passed:
+            _finish_task(
+                conn,
+                root,
+                task["id"],
+                "done",
+                "report-only verification passed",
+                verifier_result="passed",
+                next_action="none",
+            )
+        else:
+            summary = (
+                f"verification timed out after {config.policy.max_task_runtime_seconds} seconds"
+                if verification.timed_out
+                else "report-only verification failed"
+            )
+            _finish_task(
+                conn,
+                root,
+                task["id"],
+                "failed",
+                summary,
+                verifier_result="timed out" if verification.timed_out else "failed",
+                next_action="inspect verification log",
+            )
+        return True
     if not changed_files:
         _finish_task(
             conn,

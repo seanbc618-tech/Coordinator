@@ -38740,7 +38740,13 @@ function upsertActivity(state, taskId, update) {
     fallback: update.fallback ?? existing?.fallback ?? null,
     latestCommand: update.latestCommand ?? existing?.latestCommand ?? null,
     output: update.output ?? existing?.output ?? [],
-    expanded: update.expanded ?? existing?.expanded ?? false
+    expanded: update.expanded ?? existing?.expanded ?? false,
+    goal: update.goal ?? existing?.goal ?? null,
+    acceptanceCriteria: update.acceptanceCriteria ?? existing?.acceptanceCriteria ?? null,
+    verificationCommands: update.verificationCommands ?? existing?.verificationCommands ?? [],
+    state: update.state ?? existing?.state ?? null,
+    latestNote: update.latestNote ?? existing?.latestNote ?? null,
+    nextAction: update.nextAction ?? existing?.nextAction ?? null
   };
   const newActivities = new Map(state.activities);
   newActivities.set(taskId, activity);
@@ -38756,10 +38762,17 @@ function upsertActivity(state, taskId, update) {
   }
   return { ...state, activities: newActivities, transcript: newTranscript };
 }
+function isDuplicateRecentUserMessage(state, text) {
+  const last = state.transcript[state.transcript.length - 1];
+  return last?.kind === "message" && last.role === "user" && last.text === text;
+}
 function reduceChatMessage(state, payload) {
   const role = String(payload.role ?? "coordinator");
   const text = String(payload.text ?? "");
   if (!text) return state;
+  if (role === "user" && isDuplicateRecentUserMessage(state, text)) {
+    return state;
+  }
   return addMessage(state, role, text);
 }
 function reduceChatStream(state, payload) {
@@ -38776,11 +38789,16 @@ function reduceChatStream(state, payload) {
 function reduceTaskCreated(state, payload) {
   const taskId = String(payload.task_id ?? "");
   if (!taskId) return state;
+  const verificationCommands = Array.isArray(payload.verification_commands) ? payload.verification_commands.map(String) : [];
   return upsertActivity(state, taskId, {
     title: String(payload.title ?? taskId),
     agent: payload.agent ? String(payload.agent) : null,
     stage: "created",
-    startedAt: Date.now()
+    state: payload.state ? String(payload.state) : "ready",
+    startedAt: Date.now(),
+    goal: payload.goal ? String(payload.goal) : null,
+    acceptanceCriteria: payload.acceptance_criteria ? String(payload.acceptance_criteria) : null,
+    verificationCommands
   });
 }
 function reduceTaskStage(state, payload) {
@@ -38841,8 +38859,15 @@ function reduceTaskFallback(state, payload) {
 function reduceTaskDone(state, payload) {
   const taskId = String(payload.task_id ?? "");
   if (!taskId) return state;
+  const result = String(payload.result ?? "completed");
+  const reason = payload.reason ? String(payload.reason) : null;
+  const nextAction = payload.next_action ? String(payload.next_action) : null;
+  const terminalDone = result === "done" || result === "completed";
   return upsertActivity(state, taskId, {
-    stage: `done: ${String(payload.result ?? "completed")}`
+    stage: terminalDone ? "done: completed" : `failed: ${reason ?? result}`,
+    state: result,
+    latestNote: reason,
+    nextAction
   });
 }
 var init_eventReducer = __esm({
@@ -38941,31 +38966,47 @@ function ActivityBlock({ activity, columns }) {
   const compact = columns < 60;
   const statusIcon = activity.stage.startsWith("done") ? "\u2713" : activity.stage.startsWith("verification") ? "\u27D0" : activity.stage.startsWith("review") ? "\u25C9" : activity.stage.startsWith("git") ? "\u2387" : "\u25CF";
   const statusColor = activity.stage.startsWith("done") ? "green" : activity.stage.startsWith("verification: passed") ? "green" : activity.stage.startsWith("verification: failed") ? "red" : "yellow";
+  const verifySummary = activity.verificationCommands?.length ? activity.verificationCommands.join("; ") : null;
+  const failureNote = activity.stage.startsWith("failed") && activity.latestNote ? activity.latestNote : null;
   if (!activity.expanded || compact) {
-    return /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Box_default, { paddingX: 1, flexDirection: "row", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Text, { color: statusColor, children: [
-        statusIcon,
-        " "
+    return /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Box_default, { paddingX: 1, flexDirection: "column", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Box_default, { flexDirection: "row", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Text, { color: statusColor, children: [
+          statusIcon,
+          " "
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(Text, { bold: true, children: activity.title }),
+        activity.agent && /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Text, { dimColor: true, children: [
+          " [",
+          activity.agent,
+          "]"
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Text, { dimColor: true, children: [
+          " ",
+          activity.stage
+        ] }),
+        activity.startedAt && /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Text, { dimColor: true, children: [
+          " ",
+          formatElapsed(activity.startedAt)
+        ] }),
+        activity.fallback && /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Text, { color: "yellow", children: [
+          " \u26A0 ",
+          activity.fallback.from,
+          "\u2192",
+          activity.fallback.to
+        ] })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(Text, { bold: true, children: activity.title }),
-      activity.agent && /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Text, { dimColor: true, children: [
-        " [",
-        activity.agent,
-        "]"
+      activity.goal && activity.stage === "created" && /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Text, { dimColor: true, children: [
+        "  Goal: ",
+        activity.goal.slice(0, Math.max(columns - 8, 24))
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Text, { dimColor: true, children: [
-        " ",
-        activity.stage
+      verifySummary && activity.stage === "created" && /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Text, { dimColor: true, children: [
+        "  Verify: ",
+        verifySummary.slice(0, Math.max(columns - 10, 24))
       ] }),
-      activity.startedAt && /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Text, { dimColor: true, children: [
-        " ",
-        formatElapsed(activity.startedAt)
-      ] }),
-      activity.fallback && /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Text, { color: "yellow", children: [
-        " \u26A0 ",
-        activity.fallback.from,
-        "\u2192",
-        activity.fallback.to
+      failureNote && /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Text, { color: "red", children: [
+        "  Reason: ",
+        failureNote
       ] })
     ] });
   }
@@ -39112,18 +39153,39 @@ function parse(input) {
   }
   return { type: "message", text: trimmed };
 }
+function formatHelpText() {
+  const lines = ["Commands:"];
+  for (const cmd of SLASH_COMMANDS) {
+    if (!HELP_COMMAND_NAMES.has(cmd.name)) {
+      continue;
+    }
+    if (cmd.name === "/goal") {
+      lines.push("/goal <objective> - Create a draft goal");
+      lines.push("/goal confirm - Activate the draft goal");
+      continue;
+    }
+    if (cmd.name === "/task") {
+      lines.push("/task <id> - Show one task in detail");
+      continue;
+    }
+    lines.push(`${cmd.name} - ${cmd.description}`);
+  }
+  return lines.join("\n");
+}
 function completePartial(partial) {
   if (!partial.startsWith("/")) return [];
   const lower = partial.toLowerCase();
   return SLASH_COMMANDS.filter((c) => c.name.startsWith(lower)).map((c) => c.name);
 }
-var SLASH_COMMANDS;
+var SLASH_COMMANDS, HELP_COMMAND_NAMES;
 var init_slash = __esm({
   "src/slash.ts"() {
     "use strict";
     SLASH_COMMANDS = [
       { name: "/status", description: "Show project status", method: "project.status" },
+      { name: "/goal", description: "Set or view the current goal", method: "project.goal" },
       { name: "/tasks", description: "List project tasks", method: "project.tasks" },
+      { name: "/task", description: "Show one task in detail", method: "project.task" },
       { name: "/logs", description: "Show recent logs", method: "project.logs" },
       { name: "/agents", description: "List active agents", method: "project.agents" },
       { name: "/pause", description: "Pause project scheduling", method: "project.pause" },
@@ -39131,11 +39193,18 @@ var init_slash = __esm({
       { name: "/stop", description: "Stop project at safe boundary", method: "project.stop", destructive: true },
       { name: "/shutdown", description: "Shut down the Supervisor", method: "system.shutdown", destructive: true },
       { name: "/new", description: "Start a new conversation", method: "chat.new" },
-      { name: "/goal", description: "Set or view the current goal", method: "project.goal" },
       { name: "/project", description: "Switch project context", method: "project.switch" },
-      { name: "/help", description: "Show available commands", method: "system.help" },
+      { name: "/help", description: "Show available commands", method: "local.help" },
       { name: "/quit", description: "Detach the TUI", method: "system.quit" }
     ];
+    HELP_COMMAND_NAMES = /* @__PURE__ */ new Set([
+      "/status",
+      "/goal",
+      "/tasks",
+      "/task",
+      "/logs",
+      "/quit"
+    ]);
   }
 });
 
@@ -39362,6 +39431,9 @@ function decideSubmit(text, pendingDestructive) {
     if (parsed.command.name === "/quit") {
       return { action: "quit", newPending: null };
     }
+    if (parsed.command.name === "/help") {
+      return { action: "local-help", newPending: null };
+    }
     if (parsed.command.destructive) {
       if (pendingDestructive === parsed.command.name) {
         return {
@@ -39418,8 +39490,47 @@ function formatSlashResponse(method, result) {
       }
       return [
         "Tasks:",
-        ...tasks.map((t) => `- ${t.id} [${t.state}] ${t.title}`)
+        ...tasks.map((t) => {
+          const note = t.latest_note ? ` \u2014 ${t.latest_note}` : "";
+          const goal = t.goal ? `
+  Goal: ${String(t.goal).slice(0, 120)}` : "";
+          return `- ${t.id} [${t.state}] ${t.title}${note}${goal}`;
+        })
       ].join("\n");
+    }
+    case "project.task": {
+      const task = result.task;
+      if (!task) {
+        return "(task not found)";
+      }
+      const lines = [
+        `Task ${task.id} [${task.state}] ${task.title}`,
+        `Goal: ${task.goal}`
+      ];
+      const verify = task.verification_commands ?? [];
+      if (verify.length) {
+        lines.push("Verify:");
+        lines.push(...verify.map((cmd) => `- ${cmd}`));
+      }
+      const latest = result.latest_event;
+      if (latest) {
+        lines.push(
+          `Last event: ${latest.old_state} -> ${latest.new_state}: ${latest.note}`
+        );
+      }
+      const attempt = result.latest_attempt;
+      if (attempt) {
+        lines.push(
+          `Latest attempt: ${attempt.agent_id} exit=${attempt.exit_code} ${attempt.result_class}`
+        );
+        if (attempt.log_path) {
+          lines.push(`Log: ${attempt.log_path}`);
+        }
+      }
+      if (task.worktree_path) {
+        lines.push(`Worktree: ${task.worktree_path}`);
+      }
+      return lines.join("\n");
     }
     case "project.logs": {
       const tail = String(result.log_tail ?? "").trim();
@@ -39627,6 +39738,20 @@ function App2({ socketPath, projectId, canonicalPath }) {
           ]
         }));
         return;
+      case "local-help":
+        setTuiState((prev) => ({
+          ...prev,
+          transcript: [
+            ...prev.transcript,
+            {
+              id: `help-${Date.now()}`,
+              kind: "message",
+              role: "system",
+              text: formatHelpText()
+            }
+          ]
+        }));
+        return;
       case "send":
         void client.request(decision.method, { args: decision.args }).then((resp) => {
           const text2 = resp.ok ? formatSlashResponse(decision.method, resp.result) : resp.error ?? "request failed";
@@ -39646,13 +39771,6 @@ function App2({ socketPath, projectId, canonicalPath }) {
         });
         return;
       case "chat":
-        setTuiState((prev) => ({
-          ...prev,
-          transcript: [
-            ...prev.transcript,
-            { id: `user-${Date.now()}`, kind: "message", role: "user", text: decision.text }
-          ]
-        }));
         void client.request("chat.send", { text: decision.text }).catch(() => {
         });
         return;
@@ -39690,6 +39808,7 @@ var init_app = __esm({
     await init_Composer();
     await init_ProjectOnboarding();
     init_submitDecision();
+    init_slash();
     init_slashDisplay();
     init_detach();
     import_jsx_runtime9 = __toESM(require_jsx_runtime(), 1);

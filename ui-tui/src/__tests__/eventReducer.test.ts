@@ -57,6 +57,21 @@ describe('reduceEvent', () => {
     expect(result.transcript[0]).toMatchObject({ kind: 'message', role: 'user', text: 'do the thing' })
   })
 
+  it('deduplicates duplicate user chat.message after local echo', () => {
+    let state = freshState()
+    state = {
+      ...state,
+      transcript: [
+        { id: 'local-1', kind: 'message', role: 'user', text: 'hi' },
+      ],
+    }
+    const result = reduceEvent(state, makeEvent(1, 'chat.message', { role: 'user', text: 'hi' }))
+    const visibleUsers = result.transcript.filter(
+      item => item.kind === 'message' && item.role === 'user' && item.text === 'hi',
+    )
+    expect(visibleUsers).toHaveLength(1)
+  })
+
   it('handles chat.stream appending to last coordinator message', () => {
     let state = freshState()
     state = reduceEvent(state, makeEvent(1, 'chat.message', { role: 'coordinator', text: 'Hello' }))
@@ -71,6 +86,40 @@ describe('reduceEvent', () => {
     state = reduceEvent(state, makeEvent(2, 'chat.stream', { text: 'streaming...' }))
     expect(state.transcript).toHaveLength(2)
     expect(state.transcript[1]).toMatchObject({ kind: 'message', role: 'coordinator', text: 'streaming...' })
+  })
+
+  it('handles task.created with goal and verification commands', () => {
+    const state = freshState()
+    const result = reduceEvent(state, makeEvent(1, 'task.created', {
+      task_id: 't1',
+      title: 'Run baseline acceptance checks',
+      goal: 'Run verification commands without changing code',
+      verification_commands: ['uv run pytest -q'],
+      state: 'ready',
+    }))
+    expect(result.activities.get('t1')).toMatchObject({
+      title: 'Run baseline acceptance checks',
+      goal: 'Run verification commands without changing code',
+      verificationCommands: ['uv run pytest -q'],
+      state: 'ready',
+    })
+  })
+
+  it('handles task.done failure reason', () => {
+    let state = freshState()
+    state = reduceEvent(state, makeEvent(1, 'task.created', { task_id: 't1', title: 'Task 1' }))
+    const result = reduceEvent(state, makeEvent(2, 'task.done', {
+      task_id: 't1',
+      result: 'failed',
+      reason: 'agent command failed',
+      next_action: 'inspect agent log and retry',
+    }))
+    expect(result.activities.get('t1')).toMatchObject({
+      latestNote: 'agent command failed',
+      nextAction: 'inspect agent log and retry',
+    })
+    expect(result.activities.get('t1')?.stage).toContain('failed')
+    expect(result.activities.get('t1')?.stage).toContain('agent command failed')
   })
 
   it('handles task.created', () => {

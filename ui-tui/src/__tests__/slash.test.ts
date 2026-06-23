@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { parse, completePartial, SLASH_COMMANDS } from '../slash.js'
+import { parse, completePartial, SLASH_COMMANDS, formatHelpText } from '../slash.js'
+import { decideSubmit } from '../submitDecision.js'
 
 describe('parse', () => {
   it('parses plain message', () => {
@@ -91,5 +92,19 @@ describe('completePartial', () => {
   it('completes exact match', () => {
     const results = completePartial('/quit')
     expect(results).toEqual(['/quit'])
+  })
+})
+
+describe('/help', () => {
+  it('uses local-help instead of system.help RPC', () => {
+    const decision = decideSubmit('/help', null)
+    expect(decision).toEqual({ action: 'local-help', newPending: null })
+  })
+
+  it('lists core commands in help text', () => {
+    const text = formatHelpText()
+    expect(text).toContain('/task <id>')
+    expect(text).toContain('/goal confirm')
+    expect(text).not.toContain('system.help')
   })
 })

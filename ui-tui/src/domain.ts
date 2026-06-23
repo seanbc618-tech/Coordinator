@@ -14,6 +14,12 @@ export interface Activity {
   latestCommand: string | null
   output: string[]
   expanded: boolean
+  goal?: string | null
+  acceptanceCriteria?: string | null
+  verificationCommands?: string[]
+  state?: string | null
+  latestNote?: string | null
+  nextAction?: string | null
 }
 
 export type TranscriptItem =

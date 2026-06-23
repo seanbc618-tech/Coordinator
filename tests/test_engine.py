@@ -492,3 +492,106 @@ class EngineTests(unittest.TestCase):
                 run_one_ready_task(conn, test_config(repo), root, reporter=reporter)
 
             self.assertEqual(mock_create.call_args.kwargs["reporter"], reporter)
+
+    def test_report_only_task_passes_without_changed_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            init_git_repo(repo)
+            conn = connect(root / "coordinator.db")
+            init_db(conn)
+            self.addCleanup(conn.close)
+            verify_cmd = f'{sys.executable} -c "print(\'ok\')"'
+            task_id = create_task(
+                conn,
+                title="Run baseline acceptance checks",
+                repo="demo",
+                source_path="tasks/inbox/baseline.md",
+                priority="normal",
+                capabilities=["tests"],
+                goal="Run the repo verification commands without changing code.",
+                acceptance_criteria=["Results are recorded."],
+                verification_commands=[verify_cmd],
+            )
+            agents = {
+                "noop": AgentConfig(
+                    id="noop",
+                    command=f"{sys.executable} -c \"print('noop')\"",
+                    capabilities=["tests"],
+                    max_concurrency=1,
+                )
+            }
+            repos = {
+                "demo": RepoConfig(
+                    id="demo",
+                    path=repo,
+                    default_branch="main",
+                    remote="origin",
+                    branch_prefix="coord/",
+                    allow_push=False,
+                    merge_policy="no_push",
+                    verify_commands=[verify_cmd],
+                    review_policy="tests_only",
+                )
+            }
+            config = CoordinatorConfig(agents=agents, repos=repos, policy=test_config(repo).policy)
+
+            processed = run_one_ready_task(conn, config, root)
+
+            self.assertTrue(processed)
+            task = get_task(conn, task_id)
+            self.assertEqual(task["state"], "done")
+            self.assertIn("report-only verification passed", latest_event_note(conn, task_id))
+
+    def test_worker_prompt_is_written_inside_worktree(self) -> None:
+        captured: list[Path] = []
+
+        def fake_run_agent(agent, prompt, worktree, attempt_dir, **kwargs):
+            captured.append(prompt)
+            from local_cli_coordinator.agent import AgentRunResult
+            log_path = attempt_dir / "agent.log"
+            log_path.write_text("noop\n")
+            return AgentRunResult(
+                agent_id=agent.id,
+                command=agent.command,
+                exit_code=0,
+                log_path=log_path,
+                timed_out=False,
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            init_git_repo(repo)
+            conn = connect(root / "coordinator.db")
+            init_db(conn)
+            self.addCleanup(conn.close)
+            task_id = create_task(
+                conn,
+                title="Noop task",
+                repo="demo",
+                source_path="tasks/inbox/noop.md",
+                priority="normal",
+                capabilities=["code"],
+                goal="Make no changes.",
+                acceptance_criteria=["No changes are made."],
+                verification_commands=[],
+            )
+            config = test_config(repo)
+            agents = {
+                "noop": AgentConfig(
+                    id="noop",
+                    command=f"{sys.executable} -c \"print('noop')\"",
+                    capabilities=["code"],
+                    max_concurrency=1,
+                )
+            }
+            config = CoordinatorConfig(agents=agents, repos=config.repos, policy=config.policy)
+
+            with patch("local_cli_coordinator.engine.run_agent", side_effect=fake_run_agent):
+                run_one_ready_task(conn, config, root)
+
+            self.assertTrue(captured)
+            prompt_path = captured[0]
+            self.assertIn(".coordinator", str(prompt_path))
+            self.assertTrue(prompt_path.name == "prompt.md")

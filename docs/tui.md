@@ -69,8 +69,18 @@ Type natural-language messages at the `❯` prompt:
 - Request status updates or course corrections
 
 Messages that do not start with `/` are sent as `chat.send` to Commander (not a
-local echo). Slash commands call Supervisor RPC methods and render structured
-results in the transcript.
+local echo). The TUI waits for the Supervisor's persisted `chat.message` event
+so your text appears once. Slash commands call Supervisor RPC methods (except
+`/help`, which is generated locally) and render structured results in the
+transcript.
+
+When Commander admits a task, the activity block shows its **title**, **goal**,
+and **verification commands** immediately — not only an opaque task id.
+
+**Report-only tasks** (baseline/acceptance checks with `tests` capability and no
+code edits) may finish `done` after verification even when no files changed.
+Code-edit tasks still fail with `no changed files` when the agent produces no
+patch.
 
 When the connection is **paused** or **offline**, the composer shows
 `(paused — type to queue)` and queues input until the connection returns.
@@ -83,8 +93,10 @@ input starts with `/`.
 | Command | What it does |
 |---|---|
 | `/status` | Show task counts, paused/stopped state |
-| `/tasks` | List project tasks |
+| `/tasks` | List project tasks (title, state, goal summary, latest note) |
+| `/task <id>` | Show one task in detail (goal, verify commands, last event, attempt log) |
 | `/logs` | Show recent logs |
+| `/help` | List available commands (local; works offline) |
 | `/agents` | List active agents |
 | `/pause` | Pause scheduling for this project |
 | `/resume` | Resume scheduling |

@@ -96,13 +96,26 @@ def merge_base(worktree_path: Path, ref: str) -> str:
     return result.stdout.strip()
 
 
+def _is_coordinator_runtime_path(path: str) -> bool:
+    normalized = path.removeprefix("./")
+    return normalized == ".coordinator" or normalized.startswith(".coordinator/")
+
+
 def collect_changed_files_since(worktree_path: Path, base_ref: str) -> list[str]:
     result = git(["diff", "--name-only", "-z", base_ref, "--", "."], cwd=worktree_path)
     require_success(result, "collect branch changed files")
-    files = {path for path in result.stdout.split("\0") if path}
+    files = {
+        path
+        for path in result.stdout.split("\0")
+        if path and not _is_coordinator_runtime_path(path)
+    }
     untracked = git(["ls-files", "--others", "--exclude-standard", "-z"], cwd=worktree_path)
     require_success(untracked, "list untracked files")
-    files.update(path for path in untracked.stdout.split("\0") if path)
+    files.update(
+        path
+        for path in untracked.stdout.split("\0")
+        if path and not _is_coordinator_runtime_path(path)
+    )
     return sorted(files)
 
 

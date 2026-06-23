@@ -14,7 +14,16 @@ from local_cli_coordinator.config import (
     PolicyConfig,
     RepoConfig,
 )
-from local_cli_coordinator.db import connect, init_db, create_task
+from local_cli_coordinator.db import (
+    add_artifact,
+    connect,
+    create_task,
+    finish_attempt,
+    init_db,
+    set_task_branch_and_worktree,
+    start_attempt,
+    transition_task,
+)
 from local_cli_coordinator.goals import (
     create_goal,
     finish_commander_run,
@@ -313,6 +322,100 @@ class ProjectSlashMethodsTest(TestCase):
         self.assertTrue(resp.ok)
         self.assertEqual(len(resp.result["tasks"]), 1)
         self.assertEqual(resp.result["tasks"][0]["title"], "Slice one")
+
+    def test_project_task_returns_detail(self) -> None:
+        task_id = create_task(
+            self.conn,
+            title="Run baseline acceptance checks",
+            repo="demo",
+            source_path="tasks/generated/baseline.md",
+            priority="normal",
+            capabilities=["tests"],
+            goal="Run baseline checks",
+            acceptance_criteria=["`uv run pytest -q` has been executed and the result is recorded."],
+            verification_commands=["uv run pytest -q", "uv run ruff check src/ tests/"],
+            project_id=self.project_id,
+        )
+        set_task_branch_and_worktree(
+            self.conn,
+            task_id,
+            "coord/baseline",
+            self.repo / "worktrees" / task_id,
+        )
+        transition_task(self.conn, task_id, "failed", "no changed files")
+        attempt_id = start_attempt(self.conn, task_id, "claude_worker", "claude --print ...")
+        log_path = self.root / "runs" / task_id / "agent.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("I need permission to read the prompt file.\n")
+        finish_attempt(
+            self.conn,
+            attempt_id,
+            exit_code=0,
+            result_class="interactive_blocked",
+            result_reason="permission required",
+            log_path=str(log_path),
+        )
+        add_artifact(self.conn, task_id, "agent_log", log_path)
+
+        resp = self.methods.handle(
+            self.conn,
+            _request("project.task", project_id=self.project_id, args=task_id),
+        )
+        self.assertTrue(resp.ok, resp.error)
+        self.assertEqual(resp.result["task"]["id"], task_id)
+        self.assertEqual(resp.result["task"]["goal"], "Run baseline checks")
+        self.assertIn("uv run pytest -q", resp.result["task"]["verification_commands"])
+        self.assertEqual(resp.result["latest_event"]["note"], "no changed files")
+        self.assertTrue(
+            any("agent.log" in art["path"] for art in resp.result["artifacts"]),
+        )
+
+    def test_project_task_rejects_foreign_task(self) -> None:
+        (self.root / "other").mkdir(parents=True, exist_ok=True)
+        other_repo = _git_repo(self.root / "other")
+        other_draft = inspect_project(other_repo)
+        other_project_id = register_project(self.conn, other_draft, confirmed=True)
+        foreign_id = create_task(
+            self.conn,
+            title="Foreign",
+            repo="demo",
+            source_path="tasks/generated/foreign.md",
+            priority="normal",
+            capabilities=["code"],
+            goal="g",
+            acceptance_criteria=["a"],
+            verification_commands=[],
+            project_id=other_project_id,
+        )
+        resp = self.methods.handle(
+            self.conn,
+            _request("project.task", project_id=self.project_id, args=foreign_id),
+        )
+        self.assertFalse(resp.ok)
+        self.assertIn("not found", resp.error)
+
+    def test_project_tasks_includes_goal_and_latest_note(self) -> None:
+        task_id = create_task(
+            self.conn,
+            title="Slice one",
+            repo="demo",
+            source_path="tasks/generated/a.md",
+            priority="normal",
+            capabilities=["code"],
+            goal="Ship slice",
+            acceptance_criteria=["a"],
+            verification_commands=[],
+            project_id=self.project_id,
+        )
+        transition_task(self.conn, task_id, "failed", "agent command failed")
+        resp = self.methods.handle(
+            self.conn,
+            _request("project.tasks", project_id=self.project_id),
+        )
+        self.assertTrue(resp.ok)
+        row = resp.result["tasks"][0]
+        self.assertEqual(row["goal"], "Ship slice")
+        self.assertEqual(row["latest_note"], "agent command failed")
 
     def test_project_logs_returns_tail_and_commander_run(self) -> None:
         goal_id = create_goal(

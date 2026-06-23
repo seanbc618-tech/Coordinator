@@ -219,6 +219,47 @@ Reinstall into the environment you use daily:
 pip install --force-reinstall dist/local_cli_coordinator-*.whl
 ```
 
+## `unsupported method 'system.help'`
+
+**Symptom:** `/help` prints an RPC error mentioning `system.help`.
+
+**Cause:** Stale TUI bundle or pre-Phase 5.1 build where `/help` called the
+Supervisor.
+
+**Fix:** Rebuild and reinstall (`npm run build --prefix ui-tui && pip install
+--force-reinstall .`). Phase 5.1 generates `/help` locally from the command
+catalog.
+
+## User message appears twice
+
+**Symptom:** Your chat text shows up two times in the transcript.
+
+**Cause:** Optimistic local echo plus Supervisor `chat.message` replay (fixed in
+Phase 5.1).
+
+**Fix:** Reinstall the current TUI bundle. After the fix, only the server event
+renders your message (`> your text`).
+
+## Task failed with `no changed files`
+
+**Symptom:** `/task <id>` or activity shows `no changed files`.
+
+**Meaning:** A **code-edit** task finished without a worktree patch. Inspect the
+agent log via `/task <id>`.
+
+**Report-only exception:** Baseline/acceptance tasks tagged as report-only (tests
+capability, goal mentions reporting without code changes) run verification and
+can finish `done` with no changed files.
+
+## Agent cannot read prompt file
+
+**Symptom:** Agent log says it needs permission to read the prompt outside the
+worktree.
+
+**Fix (Phase 5.1+):** Prompts are copied under
+`<worktree>/.coordinator/<task-id>/prompt.md`. Re-run the task after upgrading;
+`/task <id>` should show `worktree_prompt` in artifacts.
+
 ## Chat rejected: goal is draft
 
 **Symptom:** Sending a message prints an error like

@@ -229,6 +229,16 @@ class ChatSendBridgeTests(unittest.TestCase):
         self.assertIn("task.created", types)
         self.assertFalse(any("Received:" in str(e.payload) for e in events))
 
+        created = [e for e in events if e.event_type == "task.created"]
+        self.assertTrue(created)
+        payload = created[0].payload
+        self.assertIn("title", payload)
+        self.assertIn("state", payload)
+        self.assertIn("goal", payload)
+        self.assertIn("acceptance_criteria", payload)
+        self.assertIn("verification_commands", payload)
+        self.assertIsInstance(payload["verification_commands"], list)
+
         coord = [
             e
             for e in events

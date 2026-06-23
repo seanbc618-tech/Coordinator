@@ -11,6 +11,7 @@ export type SubmitDecision =
   | { action: 'quit'; newPending: null }
   | { action: 'destructive-confirmed'; commandName: string; method: string; args: string; newPending: null }
   | { action: 'destructive-pending'; commandName: string; newPending: string }
+  | { action: 'local-help'; newPending: null }
   | { action: 'send'; method: string; args: string; newPending: null }
   | { action: 'chat'; text: string; newPending: null }
 
@@ -27,6 +28,10 @@ export function decideSubmit(text: string, pendingDestructive: string | null): S
   if (parsed.type === 'command') {
     if (parsed.command.name === '/quit') {
       return { action: 'quit', newPending: null }
+    }
+
+    if (parsed.command.name === '/help') {
+      return { action: 'local-help', newPending: null }
     }
 
     if (parsed.command.destructive) {

@@ -691,6 +691,50 @@ def project_list_tasks(
     ).fetchall()
 
 
+def project_get_task_detail(
+    conn: sqlite3.Connection,
+    *,
+    project_id: str,
+    task_id: str,
+) -> sqlite3.Row | None:
+    return conn.execute(
+        "select * from tasks where project_id = ? and id = ?",
+        (project_id, task_id),
+    ).fetchone()
+
+
+def task_latest_event(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> sqlite3.Row | None:
+    return conn.execute(
+        "select * from events where task_id = ? order by id desc limit 1",
+        (task_id,),
+    ).fetchone()
+
+
+def task_latest_attempt(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> sqlite3.Row | None:
+    return conn.execute(
+        "select * from attempts where task_id = ? order by id desc limit 1",
+        (task_id,),
+    ).fetchone()
+
+
+def task_list_artifacts_for_project(
+    conn: sqlite3.Connection,
+    *,
+    project_id: str,
+    task_id: str,
+) -> list[sqlite3.Row]:
+    return conn.execute(
+        "select kind, path from artifacts where project_id = ? and task_id = ? order by id",
+        (project_id, task_id),
+    ).fetchall()
+
+
 def project_next_ready_task(
     conn: sqlite3.Connection, *, project_id: str
 ) -> sqlite3.Row | None:

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .commander_service import CommanderChatResult, send_project_chat_message
+from .db import get_task
 from .config import CoordinatorConfig
 from .goals import active_goal_for_project, has_live_commander_run
 from .supervisor_events import EventBroker
@@ -74,11 +75,36 @@ def publish_commander_chat_events(
         )
     if result.admission and result.succeeded:
         for task_id in result.admission.accepted_task_ids:
+            task = get_task(conn, task_id)
+            if task is None:
+                broker.publish(
+                    conn,
+                    project_id,
+                    "task.created",
+                    {
+                        "task_id": task_id,
+                        "goal_id": result.goal_id,
+                        "detail_unavailable": True,
+                    },
+                )
+                continue
+            verification_commands = [
+                line for line in task["verification_commands"].splitlines() if line
+            ]
             broker.publish(
                 conn,
                 project_id,
                 "task.created",
-                {"task_id": task_id, "goal_id": result.goal_id},
+                {
+                    "task_id": task_id,
+                    "goal_id": result.goal_id,
+                    "title": task["title"],
+                    "state": task["state"],
+                    "repo": task["repo"],
+                    "goal": task["goal"],
+                    "acceptance_criteria": task["acceptance_criteria"],
+                    "verification_commands": verification_commands,
+                },
             )
 
 

@@ -17,7 +17,14 @@ import sqlite3
 
 from .commander_service import confirm_goal, create_and_preview_goal
 from .config import CoordinatorConfig, RepoConfig
-from .db import project_task_counts, project_list_tasks
+from .db import (
+    project_get_task_detail,
+    project_list_tasks,
+    project_task_counts,
+    task_latest_attempt,
+    task_latest_event,
+    task_list_artifacts_for_project,
+)
 from .goals import active_goal_for_project, get_latest_commander_run
 from .projects import ProjectDraft, get_project, inspect_project, register_project
 from .runtime_paths import RuntimePaths
@@ -156,6 +163,7 @@ class SupervisorMethods:
             "project.status": self._handle_project_status,
             "project.goal": self._handle_project_goal,
             "project.tasks": self._handle_project_tasks,
+            "project.task": self._handle_project_task,
             "project.logs": self._handle_project_logs,
             "project.inspect": self._handle_project_inspect,
             "project.register": self._handle_project_register,
@@ -438,17 +446,97 @@ class SupervisorMethods:
         if get_project(conn, project_id) is None:
             return self._error(request, f"project {project_id!r} not registered")
 
-        tasks = [
-            {
+        tasks = []
+        for row in project_list_tasks(conn, project_id=project_id)[:20]:
+            latest = task_latest_event(conn, row["id"])
+            tasks.append({
                 "id": row["id"],
                 "title": row["title"],
                 "state": row["state"],
                 "repo": row["repo"],
                 "priority": row["priority"],
-            }
-            for row in project_list_tasks(conn, project_id=project_id)[:20]
-        ]
+                "goal": row["goal"],
+                "latest_note": latest["note"] if latest else None,
+            })
         return self._ok(request, {"tasks": tasks})
+
+    def _handle_project_task(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        project_id = request.project_id
+        if not project_id:
+            return self._error(request, "project_id is required")
+        if get_project(conn, project_id) is None:
+            return self._error(request, f"project {project_id!r} not registered")
+
+        args = request.params.get("args", "")
+        if not isinstance(args, str):
+            args = ""
+        task_id = args.strip()
+        if not task_id:
+            return self._error(request, "task id is required")
+
+        row = project_get_task_detail(conn, project_id=project_id, task_id=task_id)
+        if row is None:
+            return self._error(
+                request,
+                f"task {task_id!r} not found in project {project_id!r}",
+            )
+
+        latest = task_latest_event(conn, task_id)
+        attempt = task_latest_attempt(conn, task_id)
+        artifacts = task_list_artifacts_for_project(
+            conn, project_id=project_id, task_id=task_id
+        )
+        verification_commands = [
+            line for line in row["verification_commands"].splitlines() if line
+        ]
+        return self._ok(
+            request,
+            {
+                "task": {
+                    "id": row["id"],
+                    "title": row["title"],
+                    "state": row["state"],
+                    "repo": row["repo"],
+                    "priority": row["priority"],
+                    "capabilities": row["capabilities"],
+                    "goal": row["goal"],
+                    "acceptance_criteria": row["acceptance_criteria"],
+                    "verification_commands": verification_commands,
+                    "branch": row["branch"],
+                    "worktree_path": row["worktree_path"],
+                    "source_path": row["source_path"],
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                },
+                "latest_event": (
+                    {
+                        "old_state": latest["old_state"],
+                        "new_state": latest["new_state"],
+                        "note": latest["note"],
+                        "created_at": latest["created_at"],
+                    }
+                    if latest
+                    else None
+                ),
+                "latest_attempt": (
+                    {
+                        "agent_id": attempt["agent_id"],
+                        "exit_code": attempt["exit_code"],
+                        "result_class": attempt["result_class"],
+                        "result_reason": attempt["result_reason"],
+                        "log_path": attempt["log_path"],
+                        "completed_at": attempt["ended_at"],
+                    }
+                    if attempt
+                    else None
+                ),
+                "artifacts": [
+                    {"kind": art["kind"], "path": art["path"]} for art in artifacts
+                ],
+            },
+        )
 
     def _handle_project_logs(
         self, conn: sqlite3.Connection, request: RequestEnvelope

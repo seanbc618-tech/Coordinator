@@ -38,16 +38,34 @@ export function ActivityBlock({ activity, columns }: ActivityBlockProps) {
         ? 'red'
         : 'yellow'
 
+  const verifySummary = activity.verificationCommands?.length
+    ? activity.verificationCommands.join('; ')
+    : null
+  const failureNote = activity.stage.startsWith('failed') && activity.latestNote
+    ? activity.latestNote
+    : null
+
   if (!activity.expanded || compact) {
     return (
-      <Box paddingX={1} flexDirection="row">
-        <Text color={statusColor}>{statusIcon} </Text>
-        <Text bold>{activity.title}</Text>
-        {activity.agent && <Text dimColor> [{activity.agent}]</Text>}
-        <Text dimColor> {activity.stage}</Text>
-        {activity.startedAt && <Text dimColor> {formatElapsed(activity.startedAt)}</Text>}
-        {activity.fallback && (
-          <Text color="yellow"> ⚠ {activity.fallback.from}→{activity.fallback.to}</Text>
+      <Box paddingX={1} flexDirection="column">
+        <Box flexDirection="row">
+          <Text color={statusColor}>{statusIcon} </Text>
+          <Text bold>{activity.title}</Text>
+          {activity.agent && <Text dimColor> [{activity.agent}]</Text>}
+          <Text dimColor> {activity.stage}</Text>
+          {activity.startedAt && <Text dimColor> {formatElapsed(activity.startedAt)}</Text>}
+          {activity.fallback && (
+            <Text color="yellow"> ⚠ {activity.fallback.from}→{activity.fallback.to}</Text>
+          )}
+        </Box>
+        {activity.goal && activity.stage === 'created' && (
+          <Text dimColor>  Goal: {activity.goal.slice(0, Math.max(columns - 8, 24))}</Text>
+        )}
+        {verifySummary && activity.stage === 'created' && (
+          <Text dimColor>  Verify: {verifySummary.slice(0, Math.max(columns - 10, 24))}</Text>
+        )}
+        {failureNote && (
+          <Text color="red">  Reason: {failureNote}</Text>
         )}
       </Box>
     )

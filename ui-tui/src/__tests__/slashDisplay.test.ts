@@ -17,6 +17,35 @@ describe('formatSlashResponse', () => {
     expect(formatSlashResponse('project.tasks', { tasks: [] })).toContain('none')
   })
 
+  it('formats project.task detail', () => {
+    const text = formatSlashResponse('project.task', {
+      task: {
+        id: 'task-1',
+        title: 'Run baseline acceptance checks',
+        state: 'failed',
+        goal: 'Run verification commands',
+        verification_commands: ['uv run pytest -q'],
+        worktree_path: '/tmp/worktree',
+      },
+      latest_event: {
+        old_state: 'running',
+        new_state: 'failed',
+        note: 'no changed files',
+      },
+      latest_attempt: {
+        agent_id: 'claude_worker',
+        exit_code: 0,
+        result_class: 'interactive_blocked',
+        log_path: '/tmp/agent.log',
+      },
+      artifacts: [{ kind: 'agent_log', path: '/tmp/agent.log' }],
+    })
+    expect(text).toContain('Run baseline acceptance checks')
+    expect(text).toContain('uv run pytest -q')
+    expect(text).toContain('no changed files')
+    expect(text).toContain('agent.log')
+  })
+
   it('formats project.goal confirm message', () => {
     const text = formatSlashResponse('project.goal', {
       message: 'goal 3 activated',

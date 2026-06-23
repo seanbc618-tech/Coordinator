@@ -85,6 +85,12 @@ function upsertActivity(state: TuiState, taskId: string, update: Partial<Activit
     latestCommand: update.latestCommand ?? existing?.latestCommand ?? null,
     output: update.output ?? existing?.output ?? [],
     expanded: update.expanded ?? existing?.expanded ?? false,
+    goal: update.goal ?? existing?.goal ?? null,
+    acceptanceCriteria: update.acceptanceCriteria ?? existing?.acceptanceCriteria ?? null,
+    verificationCommands: update.verificationCommands ?? existing?.verificationCommands ?? [],
+    state: update.state ?? existing?.state ?? null,
+    latestNote: update.latestNote ?? existing?.latestNote ?? null,
+    nextAction: update.nextAction ?? existing?.nextAction ?? null,
   }
 
   const newActivities = new Map(state.activities)
@@ -106,10 +112,18 @@ function upsertActivity(state: TuiState, taskId: string, update: Partial<Activit
   return { ...state, activities: newActivities, transcript: newTranscript }
 }
 
+function isDuplicateRecentUserMessage(state: TuiState, text: string): boolean {
+  const last = state.transcript[state.transcript.length - 1]
+  return last?.kind === 'message' && last.role === 'user' && last.text === text
+}
+
 function reduceChatMessage(state: TuiState, payload: Record<string, unknown>): TuiState {
   const role = String(payload.role ?? 'coordinator')
   const text = String(payload.text ?? '')
   if (!text) return state
+  if (role === 'user' && isDuplicateRecentUserMessage(state, text)) {
+    return state
+  }
   return addMessage(state, role as 'user' | 'coordinator' | 'system', text)
 }
 
@@ -129,11 +143,20 @@ function reduceChatStream(state: TuiState, payload: Record<string, unknown>): Tu
 function reduceTaskCreated(state: TuiState, payload: Record<string, unknown>): TuiState {
   const taskId = String(payload.task_id ?? '')
   if (!taskId) return state
+  const verificationCommands = Array.isArray(payload.verification_commands)
+    ? payload.verification_commands.map(String)
+    : []
   return upsertActivity(state, taskId, {
     title: String(payload.title ?? taskId),
     agent: payload.agent ? String(payload.agent) : null,
     stage: 'created',
+    state: payload.state ? String(payload.state) : 'ready',
     startedAt: Date.now(),
+    goal: payload.goal ? String(payload.goal) : null,
+    acceptanceCriteria: payload.acceptance_criteria
+      ? String(payload.acceptance_criteria)
+      : null,
+    verificationCommands,
   })
 }
 
@@ -202,7 +225,14 @@ function reduceTaskFallback(state: TuiState, payload: Record<string, unknown>): 
 function reduceTaskDone(state: TuiState, payload: Record<string, unknown>): TuiState {
   const taskId = String(payload.task_id ?? '')
   if (!taskId) return state
+  const result = String(payload.result ?? 'completed')
+  const reason = payload.reason ? String(payload.reason) : null
+  const nextAction = payload.next_action ? String(payload.next_action) : null
+  const terminalDone = result === 'done' || result === 'completed'
   return upsertActivity(state, taskId, {
-    stage: `done: ${String(payload.result ?? 'completed')}`,
+    stage: terminalDone ? 'done: completed' : `failed: ${reason ?? result}`,
+    state: result,
+    latestNote: reason,
+    nextAction,
   })
 }

@@ -287,13 +287,25 @@ class FakeSupervisor:
                 "admitted": 1,
                 "rejected": 0,
             })
-            # Commander-style chat message
+            self._send_event(conn, "chat.message", {
+                "role": "user",
+                "text": text,
+                "goal_id": 1,
+            })
             self._send_event(conn, "chat.message", {
                 "role": "coordinator",
                 "text": f"Commander processed: {text}",
                 "goal_id": 1,
             })
-            self._send_event(conn, "task.created", {"task_id": "task-cmd-001", "goal_id": 1})
+            self._send_event(conn, "task.created", {
+                "task_id": "task-cmd-001",
+                "goal_id": 1,
+                "title": "Run baseline acceptance checks",
+                "state": "ready",
+                "goal": "Run verification commands without changing code",
+                "acceptance_criteria": "Record pytest and ruff results",
+                "verification_commands": ["uv run pytest -q", "uv run ruff check src/ tests/"],
+            })
             self._send_event(conn, "commander.completed", {
                 "goal_id": 1,
                 "run_id": 42,
@@ -311,9 +323,46 @@ class FakeSupervisor:
         elif method == "project.tasks":
             self._respond(conn, request_id, {
                 "tasks": [
-                    {"id": "task-001", "title": "Implement auth", "state": "done"},
-                    {"id": "task-002", "title": "Add tests", "state": "ready"},
+                    {
+                        "id": "task-001",
+                        "title": "Implement auth",
+                        "state": "done",
+                        "goal": "Ship auth",
+                        "latest_note": "completed",
+                    },
+                    {
+                        "id": "task-002",
+                        "title": "Add tests",
+                        "state": "ready",
+                        "goal": "Add coverage",
+                        "latest_note": None,
+                    },
                 ],
+            })
+
+        elif method == "project.task":
+            task_id = params.get("args", "task-baseline-001")
+            self._respond(conn, request_id, {
+                "task": {
+                    "id": task_id,
+                    "title": "Run baseline acceptance checks",
+                    "state": "failed",
+                    "goal": "Run verification commands without changing code",
+                    "verification_commands": ["uv run pytest -q", "uv run ruff check src/ tests/"],
+                    "worktree_path": "/tmp/worktree",
+                },
+                "latest_event": {
+                    "old_state": "running",
+                    "new_state": "failed",
+                    "note": "no changed files",
+                },
+                "latest_attempt": {
+                    "agent_id": "claude_worker",
+                    "exit_code": 0,
+                    "result_class": "interactive_blocked",
+                    "log_path": "/tmp/agent.log",
+                },
+                "artifacts": [{"kind": "agent_log", "path": "/tmp/agent.log"}],
             })
 
         elif method in ("project.pause", "project.resume", "project.stop"):

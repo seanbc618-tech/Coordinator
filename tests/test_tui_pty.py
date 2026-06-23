@@ -858,6 +858,67 @@ class TuiPtyTests(unittest.TestCase):
         finally:
             _cleanup_tui(pid, fd)
 
+    def test_pty_help_shows_commands_without_rpc(self) -> None:
+        """Type /help; assert local help text, no unsupported method error."""
+        pid, fd = _spawn_tui(self.socket_path, "proj-a", cols=100, rows=30)
+        try:
+            _wait_for_connection(fd)
+            _read_available(fd, timeout=0.5)
+            _type_string_and_wait(fd, "/help")
+            _type_enter_and_wait(fd)
+            time.sleep(1.0)
+            output = _read_available(fd, timeout=3.0)
+            frame = _final_frame_text(output)
+            self.assertIn("/task <id>", frame)
+            self.assertIn("/goal confirm", frame)
+            self.assertNotIn("unsupported method", frame.lower())
+            requests = self.server.drain_requests()
+            methods = {m for m, _ in requests}
+            self.assertNotIn("system.help", methods)
+        finally:
+            _cleanup_tui(pid, fd)
+
+    def test_pty_chat_shows_user_message_once(self) -> None:
+        """User chat text appears exactly once with Commander response."""
+        pid, fd = _spawn_tui(self.socket_path, "proj-a", cols=100, rows=30)
+        try:
+            _wait_for_connection(fd)
+            _read_available(fd, timeout=0.5)
+            _type_string_and_wait(fd, "hello once")
+            _type_enter_and_wait(fd)
+            self.assertTrue(
+                self.server.wait_for_request_method("chat.send", timeout=10),
+                "chat.send RPC not received",
+            )
+            output = _read_available(fd, timeout=3.0)
+            frame = _final_frame_text(output)
+            self.assertEqual(frame.count("> hello once"), 1)
+            self.assertEqual(frame.count("Commander processed: hello once"), 1)
+        finally:
+            _cleanup_tui(pid, fd)
+
+    def test_pty_task_shows_baseline_detail(self) -> None:
+        """Type /task; assert goal, verify commands, and failure note render."""
+        pid, fd = _spawn_tui(self.socket_path, "proj-a", cols=120, rows=40)
+        try:
+            _wait_for_connection(fd)
+            _read_available(fd, timeout=0.5)
+            _type_string_and_wait(fd, "/task task-baseline-001")
+            _type_enter_and_wait(fd)
+            self.assertTrue(
+                self.server.wait_for_request_method("project.task", timeout=10),
+                "project.task RPC not received",
+            )
+            output = _read_available(fd, timeout=3.0)
+            frame = _final_frame_text(output)
+            normalized = re.sub(r"\s+", " ", _strip_ansi(frame))
+            self.assertIn("Run baseline acceptance checks", normalized)
+            self.assertIn("uv run pytest -q", normalized)
+            self.assertIn("no changed files", normalized)
+            self.assertIn("agent.log", normalized)
+        finally:
+            _cleanup_tui(pid, fd)
+
     def test_work_counter_advances_during_tui_termination(self) -> None:
         """Work simulation continues advancing after TUI is terminated."""
         self.server.start_work()

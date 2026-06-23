@@ -15,7 +15,15 @@ from contextlib import contextmanager
 from typing import Any, Generator
 
 from .config import CoordinatorConfig
-from .db import claim_project_ready_task, connect, init_db, project_task_counts, release_task_lease
+from .db import (
+    claim_project_ready_task,
+    connect,
+    get_task,
+    init_db,
+    list_task_events,
+    project_task_counts,
+    release_task_lease,
+)
 from .project_runtime import ProjectRuntime, project_is_runnable, run_project_cycle
 from .projects import list_projects
 from .reporting import NULL_REPORTER, Reporter
@@ -176,6 +184,29 @@ class MultiProjectSupervisor:
                     agent_id=agent_id,
                     task_id=task_id,
                 )
+
+                if result.task_id and result.tasks_processed:
+                    task = get_task(conn, result.task_id)
+                    if task is not None and task["state"] in {
+                        "done",
+                        "failed",
+                        "blocked",
+                        "needs_split",
+                        "awaiting_human",
+                        "rejected",
+                    }:
+                        events = list_task_events(conn, result.task_id)
+                        note = events[-1]["note"] if events else ""
+                        self._broker.publish(
+                            conn,
+                            project_id,
+                            "task.done",
+                            {
+                                "task_id": result.task_id,
+                                "result": task["state"],
+                                "reason": note,
+                            },
+                        )
 
                 self._broker.publish(
                     conn, project_id, "cycle_complete",

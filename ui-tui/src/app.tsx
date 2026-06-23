@@ -20,6 +20,7 @@ import { AppLayout } from './components/AppLayout.js'
 import { Composer } from './components/Composer.js'
 import { ProjectOnboarding, type ProjectInspectDraft } from './components/ProjectOnboarding.js'
 import { decideSubmit } from './submitDecision.js'
+import { formatHelpText } from './slash.js'
 import { formatSlashResponse } from './slashDisplay.js'
 import { performDetach, registerDetachHandlers } from './detach.js'
 import type { TuiState } from './domain.js'
@@ -227,6 +228,21 @@ export function App({ socketPath, projectId, canonicalPath }: AppProps) {
         }))
         return
 
+      case 'local-help':
+        setTuiState(prev => ({
+          ...prev,
+          transcript: [
+            ...prev.transcript,
+            {
+              id: `help-${Date.now()}`,
+              kind: 'message',
+              role: 'system',
+              text: formatHelpText(),
+            },
+          ],
+        }))
+        return
+
       case 'send':
         void client.request(decision.method, { args: decision.args }).then(resp => {
           const text = resp.ok
@@ -248,13 +264,6 @@ export function App({ socketPath, projectId, canonicalPath }: AppProps) {
         return
 
       case 'chat':
-        setTuiState(prev => ({
-          ...prev,
-          transcript: [
-            ...prev.transcript,
-            { id: `user-${Date.now()}`, kind: 'message', role: 'user', text: decision.text },
-          ],
-        }))
         void client.request('chat.send', { text: decision.text }).catch(() => {})
         return
     }
