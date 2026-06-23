@@ -56,7 +56,7 @@ class DatabaseTests(unittest.TestCase):
             self.addCleanup(conn.close)
 
             with self.assertRaises(sqlite3.OperationalError):
-                init_db(conn, migrations_dir=migrations_dir)
+                init_db(conn, migrations_root=migrations_dir)
 
             leaked = conn.execute(
                 "select name from sqlite_master where type = 'table' and name = ?",

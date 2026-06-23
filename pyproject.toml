@@ -15,4 +15,4 @@ coordinator = "local_cli_coordinator.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-local_cli_coordinator = ["tui_bundle/*"]
+local_cli_coordinator = ["tui_bundle/*", "migrations/*.sql"]

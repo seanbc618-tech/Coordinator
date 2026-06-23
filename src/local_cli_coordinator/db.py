@@ -1,13 +1,28 @@
 import sqlite3
 import uuid
 from datetime import datetime, timedelta, timezone
+from importlib import resources
+from importlib.abc import Traversable
 from pathlib import Path
+from typing import Iterator
 
 from .config import CoordinatorConfig, iter_agents_by_role
 from .models import TASK_STATES
 
 ROOT = Path(__file__).resolve().parents[2]
 MIGRATIONS_DIR = ROOT / "migrations"
+
+
+def iter_migration_scripts(
+    migrations_root: Traversable | Path | None = None,
+) -> Iterator[tuple[str, str]]:
+    """Yield (version_name, sql_text) sorted by migration filename."""
+    root = migrations_root or (resources.files("local_cli_coordinator") / "migrations")
+    names = sorted(
+        entry.name for entry in root.iterdir() if entry.name.endswith(".sql")
+    )
+    for name in names:
+        yield name, (root / name).read_text(encoding="utf-8")
 
 
 def _sql_string(value: str) -> str:
@@ -23,7 +38,14 @@ def connect(path: Path) -> sqlite3.Connection:
     return conn
 
 
-def init_db(conn: sqlite3.Connection, migrations_dir: Path = MIGRATIONS_DIR) -> None:
+def init_db(
+    conn: sqlite3.Connection,
+    migrations_root: Traversable | Path | None = None,
+    *,
+    migrations_dir: Traversable | Path | None = None,
+) -> None:
+    """Apply pending SQL migrations. Default: packaged ``migrations/*.sql``."""
+    root = migrations_root if migrations_root is not None else migrations_dir
     conn.execute(
         "create table if not exists schema_migrations "
         "(version text primary key, applied_at text not null default current_timestamp)"
@@ -33,14 +55,14 @@ def init_db(conn: sqlite3.Connection, migrations_dir: Path = MIGRATIONS_DIR) -> 
         row["version"]
         for row in conn.execute("select version from schema_migrations").fetchall()
     }
-    for migration in sorted(migrations_dir.glob("*.sql")):
-        if migration.name in applied:
+    for name, sql in iter_migration_scripts(root):
+        if name in applied:
             continue
         script = (
             "begin;\n"
-            f"{migration.read_text()}\n"
+            f"{sql}\n"
             "insert into schema_migrations(version) values "
-            f"({_sql_string(migration.name)});\n"
+            f"({_sql_string(name)});\n"
             "commit;"
         )
         try:
