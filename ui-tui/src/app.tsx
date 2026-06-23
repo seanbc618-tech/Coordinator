@@ -20,6 +20,7 @@ import { AppLayout } from './components/AppLayout.js'
 import { Composer } from './components/Composer.js'
 import { ProjectOnboarding, type ProjectInspectDraft } from './components/ProjectOnboarding.js'
 import { decideSubmit } from './submitDecision.js'
+import { formatSlashResponse } from './slashDisplay.js'
 import { performDetach, registerDetachHandlers } from './detach.js'
 import type { TuiState } from './domain.js'
 import type { EventEnvelope } from './protocol.js'
@@ -227,7 +228,23 @@ export function App({ socketPath, projectId, canonicalPath }: AppProps) {
         return
 
       case 'send':
-        void client.request(decision.method, { args: decision.args }).catch(() => {})
+        void client.request(decision.method, { args: decision.args }).then(resp => {
+          const text = resp.ok
+            ? formatSlashResponse(decision.method, resp.result as Record<string, unknown>)
+            : (resp.error ?? 'request failed')
+          setTuiState(prev => ({
+            ...prev,
+            transcript: [
+              ...prev.transcript,
+              {
+                id: `slash-${Date.now()}`,
+                kind: 'message',
+                role: 'system',
+                text,
+              },
+            ],
+          }))
+        }).catch(() => {})
         return
 
       case 'chat':

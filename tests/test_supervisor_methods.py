@@ -1,17 +1,32 @@
 """Tests for multi-client Supervisor methods."""
 
+import subprocess
+import sys
 import tempfile
+import textwrap
 from pathlib import Path
 from unittest import TestCase
 
 from local_cli_coordinator.config import (
+    AgentConfig,
     CoordinatorConfig,
     DaemonPolicyConfig,
     PolicyConfig,
+    RepoConfig,
 )
 from local_cli_coordinator.db import connect, init_db, create_task
+from local_cli_coordinator.goals import (
+    create_goal,
+    finish_commander_run,
+    start_commander_run,
+    transition_goal,
+)
+from local_cli_coordinator.projects import inspect_project, register_project
+from local_cli_coordinator.runtime_paths import RuntimePaths
 from local_cli_coordinator.supervisor_methods import SupervisorMethods
 from local_cli_coordinator.supervisor_protocol import RequestEnvelope
+
+_PYTHON = sys.executable
 
 
 def _request(method: str, project_id: str | None = None, **params) -> RequestEnvelope:
@@ -37,14 +52,19 @@ class SupervisorMethodsTest(TestCase):
         self.tmp.cleanup()
 
     def test_project_status(self) -> None:
+        wrap = Path(self.tmp.name) / "wrap"
+        wrap.mkdir()
+        repo = _git_repo(wrap)
+        draft = inspect_project(repo)
+        project_id = register_project(self.conn, draft, confirmed=True)
         create_task(
             self.conn, title="t", repo="r", source_path="x",
             priority="normal", capabilities=["code"], goal="g",
             acceptance_criteria=["a"], verification_commands=[],
-            project_id="proj-a",
+            project_id=project_id,
         )
         resp = self.methods.handle(
-            self.conn, _request("project.status", project_id="proj-a")
+            self.conn, _request("project.status", project_id=project_id)
         )
         self.assertTrue(resp.ok)
         self.assertIn("counts", resp.result)
@@ -54,7 +74,7 @@ class SupervisorMethodsTest(TestCase):
             self.conn, _request("project.status", project_id="nonexistent")
         )
         self.assertFalse(resp.ok)
-        self.assertIn("not found", resp.error)
+        self.assertIn("not registered", resp.error)
 
     def test_chat_send_requires_registered_project(self) -> None:
         methods = SupervisorMethods(
@@ -120,3 +140,198 @@ class SupervisorMethodsTest(TestCase):
         )
         self.assertTrue(resp.ok)
         self.assertIn("events", resp.result)
+
+
+def _git_repo(tmp: Path) -> Path:
+    repo = tmp / "repo"
+    repo.mkdir()
+    env = {
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@t",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@t",
+    }
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, capture_output=True, check=True)
+    (repo / "README.md").write_text("test")
+    subprocess.run(["git", "add", "."], cwd=repo, capture_output=True, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "init"],
+        cwd=repo,
+        capture_output=True,
+        check=True,
+        env=env,
+    )
+    return repo
+
+
+def _commander_fixture(tmp: Path) -> str:
+    script = tmp / "commander.py"
+    script.write_text(
+        textwrap.dedent(
+            """
+            import json
+            print(json.dumps({
+                "schema_version": 1,
+                "goal_status": "active",
+                "progress_summary": "Preview ready",
+                "tasks": [],
+                "stop_reason": None,
+            }))
+            """
+        ).strip()
+    )
+    return f"{_PYTHON} {script}"
+
+
+def _slash_config(repo: Path, tmp: Path) -> CoordinatorConfig:
+    return CoordinatorConfig(
+        agents={
+            "commander": AgentConfig(
+                id="commander",
+                command=_commander_fixture(tmp),
+                capabilities=["code"],
+                max_concurrency=1,
+                role="commander",
+            ),
+        },
+        repos={
+            "demo": RepoConfig(
+                id="demo",
+                path=repo,
+                default_branch="main",
+                remote="origin",
+                branch_prefix="coord/",
+                allow_push=False,
+                merge_policy="no_push",
+                verify_commands=[],
+            ),
+        },
+        policy=PolicyConfig(
+            require_single_repo=True,
+            require_acceptance_criteria=True,
+            require_verification_commands=False,
+            require_handoff_summary=False,
+            max_files_touched=10,
+            max_expected_minutes=60,
+            max_attempts=3,
+            split_if_touches_multiple_subsystems=False,
+            split_if_research_and_code_are_mixed=False,
+        ),
+        daemon_policy=DaemonPolicyConfig(),
+    )
+
+
+class ProjectSlashMethodsTest(TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.repo = _git_repo(self.root)
+        self.conn = connect(self.root / "coordinator.db")
+        init_db(self.conn)
+        self.paths = RuntimePaths(
+            config_dir=self.root / "config",
+            data_dir=self.root / "data",
+            state_dir=self.root / "state",
+        )
+        self.paths.state_dir.mkdir(parents=True)
+        (self.paths.state_dir / "supervisor.log").write_text(
+            "supervisor started\nchat wired\n"
+        )
+        self.config = _slash_config(self.repo, self.root)
+        draft = inspect_project(self.repo)
+        self.project_id = register_project(self.conn, draft, confirmed=True)
+        self.methods = SupervisorMethods(
+            config=self.config,
+            paths=self.paths,
+        )
+
+    def tearDown(self) -> None:
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def test_status_for_registered_project_with_zero_tasks(self) -> None:
+        resp = self.methods.handle(
+            self.conn,
+            _request("project.status", project_id=self.project_id),
+        )
+        self.assertTrue(resp.ok, resp.error)
+        self.assertEqual(resp.result["counts"], {})
+        self.assertIsNone(resp.result["goal"])
+
+    def test_chat_rejected_when_goal_draft(self) -> None:
+        create_goal(
+            self.conn,
+            "Draft goal",
+            "Objective",
+            project_id=self.project_id,
+            repo_ids=["demo"],
+        )
+        resp = self.methods.handle(
+            self.conn,
+            _request("chat.send", project_id=self.project_id, text="hello"),
+        )
+        self.assertFalse(resp.ok)
+        self.assertIn("draft", resp.error.lower())
+
+    def test_project_goal_status_when_empty(self) -> None:
+        resp = self.methods.handle(
+            self.conn,
+            _request("project.goal", project_id=self.project_id, args=""),
+        )
+        self.assertTrue(resp.ok)
+        self.assertIsNone(resp.result["goal"])
+
+    def test_project_goal_create_draft(self) -> None:
+        resp = self.methods.handle(
+            self.conn,
+            _request(
+                "project.goal",
+                project_id=self.project_id,
+                args="Ship feature X",
+            ),
+        )
+        self.assertTrue(resp.ok, resp.error)
+        self.assertEqual(resp.result["status"], "draft")
+
+    def test_project_tasks_lists_rows(self) -> None:
+        create_task(
+            self.conn,
+            title="Slice one",
+            repo="demo",
+            source_path="tasks/generated/a.md",
+            priority="normal",
+            capabilities=["code"],
+            goal="g",
+            acceptance_criteria=["a"],
+            verification_commands=[],
+            project_id=self.project_id,
+        )
+        resp = self.methods.handle(
+            self.conn,
+            _request("project.tasks", project_id=self.project_id),
+        )
+        self.assertTrue(resp.ok)
+        self.assertEqual(len(resp.result["tasks"]), 1)
+        self.assertEqual(resp.result["tasks"][0]["title"], "Slice one")
+
+    def test_project_logs_returns_tail_and_commander_run(self) -> None:
+        goal_id = create_goal(
+            self.conn,
+            "Roadmap",
+            "Finish roadmap",
+            project_id=self.project_id,
+            repo_ids=["demo"],
+        )
+        run_id = start_commander_run(
+            self.conn, goal_id, "initial_plan", 1, Path("/tmp/prompt.md")
+        )
+        finish_commander_run(self.conn, run_id, status="succeeded")
+        transition_goal(self.conn, goal_id, "active")
+
+        resp = self.methods.handle(
+            self.conn,
+            _request("project.logs", project_id=self.project_id),
+        )
+        self.assertTrue(resp.ok)
+        self.assertIn("supervisor started", resp.result["log_tail"])
+        self.assertEqual(resp.result["commander_run"]["status"], "succeeded")

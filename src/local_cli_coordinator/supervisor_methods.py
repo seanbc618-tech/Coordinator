@@ -15,11 +15,15 @@ from pathlib import Path
 from typing import Any, Callable
 import sqlite3
 
+from .commander_service import confirm_goal, create_and_preview_goal
 from .config import CoordinatorConfig, RepoConfig
 from .db import project_task_counts, project_list_tasks
+from .goals import active_goal_for_project, get_latest_commander_run
 from .projects import ProjectDraft, get_project, inspect_project, register_project
+from .runtime_paths import RuntimePaths
 from .supervisor_commander import handle_chat_send
 from .supervisor_events import EventBroker
+from .supervisor_process import supervisor_log_path
 from .supervisor_protocol import (
     PROTOCOL_VERSION,
     RequestEnvelope,
@@ -139,15 +143,20 @@ class SupervisorMethods:
         broker: EventBroker | None = None,
         *,
         config: CoordinatorConfig | None = None,
+        paths: RuntimePaths | None = None,
     ) -> None:
         self._broker = broker or EventBroker()
         self._config = config
+        self._paths = paths
         self._paused: set[str] = set()
         self._stopped: set[str] = set()
         self._live_queues: dict[str, queue.Queue] = {}
         self._subscriptions: dict[str, int] = {}  # sub_id → broker token
         self._handlers: dict[str, Callable] = {
             "project.status": self._handle_project_status,
+            "project.goal": self._handle_project_goal,
+            "project.tasks": self._handle_project_tasks,
+            "project.logs": self._handle_project_logs,
             "project.inspect": self._handle_project_inspect,
             "project.register": self._handle_project_register,
             "chat.send": self._handle_chat_send,
@@ -328,14 +337,152 @@ class SupervisorMethods:
         self, conn: sqlite3.Connection, request: RequestEnvelope
     ) -> ResponseEnvelope:
         project_id = request.project_id
+        if not project_id:
+            return self._error(request, "project_id is required")
+        if get_project(conn, project_id) is None:
+            return self._error(request, f"project {project_id!r} not registered")
+
         counts = project_task_counts(conn, project_id=project_id)
-        if not counts and not project_list_tasks(conn, project_id=project_id):
-            return self._error(request, f"project {project_id!r} not found")
-        return self._ok(request, {
-            "counts": counts,
-            "paused": project_id in self._paused,
-            "stopped": project_id in self._stopped,
-        })
+        goal = active_goal_for_project(conn, project_id)
+        goal_summary = None
+        if goal is not None:
+            goal_summary = {
+                "id": goal["id"],
+                "status": goal["status"],
+                "title": goal["title"],
+                "progress_summary": goal["progress_summary"],
+            }
+        return self._ok(
+            request,
+            {
+                "counts": counts,
+                "paused": project_id in self._paused,
+                "stopped": project_id in self._stopped,
+                "goal": goal_summary,
+            },
+        )
+
+    def _handle_project_goal(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        project_id = request.project_id
+        if not project_id:
+            return self._error(request, "project_id is required")
+        if self._config is None:
+            return self._error(request, "coordinator config not loaded")
+
+        project = get_project(conn, project_id)
+        if project is None:
+            return self._error(request, f"project {project_id!r} not registered")
+
+        args = request.params.get("args", "")
+        if not isinstance(args, str):
+            args = ""
+        objective = args.strip()
+        project_root = Path(project["canonical_path"])
+
+        if objective == "":
+            goal = active_goal_for_project(conn, project_id)
+            if goal is None:
+                return self._ok(request, {"goal": None, "status": "no goal"})
+            return self._ok(
+                request,
+                {
+                    "goal": {
+                        "id": goal["id"],
+                        "status": goal["status"],
+                        "title": goal["title"],
+                        "objective": goal["objective"],
+                        "progress_summary": goal["progress_summary"],
+                    },
+                    "status": goal["status"],
+                },
+            )
+
+        if objective == "confirm":
+            message = confirm_goal(
+                conn,
+                self._config,
+                project_root,
+                project_id=project_id,
+            )
+            if "activated" in message:
+                return self._ok(request, {"message": message, "status": "active"})
+            return self._error(request, message)
+
+        preview = create_and_preview_goal(
+            conn,
+            self._config,
+            project_root,
+            objective,
+            project_id=project_id,
+        )
+        if preview.error:
+            return self._error(request, preview.error)
+        return self._ok(
+            request,
+            {
+                "goal_id": preview.goal_id,
+                "status": "draft",
+                "progress_summary": preview.progress_summary,
+                "proposals": len(preview.proposals),
+            },
+        )
+
+    def _handle_project_tasks(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        project_id = request.project_id
+        if not project_id:
+            return self._error(request, "project_id is required")
+        if get_project(conn, project_id) is None:
+            return self._error(request, f"project {project_id!r} not registered")
+
+        tasks = [
+            {
+                "id": row["id"],
+                "title": row["title"],
+                "state": row["state"],
+                "repo": row["repo"],
+                "priority": row["priority"],
+            }
+            for row in project_list_tasks(conn, project_id=project_id)[:20]
+        ]
+        return self._ok(request, {"tasks": tasks})
+
+    def _handle_project_logs(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        project_id = request.project_id
+        if not project_id:
+            return self._error(request, "project_id is required")
+        if self._paths is None:
+            return self._error(request, "runtime paths not configured")
+        if get_project(conn, project_id) is None:
+            return self._error(request, f"project {project_id!r} not registered")
+
+        log_path = supervisor_log_path(self._paths)
+        log_tail = ""
+        if log_path.is_file():
+            log_tail = log_path.read_text(encoding="utf-8", errors="replace")[-4000:]
+
+        commander_run = None
+        goal = active_goal_for_project(conn, project_id)
+        if goal is not None:
+            run = get_latest_commander_run(conn, goal["id"])
+            if run is not None:
+                commander_run = {
+                    "id": run["id"],
+                    "status": run["status"],
+                    "trigger": run["trigger"],
+                    "progress_summary": run["progress_summary"],
+                    "error": run["error"],
+                }
+
+        return self._ok(
+            request,
+            {"log_tail": log_tail, "commander_run": commander_run},
+        )
 
     def _handle_chat_send(
         self, conn: sqlite3.Connection, request: RequestEnvelope
