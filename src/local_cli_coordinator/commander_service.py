@@ -24,6 +24,7 @@ from .reporting import NULL_REPORTER, Reporter
 from .goals import (
     add_commander_message,
     active_goal,
+    active_goal_for_project,
     clear_commander_failures,
     create_goal,
     get_goal,
@@ -51,6 +52,8 @@ def create_and_preview_goal(
     config: CoordinatorConfig,
     root: Path,
     objective: str,
+    *,
+    project_id: str = "legacy-default",
     title: str | None = None,
     completion_criteria: list[str] | None = None,
     constraints: list[str] | None = None,
@@ -66,7 +69,10 @@ def create_and_preview_goal(
 
     goal_title = title or objective[:100]
     goal_id = create_goal(
-        conn, goal_title, objective,
+        conn,
+        goal_title,
+        objective,
+        project_id=project_id,
         completion_criteria=completion_criteria,
         constraints=constraints,
         repo_ids=repo_ids,
@@ -112,6 +118,8 @@ def confirm_goal(
     conn: sqlite3.Connection,
     config: CoordinatorConfig,
     root: Path,
+    *,
+    project_id: str = "legacy-default",
     goal_id: int | None = None,
 ) -> str:
     """Confirm a draft goal and activate it.
@@ -119,7 +127,7 @@ def confirm_goal(
     Returns a status message.
     """
     if goal_id is None:
-        goal = active_goal(conn)
+        goal = active_goal_for_project(conn, project_id)
         if goal is None:
             return "no draft goal to confirm"
         goal_id = goal["id"]
@@ -187,11 +195,13 @@ def send_chat_message(
 
 def pause_goal(
     conn: sqlite3.Connection,
+    *,
+    project_id: str = "legacy-default",
     goal_id: int | None = None,
 ) -> str:
     """Pause an active goal."""
     if goal_id is None:
-        goal = active_goal(conn)
+        goal = active_goal_for_project(conn, project_id)
         if goal is None:
             return "no active goal"
         goal_id = goal["id"]
@@ -206,11 +216,13 @@ def pause_goal(
 
 def resume_goal(
     conn: sqlite3.Connection,
+    *,
+    project_id: str = "legacy-default",
     goal_id: int | None = None,
 ) -> str:
     """Resume a paused goal."""
     if goal_id is None:
-        goal = active_goal(conn)
+        goal = active_goal_for_project(conn, project_id)
         if goal is None:
             return "no paused goal"
         goal_id = goal["id"]
@@ -246,9 +258,9 @@ def abandon_goal(
     return f"goal {goal_id} abandoned"
 
 
-def goal_status(conn: sqlite3.Connection) -> str:
-    """Return a human-readable goal status."""
-    goal = active_goal(conn)
+def goal_status(conn: sqlite3.Connection, *, project_id: str = "legacy-default") -> str:
+    """Return human-readable status for project's non-terminal goal."""
+    goal = active_goal_for_project(conn, project_id)
     if goal is None:
         return "no active goal"
 

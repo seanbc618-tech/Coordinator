@@ -20,15 +20,19 @@ def create_goal(
     conn: sqlite3.Connection,
     title: str,
     objective: str,
+    *,
+    project_id: str = "legacy-default",
     completion_criteria: list[str] | None = None,
     constraints: list[str] | None = None,
     repo_ids: list[str] | None = None,
 ) -> int:
-    """Create a new draft goal. Raises IntegrityError if a non-terminal goal exists."""
+    """Create draft goal for project. Raises IntegrityError if non-terminal goal exists."""
     cursor = conn.execute(
         """
-        insert into goals(title, objective, completion_criteria, constraints, repo_ids, status)
-        values (?, ?, ?, ?, ?, 'draft')
+        insert into goals(
+            title, objective, completion_criteria, constraints, repo_ids, status, project_id
+        )
+        values (?, ?, ?, ?, ?, 'draft', ?)
         """,
         (
             title,
@@ -36,6 +40,7 @@ def create_goal(
             json.dumps(completion_criteria or []),
             json.dumps(constraints or []),
             json.dumps(repo_ids or []),
+            project_id,
         ),
     )
     conn.commit()
@@ -50,12 +55,25 @@ def get_goal(conn: sqlite3.Connection, goal_id: int) -> sqlite3.Row:
     return row
 
 
-def active_goal(conn: sqlite3.Connection) -> sqlite3.Row | None:
-    """Return the single non-terminal goal, or None."""
+def active_goal_for_project(
+    conn: sqlite3.Connection,
+    project_id: str,
+) -> sqlite3.Row | None:
+    """Return the single non-terminal goal for project_id, or None."""
     return conn.execute(
-        "select * from goals where status in ('draft', 'active', 'paused', 'blocked') "
-        "order by id limit 1"
+        """
+        select * from goals
+        where project_id = ?
+          and status in ('draft', 'active', 'paused', 'blocked')
+        order by id limit 1
+        """,
+        (project_id,),
     ).fetchone()
+
+
+def active_goal(conn: sqlite3.Connection) -> sqlite3.Row | None:
+    """CLI/daemon backward compat — legacy-default project scope."""
+    return active_goal_for_project(conn, "legacy-default")
 
 
 def transition_goal(

@@ -13,6 +13,7 @@ from local_cli_coordinator.goals import (
     finish_commander_run,
     get_goal,
     active_goal,
+    active_goal_for_project,
     goal_for_task,
     link_task_to_goal,
     linked_task_counts,
@@ -54,9 +55,20 @@ class GoalPersistenceTests(unittest.TestCase):
         self.assertEqual(goal["objective"], "Finish roadmap")
 
     def test_only_one_nonterminal_goal_is_allowed(self) -> None:
-        create_goal(self.conn, "Roadmap", "Finish roadmap", ["dry-run"], ["demo"])
+        create_goal(
+            self.conn,
+            "Roadmap",
+            "Finish roadmap",
+            completion_criteria=["dry-run"],
+            constraints=["demo"],
+        )
         with self.assertRaises(sqlite3.IntegrityError):
-            create_goal(self.conn, "Other", "Do other work", [], ["demo"])
+            create_goal(
+                self.conn,
+                "Other",
+                "Do other work",
+                constraints=["demo"],
+            )
 
     def test_terminal_goal_allows_new_goal(self) -> None:
         goal_id = create_goal(self.conn, "Roadmap", "Finish roadmap")
@@ -241,7 +253,9 @@ class GoalPersistenceTests(unittest.TestCase):
     # --- Full round trip ---
 
     def test_run_message_and_task_link_round_trip(self) -> None:
-        goal_id = create_goal(self.conn, "Roadmap", "Finish roadmap", [], ["demo"])
+        goal_id = create_goal(
+            self.conn, "Roadmap", "Finish roadmap", constraints=["demo"]
+        )
         task_id = create_task(
             self.conn,
             title="Add parser",
@@ -267,6 +281,46 @@ class GoalPersistenceTests(unittest.TestCase):
             get_latest_commander_run(self.conn, goal_id)["status"], "succeeded"
         )
         self.assertEqual(goal_for_task(self.conn, task_id)["id"], goal_id)
+
+
+class ProjectScopedGoalTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.conn = connect(Path(self.tmp.name) / "coordinator.db")
+        init_db(self.conn)
+
+    def tearDown(self) -> None:
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def test_two_projects_each_get_draft_goal(self) -> None:
+        goal_a = create_goal(
+            self.conn, "Goal A", "Objective A", project_id="proj-a"
+        )
+        goal_b = create_goal(
+            self.conn, "Goal B", "Objective B", project_id="proj-b"
+        )
+        self.assertNotEqual(goal_a, goal_b)
+        self.assertEqual(active_goal_for_project(self.conn, "proj-a")["id"], goal_a)
+        self.assertEqual(active_goal_for_project(self.conn, "proj-b")["id"], goal_b)
+
+    def test_second_nonterminal_goal_same_project_fails(self) -> None:
+        create_goal(self.conn, "First", "First objective", project_id="proj-a")
+        with self.assertRaises(sqlite3.IntegrityError):
+            create_goal(self.conn, "Second", "Second objective", project_id="proj-a")
+
+    def test_terminal_goal_allows_new_goal_same_project(self) -> None:
+        goal_id = create_goal(self.conn, "First", "First objective", project_id="proj-a")
+        transition_goal(self.conn, goal_id, "completed")
+        new_id = create_goal(self.conn, "Second", "Second objective", project_id="proj-a")
+        self.assertNotEqual(goal_id, new_id)
+
+    def test_active_goal_delegates_legacy_default(self) -> None:
+        goal_id = create_goal(self.conn, "Legacy", "Legacy objective")
+        self.assertEqual(active_goal(self.conn)["id"], goal_id)
+        self.assertEqual(
+            active_goal_for_project(self.conn, "legacy-default")["id"], goal_id
+        )
 
 
 class GoalMigrationTests(unittest.TestCase):

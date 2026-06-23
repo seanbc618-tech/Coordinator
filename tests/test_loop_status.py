@@ -163,7 +163,14 @@ class LoopStatusTests(unittest.TestCase):
             _write_config(root)
             conn = connect(root / "coordinator.db")
             init_db(conn)
-            goal_id = create_goal(conn, "Roadmap", "Finish roadmap", [], [], ["demo"])
+            goal_id = create_goal(
+                conn,
+                "Roadmap",
+                "Finish roadmap",
+                completion_criteria=[],
+                constraints=[],
+                repo_ids=["demo"],
+            )
             transition_goal(conn, goal_id, "active")
             conn.close()
 

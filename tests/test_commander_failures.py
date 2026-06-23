@@ -194,7 +194,7 @@ class CommanderFailureTests(unittest.TestCase):
         for _ in range(3):
             maybe_replenish_goal(self.conn, self.config, self.root)
 
-        message = resume_goal(self.conn, self.goal_id)
+        message = resume_goal(self.conn, goal_id=self.goal_id)
         goal = get_goal(self.conn, self.goal_id)
 
         self.assertEqual(goal["status"], "active")

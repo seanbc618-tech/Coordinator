@@ -70,7 +70,14 @@ class DigestTests(unittest.TestCase):
         self.assertIn("- `src/utils.py` (touched by 1 task)", digest)
 
     def test_generate_digest_includes_active_goal_progress(self) -> None:
-        goal_id = create_goal(self.conn, "Roadmap", "Finish roadmap", [], [], ["demo"])
+        goal_id = create_goal(
+            self.conn,
+            "Roadmap",
+            "Finish roadmap",
+            completion_criteria=[],
+            constraints=[],
+            repo_ids=["demo"],
+        )
         transition_goal(self.conn, goal_id, "active")
         update_goal_progress(self.conn, goal_id, "First slice complete")
 

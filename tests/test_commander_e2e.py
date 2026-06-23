@@ -185,7 +185,9 @@ class TwoBatchEndToEndTests(unittest.TestCase):
         self.assertGreater(len(preview.proposals), 0)
 
         # Confirm goal
-        result = confirm_goal(self.conn, self.config, self.root, preview.goal_id)
+        result = confirm_goal(
+            self.conn, self.config, self.root, goal_id=preview.goal_id
+        )
         self.assertIn("activated", result.lower())
 
         # First replenishment (call_count=2, proposes second task)

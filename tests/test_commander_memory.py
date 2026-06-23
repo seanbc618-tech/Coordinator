@@ -37,7 +37,14 @@ class CommanderMemoryTests(unittest.TestCase):
         self.assertEqual(detail, "waiting for a long-term goal")
 
     def test_active_empty_goal_waits_for_replenishment(self) -> None:
-        goal_id = create_goal(self.conn, "Roadmap", "Finish roadmap", [], [], ["demo"])
+        goal_id = create_goal(
+            self.conn,
+            "Roadmap",
+            "Finish roadmap",
+            completion_criteria=[],
+            constraints=[],
+            repo_ids=["demo"],
+        )
         transition_goal(self.conn, goal_id, "active")
 
         headline, detail = goal_status_summary(self.conn)
@@ -49,9 +56,9 @@ class CommanderMemoryTests(unittest.TestCase):
             self.conn,
             "Roadmap",
             "Finish roadmap",
-            ["dry-run"],
-            ["no secrets"],
-            ["demo"],
+            completion_criteria=["dry-run"],
+            constraints=["no secrets"],
+            repo_ids=["demo"],
         )
         transition_goal(self.conn, goal_id, "active")
         update_goal_progress(self.conn, goal_id, "First slice ready")
@@ -114,9 +121,9 @@ class CommanderMemoryTests(unittest.TestCase):
             self.conn,
             "Roadmap",
             "Finish\x00roadmap",
-            [],
-            [],
-            ["demo"],
+            completion_criteria=[],
+            constraints=[],
+            repo_ids=["demo"],
         )
         path = write_commander_memory(self.conn, self.root, goal_id)
         content = path.read_text(encoding="utf-8")
