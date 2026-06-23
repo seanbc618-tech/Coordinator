@@ -200,6 +200,14 @@ def find_project_by_path(
     return None
 
 
+def get_project(conn: sqlite3.Connection, project_id: str) -> sqlite3.Row | None:
+    """Return a single active project by ID, or None."""
+    return conn.execute(
+        "select * from projects where id = ? and active = 1",
+        (project_id,),
+    ).fetchone()
+
+
 def list_projects(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """Return all registered projects."""
     return conn.execute(

@@ -8,6 +8,7 @@ from unittest import TestCase
 from local_cli_coordinator.db import connect, init_db
 from local_cli_coordinator.projects import (
     ProjectDraft,
+    get_project,
     inspect_project,
     register_project,
     find_project_by_path,
@@ -117,3 +118,46 @@ class RegisterProjectTest(TestCase):
         register_project(self.conn, self.draft, confirmed=True)
         found = find_project_by_path(self.conn, link)
         self.assertIsNotNone(found)
+
+
+class GetProjectTest(TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmp.name) / "test.db"
+        self.conn = connect(self.db_path)
+        init_db(self.conn)
+        self.repo = Path(self.tmp.name) / "repo"
+        self.repo.mkdir()
+        subprocess.run(["git", "init", "-b", "main"], cwd=self.repo, capture_output=True)
+        (self.repo / "README.md").write_text("test")
+        subprocess.run(["git", "add", "."], cwd=self.repo, capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", "init"],
+            cwd=self.repo,
+            capture_output=True,
+            env={
+                "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+                "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+            },
+        )
+        self.draft = inspect_project(self.repo)
+
+    def tearDown(self) -> None:
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def test_get_project_returns_row_by_id(self) -> None:
+        pid = register_project(self.conn, self.draft, confirmed=True)
+        row = get_project(self.conn, pid)
+        self.assertIsNotNone(row)
+        self.assertEqual(row["id"], pid)
+        self.assertEqual(row["canonical_path"], str(self.repo.resolve()))
+
+    def test_get_project_missing_returns_none(self) -> None:
+        self.assertIsNone(get_project(self.conn, "proj-nonexistent"))
+
+    def test_get_project_inactive_returns_none(self) -> None:
+        pid = register_project(self.conn, self.draft, confirmed=True)
+        self.conn.execute("update projects set active = 0 where id = ?", (pid,))
+        self.conn.commit()
+        self.assertIsNone(get_project(self.conn, pid))
