@@ -24,9 +24,27 @@ migrations and XDG config loading (P0), add project-scoped goals (011), wire
 | 4 — Commander chat | `a93e7d9` | `CommanderChatResult`; `handle_chat_send`; concurrency tests |
 | 5 — Slash RPCs | `f6fe943` | `project.goal/status/tasks/logs`; TUI slash display |
 | 6 — PTY smoke | `21fb43c` | Commander PTY output; chat replay; re-attach E2E |
-| 7 — Docs | *(this commit)* | Operator docs + handoff |
+| 7 — Docs | `4f990d9` | Operator docs + handoff |
+| Fix — wheel test | `6e4d6ea` | `pip install` isolates from parent `PYTHONPATH` |
+| Fix — slashDisplay | `139356f` | `/goal confirm` message before no-goal fallback |
 
-Baseline plan doc: `d04e7d5`.
+Baseline plan doc: `d04e7d5`. **Final HEAD:** `139356f`.
+
+## Codex Verdict (2026-06-23)
+
+**PASS** — Phase 5 Commander Integration signed at `139356f`.
+
+Evidence (isolated worktree + temp XDG for full Python suite):
+
+- `npm test --prefix ui-tui -- --run`: 117/117
+- Phase 5 focused gate: 61/61
+- `tests.test_tui_pty` + `tests.test_global_tui_e2e`: 32/32
+- Full Python suite with isolated `XDG_*` + `PYTHONWARNINGS=error::ResourceWarning`: 765/765
+- `build_hash=5628486ac1274397`
+
+**Note:** Full `unittest discover` without isolated XDG can fail when a live global
+Supervisor is running on the host (`supervisor status` expectations). Use temp
+`XDG_CONFIG_HOME` / `XDG_DATA_HOME` / `XDG_STATE_HOME` for clean acceptance runs.
 
 ## Architecture Locked
 
