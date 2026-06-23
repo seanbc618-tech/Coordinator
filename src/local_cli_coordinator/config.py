@@ -254,8 +254,8 @@ def _load_discovery_sources(config_dir: Path) -> dict[str, DiscoverySourceConfig
     return sources
 
 
-def load_config(root: Path) -> CoordinatorConfig:
-    config_dir = root / "config"
+def load_config_from_dir(config_dir: Path) -> CoordinatorConfig:
+    """Load coordinator config from a flat directory of TOML files."""
     agents_raw = _read_toml(config_dir / "agents.toml").get("agents", {})
     repos_raw = _read_toml(config_dir / "repos.toml").get("repos", {})
     policy_doc = _read_toml(config_dir / "policy.toml")
@@ -334,6 +334,11 @@ def load_config(root: Path) -> CoordinatorConfig:
         connectors=connectors,
         daemon_policy=daemon_policy,
     )
+
+
+def load_config(root: Path) -> CoordinatorConfig:
+    """Load config from legacy repo layout: ``{root}/config/*.toml``."""
+    return load_config_from_dir(root / "config")
 
 
 def try_load_config(root: Path) -> tuple[CoordinatorConfig | None, str | None]:
