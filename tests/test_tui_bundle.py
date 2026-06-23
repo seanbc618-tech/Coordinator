@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -144,6 +145,23 @@ class PackageDataTest(TestCase):
         expected = hashlib.sha256(bundle_bytes).hexdigest()[:16]
         self.assertEqual(manifest["protocol_version"], 1)
         self.assertEqual(manifest["build_hash"], expected)
+
+    def test_repeated_build_leaves_manifest_unchanged(self) -> None:
+        if shutil.which("npm") is None:
+            self.skipTest("npm not found in PATH")
+
+        build_cmd = ["npm", "run", "build", "--prefix", str(ROOT / "ui-tui")]
+        subprocess.run(build_cmd, cwd=ROOT, check=True)
+        subprocess.run(build_cmd, cwd=ROOT, check=True)
+
+        diff = subprocess.run(
+            ["git", "diff", "--", "src/local_cli_coordinator/tui_bundle/manifest.json"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertEqual(diff.stdout, "", diff.stdout or diff.stderr)
 
 
 class WheelPackagingTest(TestCase):
