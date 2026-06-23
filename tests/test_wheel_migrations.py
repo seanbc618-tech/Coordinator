@@ -56,15 +56,15 @@ class WheelMigrationsTests(unittest.TestCase):
                 check=True,
             )
             pip = venv_dir / "bin" / "pip"
+            env = os.environ.copy()
+            env.pop("PYTHONPATH", None)
             subprocess.run(
-                [str(pip), "install", str(wheel)],
+                [str(pip), "install", "--force-reinstall", str(wheel)],
                 check=True,
                 capture_output=True,
                 text=True,
+                env=env,
             )
-
-            env = os.environ.copy()
-            env.pop("PYTHONPATH", None)
             py = venv_dir / "bin" / "python"
             probe = subprocess.run(
                 [str(py), "-c", _WHEEL_INIT_DB_SCRIPT],
