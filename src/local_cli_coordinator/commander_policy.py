@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .commander_protocol import CommanderResponse, CommanderTaskProposal
 from .config import CoordinatorConfig, select_agent_by_role
+from .db import create_task
 from .goals import get_goal, insert_task_goal_link
 from .models import TaskDraft
 from .policy import check_task_draft
@@ -196,51 +197,13 @@ def _filename_slug(title: str) -> str:
     return slug[:60] or "commander-task"
 
 
-def _insert_ready_task(
-    conn: sqlite3.Connection,
-    *,
-    title: str,
-    repo: str,
-    source_path: str,
-    capabilities: list[str],
-    goal: str,
-    acceptance_criteria: list[str],
-    verification_commands: list[str],
-) -> str:
-    task_id = f"task-{uuid.uuid4().hex[:12]}"
-    conn.execute(
-        """
-        insert into tasks(
-            id, title, repo, state, priority, capabilities, source_path,
-            goal, acceptance_criteria, verification_commands
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            task_id,
-            title,
-            repo,
-            "ready",
-            "normal",
-            ",".join(capabilities),
-            source_path,
-            goal,
-            "\n".join(acceptance_criteria),
-            "\n".join(verification_commands),
-        ),
-    )
-    conn.execute(
-        "insert into events(task_id, old_state, new_state, note) values (?, ?, ?, ?)",
-        (task_id, "inbox", "ready", "commander proposal admitted"),
-    )
-    return task_id
-
-
 def admit_commander_response(
     conn: sqlite3.Connection,
     config: CoordinatorConfig,
     root: Path,
     goal_id: int,
     response: CommanderResponse,
+    project_id: str = "legacy-default",
 ) -> CommanderAdmissionResult:
     batch_id = f"batch-{uuid.uuid4().hex[:12]}"
     accepted_task_ids: list[str] = []
@@ -285,15 +248,18 @@ def admit_commander_response(
             source_path = (
                 f"tasks/generated/commander-{batch_id}-{_filename_slug(proposal.title)}.md"
             )
-            task_id = _insert_ready_task(
+            task_id = create_task(
                 conn,
                 title=proposal.title,
                 repo=proposal.repo,
                 source_path=source_path,
+                priority="normal",
                 capabilities=list(proposal.capabilities),
                 goal=proposal.goal,
                 acceptance_criteria=list(proposal.acceptance_criteria),
                 verification_commands=verification_commands,
+                project_id=project_id,
+                commit=False,
             )
             insert_task_goal_link(
                 conn,

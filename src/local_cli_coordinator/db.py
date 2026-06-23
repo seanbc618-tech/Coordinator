@@ -85,6 +85,7 @@ def create_task(
     acceptance_criteria: list[str],
     verification_commands: list[str],
     project_id: str = "legacy-default",
+    commit: bool = True,
 ) -> str:
     task_id = f"task-{uuid.uuid4().hex[:12]}"
     conn.execute(
@@ -113,7 +114,8 @@ def create_task(
         "values (?, ?, ?, ?, ?)",
         (task_id, "inbox", "ready", "task imported", project_id),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return task_id
 
 

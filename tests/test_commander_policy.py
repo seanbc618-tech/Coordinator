@@ -106,14 +106,36 @@ class CommanderPolicyTests(unittest.TestCase):
             self.conn,
             "Roadmap",
             "Finish roadmap",
-            [],
-            [],
-            ["demo"],
+            completion_criteria=[],
+            constraints=[],
+            repo_ids=["demo"],
         )
 
     def tearDown(self) -> None:
         self.conn.close()
         self.tmp.cleanup()
+
+    def test_admit_sets_task_and_event_project_id(self) -> None:
+        result = admit_commander_response(
+            self.conn,
+            self.config,
+            self.root,
+            self.goal_id,
+            _response(_proposal()),
+            project_id="proj-a",
+        )
+        self.assertEqual(len(result.accepted_task_ids), 1)
+        task_id = result.accepted_task_ids[0]
+        task = self.conn.execute(
+            "select project_id from tasks where id = ?",
+            (task_id,),
+        ).fetchone()
+        event = self.conn.execute(
+            "select project_id from events where task_id = ?",
+            (task_id,),
+        ).fetchone()
+        self.assertEqual(task["project_id"], "proj-a")
+        self.assertEqual(event["project_id"], "proj-a")
 
     def test_admission_inherits_verification_and_links_task(self) -> None:
         result = admit_commander_response(
