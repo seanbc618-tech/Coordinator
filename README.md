@@ -419,6 +419,10 @@ The Coordinator TUI provides a conversational interface with live activity
 monitoring. It is built with React Ink (TypeScript), packaged inside the Python
 wheel, and launched by the global `coordinator` command.
 
+**Phase 5** wires TUI chat to Commander: create a goal with `/goal`, confirm
+with `/goal confirm`, then chat to admit safe task proposals. Wave 4 only echoed
+messages; Phase 5 runs the real Commander pipeline per project.
+
 See [docs/tui.md](docs/tui.md) for operator instructions and
 [docs/install.md](docs/install.md) for installation.
 
@@ -427,8 +431,15 @@ See [docs/tui.md](docs/tui.md) for operator instructions and
 ```bash
 cd /path/to/your/project
 coordinator          # opens TUI for this repo
+/goal Build the next milestone safely
+/goal confirm
+hi — propose one small task
+/status
 coordinator status   # administrative CLI (unchanged)
 ```
+
+Re-run `coordinator` from the same repo to re-attach with the same `project_id`
+(onboarding runs once per registered path).
 
 ### Development commands
 

@@ -219,6 +219,58 @@ Reinstall into the environment you use daily:
 pip install --force-reinstall dist/local_cli_coordinator-*.whl
 ```
 
+## Chat rejected: goal is draft
+
+**Symptom:** Sending a message prints an error like
+`Goal is draft. Run /goal confirm before chatting.`
+
+**Cause:** Phase 5 chat requires an **active** goal. `/goal <objective>` creates
+a draft preview only; Commander does not run until you confirm.
+
+**Fix:**
+
+```
+/goal <your objective>    # create draft + preview proposals
+/goal confirm             # activate goal
+```
+
+Then send plain-language chat again. Use `/goal` alone to check status, or
+`/status` for task counts and goal summary.
+
+## Chat rejected: no active goal
+
+**Symptom:** `No active goal. Use /goal <objective> then /goal confirm.`
+
+**Fix:** Create and confirm a goal as above. Each project has its own goal scope
+after migration 011.
+
+## Commander is already running
+
+**Symptom:** `Commander is already running; try again after the current run finishes.`
+
+**Cause:** Only one Commander invocation runs per active goal at a time. A
+previous `chat.send` or replenishment is still in flight.
+
+**Fix:** Wait for `Commander is thinking…` to clear and for the coordinator
+reply (or error) to appear. `/status` remains available while chat is blocked.
+Do not send duplicate chat messages until the run completes.
+
+## Commander timed out (120 seconds)
+
+**Symptom:** Chat fails after ~120 seconds; transcript or RPC error mentions
+timeout; goal may move to `blocked` depending on policy.
+
+**Cause:** `COMMANDER_TIMEOUT_SECONDS` is 120. Slow or hung Commander agent
+processes exceed this limit.
+
+**Fix:**
+
+1. Check `~/.local/state/coordinator/supervisor.log` and Commander run logs
+2. Verify the Commander agent command in `agents.toml` starts reliably
+3. Retry with a shorter, clearer chat message after `/status` shows goal `active`
+4. If the goal is `blocked`, resolve the blocker (`coordinator goal status` or
+   `/goal`) before chatting again
+
 ## Permission errors on global directories
 
 **Symptom:** Cannot create socket, database, or config files.

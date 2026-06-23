@@ -40,15 +40,37 @@ explicitly.
 If a registered project’s files moved to a new path, the onboarding screen warns
 that the repository moved and asks you to confirm the new canonical location.
 
+## Commander-backed chat (Phase 5)
+
+Wave 4 routed chat through the Supervisor but only echoed `Received: {text}`.
+Phase 5 connects chat to the real Commander service: messages are inspected,
+safe task proposals are admitted into the existing pipeline, and results appear
+as coordinator messages plus `task.created` / `commander.completed` events.
+
+**Chat requires an active goal.** Before sending plain-language messages:
+
+1. Create a draft goal: `/goal Continue the roadmap while keeping tests green`
+2. Confirm it: `/goal confirm`
+3. Chat normally at the `❯` prompt
+
+Until you confirm, chat is rejected with `Goal is draft. Run /goal confirm before
+chatting.` Use `/goal` with no arguments to view the current goal and status.
+
+While Commander runs, the transcript shows `Commander is thinking…` and admits
+or rejects proposed tasks with reasons. A single Commander run is in flight per
+goal at a time.
+
 ## Plain-language use
 
 Type natural-language messages at the `❯` prompt:
 
-- Describe goals (“continue the roadmap while keeping tests green”)
-- Ask for status updates
-- Request pauses or course corrections
+- Steer an active goal (“focus on tests first”, “pause risky changes”)
+- Ask Commander to propose the next small batch of tasks
+- Request status updates or course corrections
 
-Messages that do not start with `/` are sent as chat to the Coordinator.
+Messages that do not start with `/` are sent as `chat.send` to Commander (not a
+local echo). Slash commands call Supervisor RPC methods and render structured
+results in the transcript.
 
 When the connection is **paused** or **offline**, the composer shows
 `(paused — type to queue)` and queues input until the connection returns.
@@ -69,7 +91,7 @@ input starts with `/`.
 | `/stop` | Stop this project at the next safe boundary (**destructive**) |
 | `/shutdown` | Shut down the entire Supervisor (**destructive**) |
 | `/new` | Start a new conversation |
-| `/goal` | Set or view the current goal |
+| `/goal` | Create draft goal (`/goal <objective>`), confirm (`/goal confirm`), or view status (`/goal`) |
 | `/project` | Switch project context |
 | `/help` | List available commands |
 | `/quit` | Detach the TUI (workers keep running) |

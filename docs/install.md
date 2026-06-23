@@ -81,6 +81,47 @@ With no subcommand, Coordinator:
 Administrative subcommands (`coordinator status`, `coordinator migrate`, etc.)
 keep their existing CLI behavior.
 
+## Database migrations (wheel installs)
+
+SQL migrations ship inside the Python wheel at
+`local_cli_coordinator/migrations/*.sql`. `init_db()` loads them via
+`importlib.resources` (zip-safe), so a wheel install does **not** depend on a
+checkout or `PYTHONPATH=src`.
+
+The repo-root `migrations/` directory is a dev/CI mirror only; it must stay
+byte-identical to the packaged copy (`tests/test_migration_mirror_sync.py`).
+
+After `pip install`, a fresh database is created automatically on first
+Supervisor start:
+
+```bash
+coordinator supervisor status   # starts Supervisor; applies pending migrations
+```
+
+## Global config bootstrap
+
+Supervisor and daemon load configuration from the flat XDG config directory via
+`load_config_from_dir()`:
+
+| File | Purpose |
+|---|---|
+| `agents.toml` | Worker and Commander agent commands |
+| `repos.toml` | Registered repository paths and policies |
+| `policy.toml` | Task and daemon policy caps |
+
+Paths resolve under `~/.config/coordinator/` (or `$XDG_CONFIG_HOME/coordinator/`).
+An empty global config directory is valid — Coordinator does not fall back to a
+nested `~/.config/config/` path. Populate the three TOML files before running
+workers; see [migration.md](migration.md) to import from a legacy single-root
+install.
+
+`COORDINATOR_HOME` overrides all three global roots for isolated testing:
+
+```bash
+export COORDINATOR_HOME=/tmp/coordinator-test
+# → $COORDINATOR_HOME/config, .../data, .../state
+```
+
 ## Global directories
 
 Coordinator stores state in XDG-compliant directories:
