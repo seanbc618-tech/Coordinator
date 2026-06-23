@@ -17,7 +17,8 @@ import sqlite3
 
 from .config import CoordinatorConfig, RepoConfig
 from .db import project_task_counts, project_list_tasks
-from .projects import ProjectDraft, inspect_project, register_project
+from .projects import ProjectDraft, get_project, inspect_project, register_project
+from .supervisor_commander import handle_chat_send
 from .supervisor_events import EventBroker
 from .supervisor_protocol import (
     PROTOCOL_VERSION,
@@ -339,15 +340,30 @@ class SupervisorMethods:
     def _handle_chat_send(
         self, conn: sqlite3.Connection, request: RequestEnvelope
     ) -> ResponseEnvelope:
+        project_id = request.project_id
+        if not project_id:
+            return self._error(request, "project_id is required")
+
         text = request.params.get("text", "")
-        if isinstance(text, str) and text.strip():
-            self._broker.publish(
-                conn,
-                request.project_id,
-                "chat.message",
-                {"role": "coordinator", "text": f"Received: {text}"},
-            )
-        return self._ok(request, {"received": True})
+        if not isinstance(text, str) or not text.strip():
+            return self._error(request, "text is required")
+
+        if self._config is None:
+            return self._error(request, "coordinator config not loaded")
+
+        project = get_project(conn, project_id)
+        if project is None:
+            return self._error(request, f"project {project_id!r} not registered")
+
+        return handle_chat_send(
+            conn,
+            self._broker,
+            self._config,
+            Path(project["canonical_path"]),
+            request,
+            project_id=project_id,
+            text=text.strip(),
+        )
 
     def _handle_project_pause(
         self, conn: sqlite3.Connection, request: RequestEnvelope

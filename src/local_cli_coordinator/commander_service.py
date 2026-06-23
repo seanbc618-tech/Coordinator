@@ -10,7 +10,11 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-from .commander_policy import admit_commander_response, batch_is_high_risk_only
+from .commander_policy import (
+    CommanderAdmissionResult,
+    admit_commander_response,
+    batch_is_high_risk_only,
+)
 from .commander_runner import (
     CommanderResponse,
     CommanderRunActiveError,
@@ -37,6 +41,15 @@ from .goals import (
 )
 
 COMMANDER_TIMEOUT_SECONDS = 120
+
+
+@dataclass(frozen=True)
+class CommanderChatResult:
+    message: str
+    goal_id: int
+    run_id: int | None
+    admission: CommanderAdmissionResult | None
+    succeeded: bool
 
 
 @dataclass(frozen=True)
@@ -149,15 +162,29 @@ def confirm_goal(
     return f"goal {goal_id} activated"
 
 
-def send_chat_message(
+def _format_commander_reply(
+    response: CommanderResponse,
+    admission: CommanderAdmissionResult,
+) -> str:
+    parts = [f"Commander: {response.progress_summary}"]
+    if admission.accepted_task_ids:
+        parts.append(f"admitted {len(admission.accepted_task_ids)} task(s)")
+    if admission.rejection_reasons:
+        parts.append("rejected: " + "; ".join(admission.rejection_reasons))
+    return " | ".join(parts)
+
+
+def send_project_chat_message(
     conn: sqlite3.Connection,
     config: CoordinatorConfig,
     root: Path,
     goal_id: int,
     content: str,
+    *,
+    project_id: str,
     reporter: Reporter = NULL_REPORTER,
-) -> str:
-    """Send a user message to Commander and return its visible response."""
+) -> CommanderChatResult:
+    """Run Commander chat trigger, admit proposals, return structured outcome."""
     add_commander_message(conn, goal_id, "user", content)
     try:
         result = run_commander(
@@ -170,27 +197,77 @@ def send_chat_message(
             reporter=reporter,
         )
     except CommanderRunActiveError:
-        return "Commander is already running; try again after the current run finishes."
+        message = (
+            "Commander is already running; try again after the current run finishes."
+        )
+        return CommanderChatResult(
+            message=message,
+            goal_id=goal_id,
+            run_id=None,
+            admission=None,
+            succeeded=False,
+        )
     except ValueError as exc:
-        return f"Commander unavailable: {exc}"
+        message = f"Commander unavailable: {exc}"
+        return CommanderChatResult(
+            message=message,
+            goal_id=goal_id,
+            run_id=None,
+            admission=None,
+            succeeded=False,
+        )
 
     if not result.succeeded or result.response is None:
         message = f"Commander failed: {result.error or 'unknown error'}"
         add_commander_message(conn, goal_id, "assistant", message)
-        return message
+        return CommanderChatResult(
+            message=message,
+            goal_id=goal_id,
+            run_id=result.run_id,
+            admission=None,
+            succeeded=False,
+        )
 
     response = result.response
-    admission = admit_commander_response(conn, config, root, goal_id, response)
+    admission = admit_commander_response(
+        conn,
+        config,
+        root,
+        goal_id,
+        response,
+        project_id=project_id,
+    )
     update_goal_progress(conn, goal_id, response.progress_summary)
-
-    parts = [f"Commander: {response.progress_summary}"]
-    if admission.accepted_task_ids:
-        parts.append(f"admitted {len(admission.accepted_task_ids)} task(s)")
-    if admission.rejection_reasons:
-        parts.append("rejected: " + "; ".join(admission.rejection_reasons))
-    message = " | ".join(parts)
+    message = _format_commander_reply(response, admission)
     add_commander_message(conn, goal_id, "assistant", message)
-    return message
+    return CommanderChatResult(
+        message=message,
+        goal_id=goal_id,
+        run_id=result.run_id,
+        admission=admission,
+        succeeded=True,
+    )
+
+
+def send_chat_message(
+    conn: sqlite3.Connection,
+    config: CoordinatorConfig,
+    root: Path,
+    goal_id: int,
+    content: str,
+    reporter: Reporter = NULL_REPORTER,
+) -> str:
+    """CLI wrapper — calls send_project_chat_message, returns .message only."""
+    result = send_project_chat_message(
+        conn,
+        config,
+        root,
+        goal_id,
+        content,
+        project_id="legacy-default",
+        reporter=reporter,
+    )
+    return result.message
 
 
 def pause_goal(

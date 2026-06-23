@@ -4,6 +4,11 @@ import tempfile
 from pathlib import Path
 from unittest import TestCase
 
+from local_cli_coordinator.config import (
+    CoordinatorConfig,
+    DaemonPolicyConfig,
+    PolicyConfig,
+)
 from local_cli_coordinator.db import connect, init_db, create_task
 from local_cli_coordinator.supervisor_methods import SupervisorMethods
 from local_cli_coordinator.supervisor_protocol import RequestEnvelope
@@ -51,18 +56,31 @@ class SupervisorMethodsTest(TestCase):
         self.assertFalse(resp.ok)
         self.assertIn("not found", resp.error)
 
-    def test_chat_send(self) -> None:
-        create_task(
-            self.conn, title="t", repo="r", source_path="x",
-            priority="normal", capabilities=["code"], goal="g",
-            acceptance_criteria=["a"], verification_commands=[],
-            project_id="proj-a",
+    def test_chat_send_requires_registered_project(self) -> None:
+        methods = SupervisorMethods(
+            config=CoordinatorConfig(
+                agents={},
+                repos={},
+                policy=PolicyConfig(
+                    require_single_repo=False,
+                    require_acceptance_criteria=False,
+                    require_verification_commands=False,
+                    require_handoff_summary=False,
+                    max_files_touched=10,
+                    max_expected_minutes=60,
+                    max_attempts=3,
+                    split_if_touches_multiple_subsystems=False,
+                    split_if_research_and_code_are_mixed=False,
+                ),
+                daemon_policy=DaemonPolicyConfig(),
+            )
         )
-        resp = self.methods.handle(
+        resp = methods.handle(
             self.conn,
-            _request("chat.send", project_id="proj-a", message="hello"),
+            _request("chat.send", project_id="proj-a", text="hello"),
         )
-        self.assertTrue(resp.ok)
+        self.assertFalse(resp.ok)
+        self.assertIn("not registered", resp.error)
 
     def test_project_pause_resume(self) -> None:
         resp_pause = self.methods.handle(
