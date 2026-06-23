@@ -504,6 +504,141 @@ class GlobalTuiE2ETests(unittest.TestCase):
                     _cleanup_tui(pid, fd)
 
 
+_PROJECT_ID_RE = re.compile(r"proj-[0-9a-f]{12}")
+
+
+def _project_id_from_output(text: str) -> str | None:
+    match = _PROJECT_ID_RE.search(_strip_ansi(text))
+    return match.group(0) if match else None
+
+
+class ReattachTuiE2ETests(unittest.TestCase):
+    """Second launch in the same repo skips onboarding and keeps project_id."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        if shutil.which("node") is None:
+            raise unittest.SkipTest("node executable not found in PATH")
+
+        cls._tmpdir = tempfile.TemporaryDirectory(prefix="coord-reattach-e2e-")
+        cls.home = Path(cls._tmpdir.name)
+        cls.env = os.environ.copy()
+        cls.env["PYTHONPATH"] = str(SRC)
+        cls.env["COORDINATOR_HOME"] = str(cls.home)
+        cls.env["NO_COLOR"] = "1"
+        cls.env["TERM"] = "xterm-256color"
+
+        cls.paths = RuntimePaths(
+            cls.home / "config",
+            cls.home / "data",
+            cls.home / "state",
+        )
+        cls.paths.create()
+        cls.repos = _setup_repos(cls.home)
+        _write_gate_config(cls.home, cls.repos)
+        cls.repo = cls.repos["proj-a"]
+
+        cls._supervisor = subprocess.Popen(
+            [sys.executable, "-m", "local_cli_coordinator", "supervisor", "start", "--foreground"],
+            cwd=ROOT,
+            env=cls.env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        deadline = time.time() + 15.0
+        while time.time() < deadline:
+            if cls._supervisor.poll() is not None:
+                stderr = cls._supervisor.stderr.read() if cls._supervisor.stderr else ""
+                raise RuntimeError(f"supervisor exited early: {stderr}")
+            try:
+                resp = send_request(
+                    cls.paths.socket,
+                    RequestEnvelope(
+                        protocol_version=PROTOCOL_VERSION,
+                        request_id="reattach-ping",
+                        project_id=None,
+                        method="system.ping",
+                        params={},
+                    ),
+                )
+                if resp.ok:
+                    break
+            except OSError:
+                pass
+            time.sleep(0.1)
+        else:
+            raise RuntimeError("supervisor did not become ready")
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        subprocess.run(
+            [sys.executable, "-m", "local_cli_coordinator", "supervisor", "stop"],
+            cwd=ROOT,
+            env=cls.env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if cls._supervisor.poll() is None:
+            cls._supervisor.terminate()
+            try:
+                cls._supervisor.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                cls._supervisor.kill()
+        if cls._supervisor.stderr is not None:
+            cls._supervisor.stderr.close()
+        cls._tmpdir.cleanup()
+
+    def test_second_launch_skips_onboarding_and_preserves_project_id(self) -> None:
+        first_pid, first_fd = _spawn_project_tui(self.paths, self.repo, self.env)
+        try:
+            onboarding = _wait_for_text(first_fd, "Register this project?", timeout=45.0)
+            self.assertIn("Register this project?", _strip_ansi(onboarding))
+            _drain_pty(first_fd, quiet_time=0.3, max_time=1.0)
+            os.write(first_fd, b"\r")
+            first_connected = _wait_for_connection(first_fd, timeout=45.0)
+            self.assertIn("connected", first_connected)
+            first_project_id = _project_id_from_output(first_connected)
+            self.assertIsNotNone(first_project_id, "project_id missing from first launch header")
+
+            conn = connect(self.paths.database)
+            try:
+                db_project_id = conn.execute(
+                    "select id from projects where canonical_path = ?",
+                    (str(self.repo.resolve()),),
+                ).fetchone()["id"]
+            finally:
+                conn.close()
+            self.assertEqual(first_project_id, db_project_id)
+
+            _drain_pty(first_fd, quiet_time=0.3)
+            _type_string_and_wait(first_fd, "/quit")
+            _type_enter_and_wait(first_fd)
+            exit_code = _wait_for_exit_draining(first_pid, first_fd, timeout=15.0)
+            self.assertEqual(exit_code, 0, f"first launch detach failed: {exit_code}")
+        finally:
+            _cleanup_tui(first_pid, first_fd)
+
+        second_pid, second_fd = _spawn_project_tui(self.paths, self.repo, self.env)
+        try:
+            second_connected = _wait_for_connection(second_fd, timeout=45.0)
+            self.assertIn("connected", second_connected)
+            self.assertNotIn(
+                "Register this project?",
+                _final_frame_text(second_connected),
+                "second launch should skip onboarding for registered project",
+            )
+            second_project_id = _project_id_from_output(second_connected)
+            self.assertEqual(
+                second_project_id,
+                first_project_id,
+                "second launch must show the same project_id in header",
+            )
+        finally:
+            _cleanup_tui(second_pid, second_fd)
+
+
 class NoArgumentCoordinatorTests(unittest.TestCase):
     """Smoke test that no-argument coordinator reaches the packaged TUI."""
 

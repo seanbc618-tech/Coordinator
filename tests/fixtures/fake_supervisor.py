@@ -280,9 +280,26 @@ class FakeSupervisor:
 
         elif method == "chat.send":
             text = params.get("text", "")
-            self._respond(conn, request_id, {"received": True})
-            # Echo back as coordinator
-            self._send_event(conn, "chat.message", {"role": "coordinator", "text": f"Received: {text}"})
+            self._respond(conn, request_id, {
+                "received": True,
+                "goal_id": 1,
+                "commander_run_id": 42,
+                "admitted": 1,
+                "rejected": 0,
+            })
+            # Commander-style chat message
+            self._send_event(conn, "chat.message", {
+                "role": "coordinator",
+                "text": f"Commander processed: {text}",
+                "goal_id": 1,
+            })
+            self._send_event(conn, "task.created", {"task_id": "task-cmd-001", "goal_id": 1})
+            self._send_event(conn, "commander.completed", {
+                "goal_id": 1,
+                "run_id": 42,
+                "admitted": 1,
+                "rejected": 0,
+            })
 
         elif method == "project.status":
             self._respond(conn, request_id, {

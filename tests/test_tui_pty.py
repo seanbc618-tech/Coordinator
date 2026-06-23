@@ -598,7 +598,7 @@ class TuiPtyTests(unittest.TestCase):
     # ──────────────────────────────────────────────────────────────
 
     def test_pty_types_hello_and_sends_chat(self) -> None:
-        """Type 'hello' + Enter via PTY; assert one chat.send RPC and echo."""
+        """Type 'hello' + Enter via PTY; assert one chat.send RPC and Commander output."""
         pid, fd = _spawn_tui(self.socket_path, "proj-a", cols=80, rows=24)
         try:
             _wait_for_connection(fd)
@@ -616,11 +616,11 @@ class TuiPtyTests(unittest.TestCase):
             chat_sends = [p for m, p in requests if m == "chat.send"]
             self.assertEqual(len(chat_sends), 1, f"Expected one chat.send, got {requests}")
             self.assertEqual(chat_sends[0].get("text"), "hello")
-            # The fake supervisor echoes back "Received: hello" as a chat.message event.
-            # Read PTY output to verify the echo is rendered.
+            # The fake supervisor returns Commander-style response with
+            # chat.message event. Read PTY output to verify Commander output.
             output = _read_available(fd, timeout=3.0)
-            self.assertIn("Received: hello", _final_frame_text(output),
-                          "Echo 'Received: hello' not visible in PTY output")
+            self.assertIn("Commander processed: hello", _final_frame_text(output),
+                          "Commander response not visible in PTY output")
         finally:
             _cleanup_tui(pid, fd)
 
@@ -822,6 +822,39 @@ class TuiPtyTests(unittest.TestCase):
             methods = {r[0] for r in requests}
             self.assertIn("events.subscribe", methods,
                             f"Expected reconnect subscribe, got: {requests}")
+        finally:
+            _cleanup_tui(pid, fd)
+
+    def test_reconnect_replays_chat_message_history(self) -> None:
+        """Chat messages sent before disconnect replay once on reconnect."""
+        chat_marker = "Commander processed: replay-me"
+        pid, fd = _spawn_tui(self.socket_path, "proj-a", cols=80, rows=24)
+        try:
+            output_before = _wait_for_connection(fd)
+            _read_available(fd, timeout=0.5)
+            _type_string_and_wait(fd, "replay-me")
+            _type_enter_and_wait(fd)
+            self.assertTrue(
+                self.server.wait_for_request_method("chat.send", timeout=10),
+                "chat.send RPC not received before disconnect",
+            )
+            output_before += _read_available(fd, timeout=3.0)
+            self.assertIn(chat_marker, _final_frame_text(output_before),
+                          "Commander chat message not rendered before disconnect")
+            self.server.drain_requests()
+            self.server.disconnect_clients()
+            time.sleep(4.0)
+            output_after = _read_available(fd, timeout=3.0)
+            full_output = output_before + output_after
+            final_frame = _final_frame_text(full_output)
+            self.assertEqual(final_frame.count(chat_marker), 1,
+                             "Reconnect replay must include chat.message history once")
+            self.assertNotIn("Received:", final_frame,
+                             "Reconnect replay must not show legacy echo format")
+            requests = self.server.drain_requests()
+            methods = {r[0] for r in requests}
+            self.assertIn("events.subscribe", methods,
+                          f"Expected reconnect subscribe, got: {requests}")
         finally:
             _cleanup_tui(pid, fd)
 
@@ -1069,6 +1102,39 @@ class TuiPtyTests(unittest.TestCase):
                              "Foreign-project event leaked into TUI output")
         finally:
             _cleanup_tui(pid, fd)
+
+    def test_reattach_skips_onboarding_for_registered_project(self) -> None:
+        """Second TUI launch for same project skips onboarding."""
+        # First launch — connected (FakeSupervisor has project pre-registered).
+        pid1, fd1 = _spawn_tui(self.socket_path, "proj-a", cols=80, rows=24)
+        try:
+            output1 = _wait_for_connection(fd1)
+            self.assertIn("connected", output1, "First launch did not connect")
+            self.assertNotIn("Register this project?", _final_frame_text(output1),
+                             "First launch should not show onboarding for pre-registered project")
+            # Detach.
+            _type_string_and_wait(fd1, "/quit")
+            _type_enter_and_wait(fd1)
+            _wait_for_exit_draining(pid1, fd1, timeout=10.0)
+        finally:
+            try:
+                os.close(fd1)
+            except OSError:
+                pass
+            try:
+                os.waitpid(pid1, 0)
+            except ChildProcessError:
+                pass
+        # Second launch — same project, should skip onboarding.
+        pid2, fd2 = _spawn_tui(self.socket_path, "proj-a", cols=80, rows=24)
+        try:
+            output2 = _wait_for_connection(fd2)
+            self.assertIn("connected", output2, "Re-attach did not connect")
+            self.assertIn("proj-a", _strip_ansi(output2), "Re-attach missing project ID")
+            self.assertNotIn("Register this project?", _final_frame_text(output2),
+                             "Re-attach should skip onboarding for registered project")
+        finally:
+            _cleanup_tui(pid2, fd2)
 
 
 if __name__ == "__main__":
