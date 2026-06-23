@@ -1,4 +1,7 @@
+import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from tests.helpers import run_cli
@@ -30,15 +33,22 @@ class CliSmokeTests(unittest.TestCase):
         launch_mock.assert_called_once()
 
     def test_administrative_subcommands_keep_current_behavior(self) -> None:
-        with mock.patch(
-            "local_cli_coordinator.tui_launcher.launch_tui",
-        ) as launch_mock:
-            from local_cli_coordinator.cli import main
+        """Admin CLI must not launch TUI; supervisor status uses isolated home."""
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            with mock.patch(
+                "local_cli_coordinator.tui_launcher.launch_tui",
+            ) as launch_mock, mock.patch.dict(
+                os.environ,
+                {"COORDINATOR_HOME": str(home)},
+                clear=False,
+            ):
+                from local_cli_coordinator.cli import main
 
-            self.assertEqual(main(["doctor"]), 0)
-            self.assertEqual(main(["status"]), 0)
-            self.assertEqual(main(["supervisor", "status"]), 1)
-        launch_mock.assert_not_called()
+                self.assertEqual(main(["doctor"]), 0)
+                self.assertEqual(main(["status"]), 0)
+                self.assertEqual(main(["supervisor", "status"]), 1)
+            launch_mock.assert_not_called()
 
     def test_unknown_subcommand_still_errors(self) -> None:
         from local_cli_coordinator.cli import main
