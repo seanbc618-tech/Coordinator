@@ -27,6 +27,7 @@ import unittest
 from pathlib import Path
 
 from local_cli_coordinator.db import connect, create_task, get_task, init_db, project_list_events
+from local_cli_coordinator.goals import create_goal
 from local_cli_coordinator.projects import inspect_project, list_projects
 from local_cli_coordinator.runtime_paths import RuntimePaths
 from local_cli_coordinator.supervisor_protocol import PROTOCOL_VERSION, RequestEnvelope
@@ -141,17 +142,33 @@ def _wait_for_text(fd: int, needle: str, timeout: float = 30.0) -> str:
     return b"".join(chunks).decode("utf-8", errors="replace")
 
 
+def _fake_commander_command(home: Path) -> str:
+    script = ROOT / "tests" / "fixtures" / "fake_commander.py"
+    # Write repo_id to a file the fake commander can read.
+    return f'{sys.executable} {script} {home / "fake_commander_repo_id"}'
+
+
 def _write_gate_config(home: Path, repos: dict[str, Path]) -> None:
     config_dir = home / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
     worker = _worker_command().replace('"', '\\"')
     verify = _verify_command().replace('"', '\\"')
+    # Use the first repo's ID for the fake commander.
+    first_repo_id = inspect_project(next(iter(repos.values()))).repo_id
+    (home / "fake_commander_repo_id").write_text(first_repo_id, encoding="utf-8")
+    commander = _fake_commander_command(home).replace('"', '\\"')
     config_dir.joinpath("agents.toml").write_text(textwrap.dedent(f"""
         [agents.worker]
         command = "{worker}"
         capabilities = ["code"]
         max_concurrency = 2
         role = "worker"
+
+        [agents.commander]
+        command = "{commander}"
+        capabilities = ["code"]
+        max_concurrency = 1
+        role = "commander"
     """).strip(), encoding="utf-8")
 
     repo_blocks = []
@@ -372,14 +389,25 @@ class GlobalTuiE2ETests(unittest.TestCase):
                         "select id from projects where canonical_path = ?",
                         (str(self.repos[name].resolve()),),
                     ).fetchone()["id"]
+
+                    # Create a draft goal directly in DB, then activate it.
+                    goal_id = create_goal(
+                        conn, goal, goal, project_id=project_id,
+                    )
+                    conn.execute(
+                        "update goals set status = 'active' where id = ?",
+                        (goal_id,),
+                    )
+                    conn.commit()
                 finally:
                     conn.close()
 
+                # Now chat.send should work with an active goal.
                 chat_resp = send_request(
                     self.paths.socket,
                     RequestEnvelope(
                         protocol_version=PROTOCOL_VERSION,
-                        request_id=f"goal-{name}",
+                        request_id=f"chat-{name}",
                         project_id=project_id,
                         method="chat.send",
                         params={"text": goal},
