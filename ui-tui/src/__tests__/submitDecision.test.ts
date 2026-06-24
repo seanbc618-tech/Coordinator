@@ -22,15 +22,21 @@ describe('decideSubmit', () => {
 
   it('returns local error for unknown slash /taskz — no chat.send', () => {
     const decision = decideSubmit('/taskz', null)
-    // Must NOT be 'chat' (which would send to the backend).
     expect(decision.action).not.toBe('chat')
-    // Must be a local action that does not trigger RPC.
-    expect(decision.action).toBe('local-help')
+    expect(decision).toEqual({
+      action: 'local-error',
+      text: 'Unknown command: /taskz. Use /help.',
+      newPending: null,
+    })
   })
 
   it('returns local error for unknown slash /nota command', () => {
     const decision = decideSubmit('/nota command', null)
     expect(decision.action).not.toBe('chat')
-    expect(decision.action).toBe('local-help')
+    expect(decision).toEqual({
+      action: 'local-error',
+      text: 'Unknown command: /nota. Use /help.',
+      newPending: null,
+    })
   })
 })

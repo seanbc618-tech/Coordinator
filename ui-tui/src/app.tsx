@@ -243,6 +243,21 @@ export function App({ socketPath, projectId, canonicalPath }: AppProps) {
         }))
         return
 
+      case 'local-error':
+        setTuiState(prev => ({
+          ...prev,
+          transcript: [
+            ...prev.transcript,
+            {
+              id: `error-${Date.now()}`,
+              kind: 'message',
+              role: 'system',
+              text: decision.text,
+            },
+          ],
+        }))
+        return
+
       case 'send':
         void client.request(decision.method, { args: decision.args }).then(resp => {
           const text = resp.ok

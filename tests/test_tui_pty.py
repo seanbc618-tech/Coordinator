@@ -897,6 +897,65 @@ class TuiPtyTests(unittest.TestCase):
         finally:
             _cleanup_tui(pid, fd)
 
+    def test_pty_unknown_slash_stays_local(self) -> None:
+        """Unknown slash commands stay local and never call chat.send."""
+        pid, fd = _spawn_tui(self.socket_path, "proj-a", cols=100, rows=30)
+        try:
+            _wait_for_connection(fd)
+            _read_available(fd, timeout=0.5)
+            _type_string_and_wait(fd, "/taskz")
+            _type_enter_and_wait(fd)
+            time.sleep(1.0)
+            output = _read_available(fd, timeout=3.0)
+            frame = _final_frame_text(output)
+            self.assertIn("Unknown command: /taskz", frame)
+            self.assertIn("/help", frame)
+            requests = self.server.drain_requests()
+            methods = {m for m, _ in requests}
+            self.assertNotIn("chat.send", methods)
+        finally:
+            _cleanup_tui(pid, fd)
+
+    def _assert_footer_visible_once(self, frame: str) -> None:
+        self.assertIn("connected", frame)
+        self.assertEqual(frame.count("Tab"), 1)
+
+    def test_pty_transcript_layout_at_40_cols(self) -> None:
+        pid, fd = _spawn_tui(self.socket_path, "proj-a", cols=40, rows=24)
+        try:
+            _wait_for_connection(fd)
+            output = _read_available(fd, timeout=2.0)
+            frame = _final_frame_text(output)
+            self.assertIn("Implement auth", frame)
+            self._assert_footer_visible_once(frame)
+            self.assertLessEqual(len(frame.splitlines()), 24)
+        finally:
+            _cleanup_tui(pid, fd)
+
+    def test_pty_transcript_layout_at_80_cols(self) -> None:
+        pid, fd = _spawn_tui(self.socket_path, "proj-a", cols=80, rows=24)
+        try:
+            _wait_for_connection(fd)
+            output = _read_available(fd, timeout=2.0)
+            frame = _final_frame_text(output)
+            self.assertIn("Implement auth", frame)
+            self._assert_footer_visible_once(frame)
+            self.assertLessEqual(len(frame.splitlines()), 24)
+        finally:
+            _cleanup_tui(pid, fd)
+
+    def test_pty_transcript_layout_at_120_cols(self) -> None:
+        pid, fd = _spawn_tui(self.socket_path, "proj-a", cols=120, rows=24)
+        try:
+            _wait_for_connection(fd)
+            output = _read_available(fd, timeout=2.0)
+            frame = _final_frame_text(output)
+            self.assertIn("Implement auth", frame)
+            self._assert_footer_visible_once(frame)
+            self.assertLessEqual(len(frame.splitlines()), 24)
+        finally:
+            _cleanup_tui(pid, fd)
+
     def test_pty_task_shows_baseline_detail(self) -> None:
         """Type /task; assert goal, verify commands, and failure note render."""
         pid, fd = _spawn_tui(self.socket_path, "proj-a", cols=120, rows=40)

@@ -38718,6 +38718,8 @@ function reduceEvent(state, event, projectId) {
       return reduceTaskFallback(newState, event.payload);
     case "task.done":
       return reduceTaskDone(newState, event.payload);
+    case "commander.completed":
+      return reduceCommanderCompleted(newState, event.payload);
     case "tick_scheduled":
     case "cycle_complete":
       return newState;
@@ -38856,6 +38858,20 @@ function reduceTaskFallback(state, payload) {
     }
   });
 }
+function reduceCommanderCompleted(state, payload) {
+  const rejectionReasons = Array.isArray(payload.rejection_reasons) ? payload.rejection_reasons.map(String).filter(Boolean) : [];
+  if (rejectionReasons.length === 0) {
+    return state;
+  }
+  const runId = payload.run_id != null ? String(payload.run_id) : "latest";
+  const taskId = `commander-${runId}`;
+  return upsertActivity(state, taskId, {
+    title: "Commander diagnostics",
+    stage: "commander: diagnostics",
+    startedAt: Date.now(),
+    output: rejectionReasons
+  });
+}
 function reduceTaskDone(state, payload) {
   const taskId = String(payload.task_id ?? "");
   if (!taskId) return state;
@@ -38924,37 +38940,122 @@ var init_Header = __esm({
   }
 });
 
-// src/components/Message.tsx
-function Message({ role, text, columns }) {
-  const prefix = role === "user" ? "> " : role === "system" ? "! " : "";
-  const color = role === "user" ? "cyan" : role === "system" ? "yellow" : void 0;
-  const maxWidth = Math.max(columns - 4, 20);
-  const lines = wrapText2(prefix + text, maxWidth);
-  return /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(Box_default, { flexDirection: "column", paddingX: 1, children: lines.map((line, i) => /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(Text, { color, children: line }, i)) });
+// src/textLayout.ts
+function charDisplayWidth(char) {
+  const code = char.codePointAt(0) ?? 0;
+  if (code <= 127) {
+    return 1;
+  }
+  if (code >= 4352 && code <= 4447 || code >= 11904 && code <= 42191 || code >= 44032 && code <= 55203 || code >= 63744 && code <= 64255 || code >= 65040 && code <= 65049 || code >= 65072 && code <= 65135 || code >= 65280 && code <= 65376 || code >= 65504 && code <= 65510 || code >= 131072 && code <= 196607) {
+    return 2;
+  }
+  return 1;
+}
+function stringDisplayWidth(text) {
+  let width = 0;
+  for (const char of text) {
+    width += charDisplayWidth(char);
+  }
+  return width;
 }
 function wrapText2(text, maxWidth) {
-  if (text.length <= maxWidth) return [text];
-  const lines = [];
-  let remaining = text;
-  while (remaining.length > maxWidth) {
-    let breakAt = remaining.lastIndexOf(" ", maxWidth);
-    if (breakAt <= 0) breakAt = maxWidth;
-    lines.push(remaining.slice(0, breakAt));
-    remaining = remaining.slice(breakAt).trimStart();
+  if (maxWidth <= 0) {
+    return [text];
   }
-  if (remaining) lines.push(remaining);
-  return lines;
+  const paragraphs = text.split("\n");
+  const lines = [];
+  for (const paragraph of paragraphs) {
+    if (!paragraph) {
+      lines.push("");
+      continue;
+    }
+    let remaining = paragraph;
+    while (remaining.length > 0) {
+      if (stringDisplayWidth(remaining) <= maxWidth) {
+        lines.push(remaining);
+        break;
+      }
+      let breakIndex = -1;
+      let width = 0;
+      let lastSpace = -1;
+      for (let index = 0; index < remaining.length; index++) {
+        const char = remaining[index];
+        const charWidth = charDisplayWidth(char);
+        if (char === " ") {
+          lastSpace = index;
+        }
+        if (width + charWidth > maxWidth) {
+          breakIndex = lastSpace > 0 ? lastSpace : index;
+          if (breakIndex <= 0) {
+            breakIndex = index || 1;
+          }
+          break;
+        }
+        width += charWidth;
+      }
+      if (breakIndex < 0) {
+        breakIndex = remaining.length;
+      }
+      const chunk = remaining.slice(0, breakIndex).trimEnd();
+      lines.push(chunk.length > 0 ? chunk : remaining.slice(0, 1));
+      remaining = remaining.slice(breakIndex).trimStart();
+    }
+  }
+  return lines.length > 0 ? lines : [""];
 }
-var import_jsx_runtime2;
-var init_Message = __esm({
-  async "src/components/Message.tsx"() {
+function estimateWrappedLineCount(text, maxWidth) {
+  return wrapText2(text, maxWidth).length;
+}
+var init_textLayout = __esm({
+  "src/textLayout.ts"() {
     "use strict";
-    await init_build2();
-    import_jsx_runtime2 = __toESM(require_jsx_runtime(), 1);
   }
 });
 
 // src/components/ActivityBlock.tsx
+function estimateActivityLines(activity, columns) {
+  const compact = columns < 60;
+  const isDiagnostic = activity.stage.startsWith("commander:");
+  const verifySummary = activity.verificationCommands?.length ? activity.verificationCommands.join("; ") : null;
+  const failureNote = activity.stage.startsWith("failed") && activity.latestNote ? activity.latestNote : null;
+  if (!activity.expanded || compact) {
+    let lines2 = 1;
+    if (activity.goal && activity.stage === "created") {
+      lines2 += estimateWrappedLineCount(
+        `Goal: ${activity.goal}`,
+        Math.max(columns - 8, 24)
+      );
+    }
+    if (verifySummary && activity.stage === "created") {
+      lines2 += estimateWrappedLineCount(
+        `Verify: ${verifySummary}`,
+        Math.max(columns - 10, 24)
+      );
+    }
+    if (failureNote) {
+      lines2 += estimateWrappedLineCount(
+        `Reason: ${failureNote}`,
+        Math.max(columns - 10, 24)
+      );
+    }
+    if (isDiagnostic && activity.output.length > 0) {
+      lines2 += 1;
+    }
+    return lines2;
+  }
+  let lines = 1;
+  if (activity.latestCommand) {
+    lines += 1;
+  }
+  if (activity.fallback) {
+    lines += 1;
+  }
+  if (isDiagnostic && activity.output.length > 0) {
+    lines += 1;
+  }
+  lines += Math.min(activity.output.length, 10);
+  return lines;
+}
 function formatElapsed(startedAt) {
   if (!startedAt) return "";
   const seconds = Math.floor((Date.now() - startedAt) / 1e3);
@@ -38964,79 +39065,85 @@ function formatElapsed(startedAt) {
 }
 function ActivityBlock({ activity, columns }) {
   const compact = columns < 60;
-  const statusIcon = activity.stage.startsWith("done") ? "\u2713" : activity.stage.startsWith("verification") ? "\u27D0" : activity.stage.startsWith("review") ? "\u25C9" : activity.stage.startsWith("git") ? "\u2387" : "\u25CF";
-  const statusColor = activity.stage.startsWith("done") ? "green" : activity.stage.startsWith("verification: passed") ? "green" : activity.stage.startsWith("verification: failed") ? "red" : "yellow";
+  const isDiagnostic = activity.stage.startsWith("commander:");
+  const statusIcon = isDiagnostic ? "\u26A0" : activity.stage.startsWith("done") ? "\u2713" : activity.stage.startsWith("verification") ? "\u27D0" : activity.stage.startsWith("review") ? "\u25C9" : activity.stage.startsWith("git") ? "\u2387" : "\u25CF";
+  const statusColor = isDiagnostic ? "yellow" : activity.stage.startsWith("done") ? "green" : activity.stage.startsWith("verification: passed") ? "green" : activity.stage.startsWith("verification: failed") ? "red" : "yellow";
   const verifySummary = activity.verificationCommands?.length ? activity.verificationCommands.join("; ") : null;
   const failureNote = activity.stage.startsWith("failed") && activity.latestNote ? activity.latestNote : null;
   if (!activity.expanded || compact) {
-    return /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Box_default, { paddingX: 1, flexDirection: "column", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Box_default, { flexDirection: "row", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Text, { color: statusColor, children: [
+    return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(Box_default, { paddingX: 1, flexDirection: "column", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(Box_default, { flexDirection: "row", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(Text, { color: statusColor, children: [
           statusIcon,
           " "
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(Text, { bold: true, children: activity.title }),
-        activity.agent && /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Text, { dimColor: true, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(Text, { bold: true, children: activity.title }),
+        activity.agent && /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(Text, { dimColor: true, children: [
           " [",
           activity.agent,
           "]"
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Text, { dimColor: true, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(Text, { dimColor: true, children: [
           " ",
           activity.stage
         ] }),
-        activity.startedAt && /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Text, { dimColor: true, children: [
+        activity.startedAt && /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(Text, { dimColor: true, children: [
           " ",
           formatElapsed(activity.startedAt)
         ] }),
-        activity.fallback && /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Text, { color: "yellow", children: [
+        activity.fallback && /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(Text, { color: "yellow", children: [
           " \u26A0 ",
           activity.fallback.from,
           "\u2192",
           activity.fallback.to
         ] })
       ] }),
-      activity.goal && activity.stage === "created" && /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Text, { dimColor: true, children: [
+      activity.goal && activity.stage === "created" && /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(Text, { dimColor: true, children: [
         "  Goal: ",
         activity.goal.slice(0, Math.max(columns - 8, 24))
       ] }),
-      verifySummary && activity.stage === "created" && /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Text, { dimColor: true, children: [
+      verifySummary && activity.stage === "created" && /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(Text, { dimColor: true, children: [
         "  Verify: ",
         verifySummary.slice(0, Math.max(columns - 10, 24))
       ] }),
-      failureNote && /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Text, { color: "red", children: [
+      failureNote && /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(Text, { color: "red", children: [
         "  Reason: ",
         failureNote
+      ] }),
+      isDiagnostic && !activity.expanded && activity.output.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(Text, { dimColor: true, children: [
+        "  ",
+        activity.output.length,
+        " diagnostic note(s) \u2014 expand for details"
       ] })
     ] });
   }
   const outputLines = activity.output.slice(-10);
-  return /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Box_default, { flexDirection: "column", paddingX: 1, borderStyle: "round", borderColor: "gray", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Text, { children: [
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Text, { color: statusColor, children: [
+  return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(Box_default, { flexDirection: "column", paddingX: 1, borderStyle: "round", borderColor: "gray", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(Text, { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(Text, { color: statusColor, children: [
         statusIcon,
         " "
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(Text, { bold: true, children: activity.title }),
-      activity.agent && /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Text, { dimColor: true, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(Text, { bold: true, children: activity.title }),
+      activity.agent && /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(Text, { dimColor: true, children: [
         " [",
         activity.agent,
         "]"
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Text, { dimColor: true, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(Text, { dimColor: true, children: [
         " ",
         activity.stage
       ] }),
-      activity.startedAt && /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Text, { dimColor: true, children: [
+      activity.startedAt && /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(Text, { dimColor: true, children: [
         " ",
         formatElapsed(activity.startedAt)
       ] })
     ] }),
-    activity.latestCommand && /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Text, { dimColor: true, children: [
+    activity.latestCommand && /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(Text, { dimColor: true, children: [
       "  $ ",
       activity.latestCommand
     ] }),
-    activity.fallback && /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Text, { color: "yellow", children: [
+    activity.fallback && /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(Text, { color: "yellow", children: [
       "  \u26A0 fallback: ",
       activity.fallback.from,
       " \u2192 ",
@@ -39047,36 +39154,118 @@ function ActivityBlock({ activity, columns }) {
       activity.fallback.limit,
       ")"
     ] }),
-    outputLines.map((line, i) => /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Text, { dimColor: true, children: [
+    isDiagnostic && activity.output.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(Text, { dimColor: true, children: "  Diagnostics:" }),
+    outputLines.map((line, i) => /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(Text, { dimColor: true, children: [
       "  ",
       line.slice(0, Math.max(columns - 4, 20))
     ] }, i))
   ] });
 }
-var import_jsx_runtime3;
+var import_jsx_runtime2;
 var init_ActivityBlock = __esm({
   async "src/components/ActivityBlock.tsx"() {
     "use strict";
     await init_build2();
+    init_textLayout();
+    import_jsx_runtime2 = __toESM(require_jsx_runtime(), 1);
+  }
+});
+
+// src/components/Message.tsx
+function messagePrefix(role) {
+  return role === "user" ? "> " : role === "system" ? "! " : "";
+}
+function messageMaxWidth(columns) {
+  return Math.max(columns - 4, 20);
+}
+function formatMessageLines(role, text, columns) {
+  return wrapText2(messagePrefix(role) + text, messageMaxWidth(columns));
+}
+function Message({ role, text, columns, lines }) {
+  const color = role === "user" ? "cyan" : role === "system" ? "yellow" : void 0;
+  const rendered = lines ?? formatMessageLines(role, text, columns);
+  return /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(Box_default, { flexDirection: "column", paddingX: 1, children: rendered.map((line, index) => /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(Text, { color, children: line }, index)) });
+}
+var import_jsx_runtime3;
+var init_Message = __esm({
+  async "src/components/Message.tsx"() {
+    "use strict";
+    await init_build2();
+    init_textLayout();
     import_jsx_runtime3 = __toESM(require_jsx_runtime(), 1);
+  }
+});
+
+// src/transcriptBudget.ts
+function selectTranscriptItems(items, columns, height) {
+  const budget = Math.max(height, 1);
+  const selected = [];
+  let used = 0;
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    const lines = transcriptItemLines(item, columns);
+    const lineCount = lines.length;
+    if (lineCount <= budget - used) {
+      selected.unshift({ item, lines });
+      used += lineCount;
+      continue;
+    }
+    if (selected.length === 0 && lineCount > 0) {
+      selected.unshift({ item, lines: lines.slice(-budget) });
+    }
+    break;
+  }
+  return selected;
+}
+function transcriptItemLines(item, columns) {
+  if (item.kind === "message") {
+    return formatMessageLines(item.role, item.text, columns);
+  }
+  const count = estimateActivityLines(item.activity, columns);
+  return Array.from({ length: count }, (_, index) => `activity-${index}`);
+}
+var init_transcriptBudget = __esm({
+  async "src/transcriptBudget.ts"() {
+    "use strict";
+    await init_ActivityBlock();
+    await init_Message();
   }
 });
 
 // src/components/Transcript.tsx
 function Transcript({ items, columns, height }) {
-  const visibleItems = items.slice(-Math.max(height - 2, 5));
-  return /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(Box_default, { flexDirection: "column", flexGrow: 1, children: visibleItems.map((item) => {
-    if (item.kind === "message") {
-      return /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(Message, { role: item.role, text: item.text, columns }, item.id);
+  const visibleItems = selectTranscriptItems(items, columns, height);
+  return /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
+    Box_default,
+    {
+      flexDirection: "column",
+      flexGrow: 1,
+      height,
+      overflow: "hidden",
+      children: visibleItems.map(({ item, lines }) => {
+        if (item.kind === "message") {
+          return /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
+            Message,
+            {
+              role: item.role,
+              text: item.text,
+              columns,
+              lines
+            },
+            item.id
+          );
+        }
+        return /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(ActivityBlock, { activity: item.activity, columns }, item.id);
+      })
     }
-    return /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(ActivityBlock, { activity: item.activity, columns }, item.id);
-  }) });
+  );
 }
 var import_jsx_runtime4;
 var init_Transcript = __esm({
   async "src/components/Transcript.tsx"() {
     "use strict";
     await init_build2();
+    await init_transcriptBudget();
     await init_Message();
     await init_ActivityBlock();
     import_jsx_runtime4 = __toESM(require_jsx_runtime(), 1);
@@ -39151,7 +39340,7 @@ function parse(input) {
   if (command) {
     return { type: "command", command, args };
   }
-  return { type: "message", text: trimmed };
+  return { type: "unknown-command", command: cmdPart };
 }
 function formatHelpText() {
   const lines = ["Commands:"];
@@ -39457,7 +39646,14 @@ function decideSubmit(text, pendingDestructive) {
       newPending: null
     };
   }
-  return { action: "chat", text, newPending: null };
+  if (parsed.type === "unknown-command") {
+    return {
+      action: "local-error",
+      text: `Unknown command: ${parsed.command}. Use /help.`,
+      newPending: null
+    };
+  }
+  return { action: "chat", text: parsed.text, newPending: null };
 }
 var init_submitDecision = __esm({
   "src/submitDecision.ts"() {
@@ -39748,6 +39944,20 @@ function App2({ socketPath, projectId, canonicalPath }) {
               kind: "message",
               role: "system",
               text: formatHelpText()
+            }
+          ]
+        }));
+        return;
+      case "local-error":
+        setTuiState((prev) => ({
+          ...prev,
+          transcript: [
+            ...prev.transcript,
+            {
+              id: `error-${Date.now()}`,
+              kind: "message",
+              role: "system",
+              text: decision.text
             }
           ]
         }));

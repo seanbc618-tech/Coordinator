@@ -12,6 +12,7 @@ export type SubmitDecision =
   | { action: 'destructive-confirmed'; commandName: string; method: string; args: string; newPending: null }
   | { action: 'destructive-pending'; commandName: string; newPending: string }
   | { action: 'local-help'; newPending: null }
+  | { action: 'local-error'; text: string; newPending: null }
   | { action: 'send'; method: string; args: string; newPending: null }
   | { action: 'chat'; text: string; newPending: null }
 
@@ -60,6 +61,14 @@ export function decideSubmit(text: string, pendingDestructive: string | null): S
     }
   }
 
+  if (parsed.type === 'unknown-command') {
+    return {
+      action: 'local-error',
+      text: `Unknown command: ${parsed.command}. Use /help.`,
+      newPending: null,
+    }
+  }
+
   // Plain message — send as chat, clear any pending.
-  return { action: 'chat', text, newPending: null }
+  return { action: 'chat', text: parsed.text, newPending: null }
 }

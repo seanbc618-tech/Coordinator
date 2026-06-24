@@ -27,9 +27,9 @@ describe('parse', () => {
     }
   })
 
-  it('treats unknown slash as message', () => {
+  it('treats unknown slash as unknown-command', () => {
     const result = parse('/unknown')
-    expect(result).toEqual({ type: 'message', text: '/unknown' })
+    expect(result).toEqual({ type: 'unknown-command', command: '/unknown' })
   })
 
   it('handles empty input', () => {

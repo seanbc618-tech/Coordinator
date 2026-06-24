@@ -37,7 +37,12 @@ export interface ParsedMessage {
   text: string
 }
 
-export type Parsed = ParsedSlash | ParsedMessage
+export interface ParsedUnknownCommand {
+  type: 'unknown-command'
+  command: string
+}
+
+export type Parsed = ParsedSlash | ParsedMessage | ParsedUnknownCommand
 
 export function parse(input: string): Parsed {
   const trimmed = input.trim()
@@ -56,8 +61,7 @@ export function parse(input: string): Parsed {
     return { type: 'command', command, args }
   }
 
-  // Unknown slash command — treat as message
-  return { type: 'message', text: trimmed }
+  return { type: 'unknown-command', command: cmdPart }
 }
 
 const HELP_COMMAND_NAMES = new Set([

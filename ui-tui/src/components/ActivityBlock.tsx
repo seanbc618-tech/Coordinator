@@ -1,10 +1,61 @@
 import React from 'react'
 import { Box, Text } from 'ink'
 import type { Activity } from '../domain.js'
+import { estimateWrappedLineCount } from '../textLayout.js'
 
 interface ActivityBlockProps {
   activity: Activity
   columns: number
+}
+
+export function estimateActivityLines(activity: Activity, columns: number): number {
+  const compact = columns < 60
+  const isDiagnostic = activity.stage.startsWith('commander:')
+  const verifySummary = activity.verificationCommands?.length
+    ? activity.verificationCommands.join('; ')
+    : null
+  const failureNote = activity.stage.startsWith('failed') && activity.latestNote
+    ? activity.latestNote
+    : null
+
+  if (!activity.expanded || compact) {
+    let lines = 1
+    if (activity.goal && activity.stage === 'created') {
+      lines += estimateWrappedLineCount(
+        `Goal: ${activity.goal}`,
+        Math.max(columns - 8, 24),
+      )
+    }
+    if (verifySummary && activity.stage === 'created') {
+      lines += estimateWrappedLineCount(
+        `Verify: ${verifySummary}`,
+        Math.max(columns - 10, 24),
+      )
+    }
+    if (failureNote) {
+      lines += estimateWrappedLineCount(
+        `Reason: ${failureNote}`,
+        Math.max(columns - 10, 24),
+      )
+    }
+    if (isDiagnostic && activity.output.length > 0) {
+      lines += 1
+    }
+    return lines
+  }
+
+  let lines = 1
+  if (activity.latestCommand) {
+    lines += 1
+  }
+  if (activity.fallback) {
+    lines += 1
+  }
+  if (isDiagnostic && activity.output.length > 0) {
+    lines += 1
+  }
+  lines += Math.min(activity.output.length, 10)
+  return lines
 }
 
 function formatElapsed(startedAt: number | null): string {
