@@ -7,6 +7,7 @@ import unittest
 from dataclasses import dataclass
 from pathlib import Path
 
+from local_cli_coordinator.supervisor_identity import RUNTIME_COMPATIBILITY
 from local_cli_coordinator.supervisor_protocol import (
     PROTOCOL_VERSION,
     ProtocolError,
@@ -85,7 +86,14 @@ class SupervisorServerTests(unittest.TestCase):
         server = self._start_server()
         response = send_request(self.paths.socket, _ping_request())
         self.assertTrue(response.ok)
-        self.assertEqual(response.result, {"pong": True})
+        self.assertIsNotNone(response.result)
+        result = response.result or {}
+        self.assertTrue(result.get("pong"))
+        self.assertEqual(result.get("runtime_compatibility"), RUNTIME_COMPATIBILITY)
+        self.assertIn("pid", result)
+        self.assertIn("capabilities", result)
+        self.assertIn("started_at", result)
+        self.assertIn("active_workers", result)
 
         server.request_shutdown()
         self._wait_until_stopped()

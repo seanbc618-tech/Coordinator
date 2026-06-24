@@ -16,11 +16,17 @@ from pathlib import Path
 
 from local_cli_coordinator.locks import LockInfo, acquire_lock_at, release_lock_at
 from local_cli_coordinator.runtime_paths import RuntimePaths
+from local_cli_coordinator.supervisor_identity import (
+    INCOMPATIBLE_SUPERVISOR_MESSAGE,
+    SupervisorIdentity,
+    is_compatible_identity,
+)
 from local_cli_coordinator.supervisor_protocol import PROTOCOL_VERSION, RequestEnvelope
 from local_cli_coordinator.supervisor_server import SupervisorTransportError, send_request
 
 DEFAULT_READINESS_TIMEOUT = 30.0
 DEFAULT_POLL_INTERVAL = 0.1
+DEFAULT_SHUTDOWN_TIMEOUT = 30.0
 STARTUP_LOCK_NAME = "supervisor-startup.lock"
 SUPERVISOR_LOG_NAME = "supervisor.log"
 
@@ -31,6 +37,10 @@ class SupervisorProcessError(RuntimeError):
 
 class SupervisorReadinessError(SupervisorProcessError):
     """Raised when a Supervisor fails to become ready in time."""
+
+
+class SupervisorIncompatibleError(SupervisorProcessError):
+    """Raised when a reachable Supervisor lacks required runtime identity."""
 
 
 @dataclass(frozen=True)
@@ -58,19 +68,60 @@ def _ping_request(request_id: str) -> RequestEnvelope:
     )
 
 
+def _shutdown_request(request_id: str) -> RequestEnvelope:
+    return RequestEnvelope(
+        protocol_version=PROTOCOL_VERSION,
+        request_id=request_id,
+        project_id=None,
+        method="system.shutdown",
+        params={},
+    )
+
+
+def _supervisor_ping_result(
+    paths: RuntimePaths,
+    *,
+    timeout: float = 2.0,
+) -> dict | None:
+    if not paths.socket.exists():
+        return None
+    try:
+        response = send_request(paths.socket, _ping_request("ping"), timeout=timeout)
+    except SupervisorTransportError:
+        return None
+    if not response.ok or not response.result:
+        return None
+    return response.result
+
+
+def ping_supervisor_identity(
+    paths: RuntimePaths,
+    *,
+    timeout: float = 2.0,
+) -> SupervisorIdentity | None:
+    """Return structured runtime identity when the Supervisor responds to ping."""
+    result = _supervisor_ping_result(paths, timeout=timeout)
+    if result is None:
+        return None
+    return SupervisorIdentity.from_ping_result(result)
+
+
+def _raise_if_ping_incompatible(result: dict) -> None:
+    if not result.get("pong"):
+        return
+    identity = SupervisorIdentity.from_ping_result(result)
+    if identity is None or not is_compatible_identity(identity):
+        raise SupervisorIncompatibleError(INCOMPATIBLE_SUPERVISOR_MESSAGE)
+
+
 def ping_supervisor(
     paths: RuntimePaths,
     *,
     timeout: float = 2.0,
 ) -> bool:
-    """Return True when the Supervisor responds to system.ping."""
-    if not paths.socket.exists():
-        return False
-    try:
-        response = send_request(paths.socket, _ping_request("ping"), timeout=timeout)
-    except SupervisorTransportError:
-        return False
-    return bool(response.ok and response.result and response.result.get("pong") is True)
+    """Return True when a compatible Supervisor responds to system.ping."""
+    identity = ping_supervisor_identity(paths, timeout=timeout)
+    return identity is not None and is_compatible_identity(identity)
 
 
 def _read_lock_pid(lock_path: Path) -> int | None:
@@ -203,6 +254,85 @@ def _wait_for_peer_startup(
     return EnsureSupervisorResult(attached=True, started=False, pid=_read_lock_pid(paths.lock))
 
 
+def _raise_if_incompatible(paths: RuntimePaths) -> None:
+    result = _supervisor_ping_result(paths)
+    if result is None:
+        return
+    _raise_if_ping_incompatible(result)
+
+
+def wait_for_supervisor_stopped(
+    paths: RuntimePaths,
+    *,
+    timeout: float = DEFAULT_SHUTDOWN_TIMEOUT,
+    poll_interval: float = DEFAULT_POLL_INTERVAL,
+) -> None:
+    """Wait until the Supervisor socket and lock are gone."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not paths.socket.exists() and not paths.lock.exists():
+            return
+        if not ping_supervisor_identity(paths, timeout=min(poll_interval * 2, 2.0)):
+            paths.socket.unlink(missing_ok=True)
+            if not paths.lock.exists():
+                return
+        time.sleep(poll_interval)
+    raise SupervisorProcessError(
+        f"supervisor did not stop within {timeout:.1f}s"
+    )
+
+
+def request_supervisor_shutdown(
+    paths: RuntimePaths,
+    *,
+    timeout: float = 2.0,
+) -> None:
+    """Ask the running Supervisor to shut down gracefully."""
+    if not paths.socket.exists():
+        return
+    response = send_request(
+        paths.socket,
+        _shutdown_request("shutdown"),
+        timeout=timeout,
+    )
+    if not response.ok:
+        raise SupervisorProcessError(response.error or "supervisor shutdown failed")
+
+
+def restart_supervisor(
+    paths: RuntimePaths,
+    *,
+    readiness_timeout: float = DEFAULT_READINESS_TIMEOUT,
+    poll_interval: float = DEFAULT_POLL_INTERVAL,
+    shutdown_timeout: float = DEFAULT_SHUTDOWN_TIMEOUT,
+) -> EnsureSupervisorResult:
+    """Gracefully restart the global Supervisor and verify a new PID serves."""
+    paths.create()
+    old_pid = _read_lock_pid(paths.lock)
+
+    if old_pid is not None or _supervisor_ping_result(paths) is not None:
+        request_supervisor_shutdown(paths)
+        wait_for_supervisor_stopped(
+            paths,
+            timeout=shutdown_timeout,
+            poll_interval=poll_interval,
+        )
+
+    result = ensure_supervisor(
+        paths,
+        readiness_timeout=readiness_timeout,
+        poll_interval=poll_interval,
+    )
+    new_pid = _read_lock_pid(paths.lock)
+    if old_pid is not None and new_pid == old_pid:
+        raise SupervisorProcessError("supervisor restart did not change PID")
+    if not ping_supervisor(paths):
+        raise SupervisorReadinessError(
+            "restarted supervisor is missing required runtime identity"
+        )
+    return result
+
+
 def ensure_supervisor(
     paths: RuntimePaths,
     *,
@@ -212,21 +342,27 @@ def ensure_supervisor(
     """Attach to a running Supervisor or start one detached process."""
     paths.create()
 
-    if ping_supervisor(paths):
+    result = _supervisor_ping_result(paths)
+    if result is not None:
+        _raise_if_ping_incompatible(result)
+        identity = SupervisorIdentity.from_ping_result(result)
+        assert identity is not None
         return EnsureSupervisorResult(
             attached=True,
             started=False,
-            pid=_read_lock_pid(paths.lock),
+            pid=identity.pid,
         )
 
     startup_lock = startup_lock_path(paths)
     lock_result = acquire_lock_at(startup_lock)
     if isinstance(lock_result, str):
-        return _wait_for_peer_startup(
+        result = _wait_for_peer_startup(
             paths,
             readiness_timeout=readiness_timeout,
             poll_interval=poll_interval,
         )
+        _raise_if_incompatible(paths)
+        return result
 
     child_pid: int | None = None
     try:

@@ -720,7 +720,12 @@ def _cmd_digest(args: argparse.Namespace) -> int:
 
 def _cmd_supervisor_start(args: argparse.Namespace) -> int:
     import logging
+    import os
+    import threading
+    from datetime import datetime, timezone
+
     from .runtime_paths import resolve_runtime_paths
+    from .supervisor_identity import build_ping_result
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
     log = logging.getLogger("supervisor")
@@ -789,13 +794,22 @@ def _cmd_supervisor_start(args: argparse.Namespace) -> int:
     # Build handler that delegates to methods + system commands
     from .supervisor_protocol import RequestEnvelope, ResponseEnvelope, PROTOCOL_VERSION
 
+    supervisor_pid = os.getpid()
+    supervisor_started_at = datetime.now(timezone.utc).isoformat()
+
     def handler(request: RequestEnvelope) -> ResponseEnvelope:
         if request.method == "system.ping":
+            status = sup.status()
             return ResponseEnvelope(
                 protocol_version=PROTOCOL_VERSION,
                 request_id=request.request_id,
                 ok=True,
-                result={"pong": True, **sup.status()},
+                result=build_ping_result(
+                    pid=supervisor_pid,
+                    started_at=supervisor_started_at,
+                    active_workers=int(status.get("active_tasks", 0)),
+                    extra=status,
+                ),
                 error=None,
             )
         if request.method == "system.shutdown":
@@ -838,6 +852,21 @@ def _cmd_supervisor_start(args: argparse.Namespace) -> int:
     tick_thread = threading.Thread(target=tick_loop, daemon=True)
     tick_thread.start()
 
+    def ownership_watchdog() -> None:
+        while not sup.is_shutdown_requested():
+            if server._server_pid is None:
+                time.sleep(0.2)
+                continue
+            if not server.owns_runtime():
+                log.warning("supervisor lost runtime ownership; shutting down")
+                sup.request_shutdown()
+                server.request_shutdown()
+                return
+            time.sleep(2.0)
+
+    watchdog_thread = threading.Thread(target=ownership_watchdog, daemon=True)
+    watchdog_thread.start()
+
     try:
         server.serve_forever()
     except SupervisorServerError as exc:
@@ -879,6 +908,29 @@ def _cmd_supervisor_status(args: argparse.Namespace) -> int:
     except Exception as exc:
         print(f"Cannot reach Supervisor: {exc}")
         return 1
+    return 0
+
+
+def _cmd_supervisor_restart(args: argparse.Namespace) -> int:
+    from .runtime_paths import resolve_runtime_paths
+    from .supervisor_process import (
+        SupervisorProcessError,
+        SupervisorReadinessError,
+        restart_supervisor,
+    )
+
+    paths = resolve_runtime_paths()
+    try:
+        result = restart_supervisor(paths)
+    except (SupervisorProcessError, SupervisorReadinessError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    print("Supervisor restarted")
+    print("Supervisor is running")
+    print(f"socket: {paths.socket}")
+    if result.pid is not None:
+        print(f"pid: {result.pid}")
     return 0
 
 
@@ -1046,6 +1098,7 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("--foreground", action="store_true")
     supervisor_subparsers.add_parser("status")
     supervisor_subparsers.add_parser("stop")
+    supervisor_subparsers.add_parser("restart")
 
     # Project commands
     project = subparsers.add_parser("project")
@@ -1112,6 +1165,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_supervisor_status(args)
     if args.command == "supervisor" and args.supervisor_command == "stop":
         return _cmd_supervisor_stop(args)
+    if args.command == "supervisor" and args.supervisor_command == "restart":
+        return _cmd_supervisor_restart(args)
     if args.command == "project" and args.project_command == "inspect":
         return _cmd_project_inspect(args)
     if args.command == "project" and args.project_command == "add":

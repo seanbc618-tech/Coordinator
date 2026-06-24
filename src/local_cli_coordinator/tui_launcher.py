@@ -13,7 +13,12 @@ from .db import connect, init_db
 from .global_migration import needs_first_run_migration, prompt_migration_or_exit
 from .projects import find_project_by_path
 from .runtime_paths import RuntimePaths, resolve_runtime_paths
-from .supervisor_process import SupervisorReadinessError, ensure_supervisor
+from .supervisor_identity import INCOMPATIBLE_SUPERVISOR_MESSAGE
+from .supervisor_process import (
+    SupervisorIncompatibleError,
+    SupervisorReadinessError,
+    ensure_supervisor,
+)
 from .tui_bundle import TuiBundleError, locate_tui_bundle
 
 ONBOARDING_PROJECT_ID = "__onboarding__"
@@ -152,6 +157,9 @@ def launch_tui(
 
     try:
         ensure_supervisor(paths)
+    except SupervisorIncompatibleError:
+        print(f"error: {INCOMPATIBLE_SUPERVISOR_MESSAGE}", file=sys.stderr)
+        return 1
     except SupervisorReadinessError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

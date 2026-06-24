@@ -1,5 +1,6 @@
 """Tests for supervisor administrative CLI commands."""
 
+import json
 import os
 import subprocess
 import sys
@@ -47,6 +48,12 @@ class SupervisorParserTest(unittest.TestCase):
         parser = build_parser()
         args = parser.parse_args(["supervisor", "stop"])
         self.assertEqual(args.supervisor_command, "stop")
+
+    def test_supervisor_restart(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["supervisor", "restart"])
+        self.assertEqual(args.command, "supervisor")
+        self.assertEqual(args.supervisor_command, "restart")
 
     def test_project_inspect(self) -> None:
         parser = build_parser()
@@ -191,6 +198,37 @@ class SupervisorCliIntegrationTests(unittest.TestCase):
         result = _run_cli_with_home(self.home, "supervisor", "start")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Supervisor is running", result.stdout)
+
+        status = _run_cli_with_home(self.home, "supervisor", "status")
+        self.assertEqual(status.returncode, 0, status.stderr)
+        self.assertIn("Supervisor is running", status.stdout)
+
+    def test_supervisor_restart_replaces_process(self) -> None:
+        self._start_supervisor()
+        lock_path = self.home / "state" / "supervisor.lock"
+        old_pid = int(json.loads(lock_path.read_text(encoding="utf-8"))["pid"])
+
+        restart = _run_cli_with_home(self.home, "supervisor", "restart")
+        self.assertEqual(restart.returncode, 0, restart.stderr)
+        self.assertIn("Supervisor restarted", restart.stdout)
+
+        deadline = time.time() + 10.0
+        new_pid: int | None = None
+        while time.time() < deadline:
+            if not lock_path.exists():
+                time.sleep(0.05)
+                continue
+            new_pid = int(json.loads(lock_path.read_text(encoding="utf-8"))["pid"])
+            if new_pid != old_pid:
+                break
+            time.sleep(0.05)
+        self.assertIsNotNone(new_pid)
+        assert new_pid is not None
+        self.assertNotEqual(new_pid, old_pid)
+
+        socket_path = self.home / "state" / "coordinator.sock"
+        self.assertTrue(socket_path.exists())
+        self.assertTrue(lock_path.exists())
 
         status = _run_cli_with_home(self.home, "supervisor", "status")
         self.assertEqual(status.returncode, 0, status.stderr)

@@ -16,11 +16,19 @@ from unittest import mock
 
 from local_cli_coordinator.locks import acquire_lock_at, release_lock_at
 from local_cli_coordinator.runtime_paths import RuntimePaths
+from local_cli_coordinator.supervisor_identity import (
+    REQUIRED_CLIENT_CAPABILITIES,
+    RUNTIME_COMPATIBILITY,
+    SupervisorIdentity,
+    is_compatible_identity,
+)
 from local_cli_coordinator.supervisor_process import (
     EnsureSupervisorResult,
+    SupervisorIncompatibleError,
     SupervisorReadinessError,
     ensure_supervisor,
     ping_supervisor,
+    ping_supervisor_identity,
     startup_lock_path,
     supervisor_log_path,
     supervisor_spawn_argv,
@@ -398,6 +406,50 @@ class EnsureSupervisorTests(SupervisorProcessTestBase):
                 return_value=None,
             ):
                 ensure_supervisor(self.paths, readiness_timeout=1.0)
+
+
+class SupervisorRuntimeIdentityTests(SupervisorProcessTestBase):
+    def test_system_ping_exposes_runtime_identity(self) -> None:
+        self._start_foreground_supervisor()
+        response = send_request(self.paths.socket, _ping_request("identity-check"))
+        self.assertTrue(response.ok, response.error)
+        self.assertIsNotNone(response.result)
+
+        result = response.result or {}
+        self.assertTrue(result.get("pong"))
+        self.assertIn("pid", result)
+        self.assertEqual(result.get("runtime_compatibility"), RUNTIME_COMPATIBILITY)
+        self.assertEqual(
+            set(result.get("capabilities", [])),
+            set(REQUIRED_CLIENT_CAPABILITIES),
+        )
+        self.assertIn("started_at", result)
+        self.assertIn("active_workers", result)
+        self.assertIsInstance(result.get("active_workers"), int)
+
+        identity = SupervisorIdentity.from_ping_result(result)
+        self.assertIsNotNone(identity)
+        assert identity is not None
+        self.assertTrue(is_compatible_identity(identity))
+
+    def test_ping_supervisor_identity_returns_structured_result(self) -> None:
+        self._start_foreground_supervisor()
+        identity = ping_supervisor_identity(self.paths)
+        self.assertIsNotNone(identity)
+        assert identity is not None
+        self.assertEqual(identity.runtime_compatibility, RUNTIME_COMPATIBILITY)
+        self.assertTrue(is_compatible_identity(identity))
+        self.assertTrue(ping_supervisor(self.paths))
+
+    def test_incompatible_supervisor_is_rejected(self) -> None:
+        with mock.patch(
+            "local_cli_coordinator.supervisor_process._supervisor_ping_result",
+            return_value={"pong": True},
+        ):
+            self.assertIsNone(ping_supervisor_identity(self.paths))
+            self.assertFalse(ping_supervisor(self.paths))
+            with self.assertRaises(SupervisorIncompatibleError):
+                ensure_supervisor(self.paths)
 
 
 class SupervisorStartCliTests(SupervisorProcessTestBase):

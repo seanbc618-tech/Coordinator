@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import errno
 import json
+import os
 import queue
 import socket
 import threading
 from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
-from local_cli_coordinator.locks import LockInfo, acquire_lock_at, release_lock_at
+from local_cli_coordinator.locks import LockInfo, _read_lock, acquire_lock_at, release_lock_at
+from local_cli_coordinator.supervisor_identity import build_ping_result
 from local_cli_coordinator.supervisor_protocol import (
     PROTOCOL_VERSION,
     ProtocolError,
@@ -57,6 +60,8 @@ class SupervisorServer:
         self._server_socket: socket.socket | None = None
         self._client_threads: list[threading.Thread] = []
         self._threads_lock = threading.Lock()
+        self._started_at: str | None = None
+        self._server_pid: int | None = None
 
     def request_shutdown(self) -> None:
         self._shutdown.set()
@@ -67,10 +72,22 @@ class SupervisorServer:
             except OSError:
                 pass
 
+    def owns_runtime(self) -> bool:
+        """Return True when this process still owns the Supervisor lock and socket."""
+        if self._server_pid is None:
+            return False
+        lock = _read_lock(self._paths.lock)
+        if lock is None or lock.pid != self._server_pid:
+            return False
+        return self._paths.socket.exists()
+
     def serve_forever(self) -> None:
         lock_result = acquire_lock_at(self._paths.lock)
         if isinstance(lock_result, str):
             raise SupervisorServerError(lock_result)
+
+        self._server_pid = os.getpid()
+        self._started_at = datetime.now(timezone.utc).isoformat()
 
         server_socket: socket.socket | None = None
         try:
@@ -82,6 +99,9 @@ class SupervisorServer:
             self._paths.socket.chmod(0o600)
 
             while not self._shutdown.is_set():
+                if not self.owns_runtime():
+                    self.request_shutdown()
+                    break
                 try:
                     client_socket, _address = server_socket.accept()
                 except OSError:
@@ -182,13 +202,25 @@ class SupervisorServer:
                 error=str(exc),
             )
 
+    def _build_ping_result(self, *, active_workers: int = 0, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+        pid = self._server_pid if self._server_pid is not None else os.getpid()
+        started_at = self._started_at
+        if started_at is None:
+            started_at = datetime.now(timezone.utc).isoformat()
+        return build_ping_result(
+            pid=pid,
+            started_at=started_at,
+            active_workers=active_workers,
+            extra=extra,
+        )
+
     def _dispatch(self, request: RequestEnvelope) -> ResponseEnvelope:
         if request.method == "system.ping":
             return ResponseEnvelope(
                 protocol_version=PROTOCOL_VERSION,
                 request_id=request.request_id,
                 ok=True,
-                result={"pong": True},
+                result=self._build_ping_result(),
                 error=None,
             )
 
