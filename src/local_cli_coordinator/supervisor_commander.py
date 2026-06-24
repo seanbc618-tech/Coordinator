@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from .commander_service import CommanderChatResult, send_project_chat_message
+from .config import CoordinatorConfig, select_agent_by_role
 from .db import get_task
-from .config import CoordinatorConfig
 from .goals import active_goal_for_project, has_live_commander_run
 from .supervisor_events import EventBroker
 from .supervisor_protocol import PROTOCOL_VERSION, RequestEnvelope, ResponseEnvelope
@@ -36,11 +36,17 @@ def _error(request: RequestEnvelope, error: str) -> ResponseEnvelope:
     )
 
 
+def _task_capabilities(task: sqlite3.Row) -> list[str]:
+    return [part for part in task["capabilities"].split(",") if part]
+
+
 def publish_commander_chat_events(
     broker: EventBroker,
     conn: sqlite3.Connection,
     project_id: str,
     result: CommanderChatResult,
+    *,
+    config: CoordinatorConfig,
 ) -> None:
     broker.publish(
         conn,
@@ -93,6 +99,8 @@ def publish_commander_chat_events(
             verification_commands = [
                 line for line in task["verification_commands"].splitlines() if line
             ]
+            capabilities = _task_capabilities(task)
+            worker = select_agent_by_role(config, "worker", capabilities)
             broker.publish(
                 conn,
                 project_id,
@@ -106,6 +114,8 @@ def publish_commander_chat_events(
                     "goal": task["goal"],
                     "acceptance_criteria": task["acceptance_criteria"],
                     "verification_commands": verification_commands,
+                    "capabilities": capabilities,
+                    "agent": worker.id if worker is not None else None,
                 },
             )
 
@@ -168,7 +178,7 @@ def handle_chat_send(
         text,
         project_id=project_id,
     )
-    publish_commander_chat_events(broker, conn, project_id, result)
+    publish_commander_chat_events(broker, conn, project_id, result, config=config)
 
     if not result.succeeded:
         return _error(request, result.message)

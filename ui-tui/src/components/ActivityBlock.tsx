@@ -20,23 +20,29 @@ export function ActivityBlock({ activity, columns }: ActivityBlockProps) {
 
   // Compact: single line
   // Expanded: show output
-  const statusIcon = activity.stage.startsWith('done')
-    ? '✓'
-    : activity.stage.startsWith('verification')
-      ? '⟐'
-      : activity.stage.startsWith('review')
-        ? '◉'
-        : activity.stage.startsWith('git')
-          ? '⎇'
-          : '●'
+  const isDiagnostic = activity.stage.startsWith('commander:')
 
-  const statusColor = activity.stage.startsWith('done')
-    ? 'green'
-    : activity.stage.startsWith('verification: passed')
+  const statusIcon = isDiagnostic
+    ? '⚠'
+    : activity.stage.startsWith('done')
+      ? '✓'
+      : activity.stage.startsWith('verification')
+        ? '⟐'
+        : activity.stage.startsWith('review')
+          ? '◉'
+          : activity.stage.startsWith('git')
+            ? '⎇'
+            : '●'
+
+  const statusColor = isDiagnostic
+    ? 'yellow'
+    : activity.stage.startsWith('done')
       ? 'green'
-      : activity.stage.startsWith('verification: failed')
-        ? 'red'
-        : 'yellow'
+      : activity.stage.startsWith('verification: passed')
+        ? 'green'
+        : activity.stage.startsWith('verification: failed')
+          ? 'red'
+          : 'yellow'
 
   const verifySummary = activity.verificationCommands?.length
     ? activity.verificationCommands.join('; ')
@@ -67,6 +73,9 @@ export function ActivityBlock({ activity, columns }: ActivityBlockProps) {
         {failureNote && (
           <Text color="red">  Reason: {failureNote}</Text>
         )}
+        {isDiagnostic && !activity.expanded && activity.output.length > 0 && (
+          <Text dimColor>  {activity.output.length} diagnostic note(s) — expand for details</Text>
+        )}
       </Box>
     )
   }
@@ -87,6 +96,9 @@ export function ActivityBlock({ activity, columns }: ActivityBlockProps) {
       )}
       {activity.fallback && (
         <Text color="yellow">  ⚠ fallback: {activity.fallback.from} → {activity.fallback.to} ({activity.fallback.used}/{activity.fallback.limit})</Text>
+      )}
+      {isDiagnostic && activity.output.length > 0 && (
+        <Text dimColor>  Diagnostics:</Text>
       )}
       {outputLines.map((line, i) => (
         <Text key={i} dimColor>  {line.slice(0, Math.max(columns - 4, 20))}</Text>

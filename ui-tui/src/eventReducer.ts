@@ -59,6 +59,8 @@ export function reduceEvent(state: TuiState, event: EventEnvelope, projectId?: s
       return reduceTaskFallback(newState, event.payload)
     case 'task.done':
       return reduceTaskDone(newState, event.payload)
+    case 'commander.completed':
+      return reduceCommanderCompleted(newState, event.payload)
     case 'tick_scheduled':
     case 'cycle_complete':
       // Internal supervisor events — no TUI state change
@@ -219,6 +221,24 @@ function reduceTaskFallback(state: TuiState, payload: Record<string, unknown>): 
       used: Number(payload.used ?? 0),
       limit: Number(payload.limit ?? 1),
     },
+  })
+}
+
+function reduceCommanderCompleted(state: TuiState, payload: Record<string, unknown>): TuiState {
+  const rejectionReasons = Array.isArray(payload.rejection_reasons)
+    ? payload.rejection_reasons.map(String).filter(Boolean)
+    : []
+  if (rejectionReasons.length === 0) {
+    return state
+  }
+
+  const runId = payload.run_id != null ? String(payload.run_id) : 'latest'
+  const taskId = `commander-${runId}`
+  return upsertActivity(state, taskId, {
+    title: 'Commander diagnostics',
+    stage: 'commander: diagnostics',
+    startedAt: Date.now(),
+    output: rejectionReasons,
   })
 }
 

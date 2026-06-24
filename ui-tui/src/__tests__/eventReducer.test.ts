@@ -253,6 +253,34 @@ describe('reduceEvent', () => {
     expect(result.transcript[0]).toMatchObject({ text: 'hello' })
   })
 
+  it('handles commander.completed rejection diagnostics', () => {
+    const state = freshState()
+    const result = reduceEvent(state, makeEvent(1, 'commander.completed', {
+      run_id: 42,
+      rejection_reasons: ['Add helper: duplicate title for goal'],
+      succeeded: true,
+    }))
+    const diagnostic = result.activities.get('commander-42')
+    expect(diagnostic).toMatchObject({
+      title: 'Commander diagnostics',
+      stage: 'commander: diagnostics',
+      output: ['Add helper: duplicate title for goal'],
+    })
+    expect(result.transcript).toHaveLength(1)
+    expect(result.transcript[0]!.kind).toBe('activity')
+  })
+
+  it('ignores commander.completed without rejection reasons', () => {
+    const state = freshState()
+    const result = reduceEvent(state, makeEvent(1, 'commander.completed', {
+      run_id: 42,
+      rejection_reasons: [],
+      succeeded: true,
+    }))
+    expect(result.activities.size).toBe(0)
+    expect(result.transcript).toHaveLength(0)
+  })
+
   it('rejects foreign-project activity event', () => {
     const state = freshState()
     const foreignEvent = makeEvent(1, 'task.created', { task_id: 't1', title: 'Hack' }, 'proj-other')

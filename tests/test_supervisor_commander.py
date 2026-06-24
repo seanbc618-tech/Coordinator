@@ -398,6 +398,60 @@ class ConversationRegressionTests(unittest.TestCase):
                     f"admission token {token!r} leaked into visible text: {msg}",
                 )
 
+    def test_task_request_includes_human_outcome_details(self) -> None:
+        task_config = _test_config(
+            self.repo,
+            _write_commander_fixture(self.root),
+        )
+        task_methods = SupervisorMethods(broker=self.broker, config=task_config)
+        resp = task_methods.handle(
+            self.conn,
+            _request(
+                "chat.send",
+                self.project_id,
+                text="创建一个只读任务，运行 uv run ruff check src/ tests/ 并报告结果。",
+            ),
+        )
+        self.assertTrue(resp.ok, resp.error)
+        combined = "\n".join(self._coordinator_messages())
+        self.assertIn("已创建 1 个任务", combined)
+        self.assertIn("Add helper", combined)
+        self.assertNotIn("|", combined)
+
+        events = self.broker.replay(self.conn, self.project_id)
+        created = [e for e in events if e.event_type == "task.created"]
+        self.assertTrue(created)
+        self.assertEqual(created[-1].payload.get("agent"), "worker")
+
+    def test_duplicate_proposal_shows_operator_language(self) -> None:
+        task_config = _test_config(
+            self.repo,
+            _write_commander_fixture(self.root),
+        )
+        task_methods = SupervisorMethods(broker=self.broker, config=task_config)
+        first = task_methods.handle(
+            self.conn,
+            _request("chat.send", self.project_id, text="请创建 helper 任务"),
+        )
+        self.assertTrue(first.ok, first.error)
+        existing = self._tasks_created()[0]
+
+        second = task_methods.handle(
+            self.conn,
+            _request("chat.send", self.project_id, text="再创建一次 helper 任务"),
+        )
+        self.assertTrue(second.ok, second.error)
+        combined = "\n".join(self._coordinator_messages())
+        self.assertIn("没有创建重复任务", combined)
+        self.assertIn(existing["id"], combined)
+        self.assertNotIn("duplicate title", combined.lower())
+
+        events = self.broker.replay(self.conn, self.project_id)
+        diagnostics = [
+            e for e in events if e.event_type == "commander.completed"
+        ]
+        self.assertTrue(any(e.payload.get("rejection_reasons") for e in diagnostics))
+
 
 if __name__ == "__main__":
     unittest.main()

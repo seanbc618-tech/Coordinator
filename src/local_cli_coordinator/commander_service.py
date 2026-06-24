@@ -23,7 +23,7 @@ from .commander_runner import (
     run_commander,
 )
 from .config import CoordinatorConfig
-from .db import create_task, next_ready_task
+from .db import create_task, get_task, next_ready_task
 from .reporting import NULL_REPORTER, Reporter
 from .goals import (
     add_commander_message,
@@ -164,12 +164,83 @@ def confirm_goal(
     return f"goal {goal_id} activated"
 
 
+def _task_capabilities(task: sqlite3.Row) -> list[str]:
+    return [part for part in task["capabilities"].split(",") if part]
+
+
+def _duplicate_task_reference(
+    conn: sqlite3.Connection,
+    goal_id: int,
+    proposal_title: str,
+) -> tuple[str, str] | None:
+    row = conn.execute(
+        """
+        select t.id, t.state
+        from tasks t
+        join task_goal_links tgl on tgl.task_id = t.id
+        where tgl.goal_id = ?
+          and lower(t.title) = lower(?)
+          and t.state not in ('done', 'failed', 'rejected')
+        order by t.created_at desc
+        limit 1
+        """,
+        (goal_id, proposal_title.strip()),
+    ).fetchone()
+    if row is None:
+        return None
+    return str(row["id"]), str(row["state"])
+
+
+def _humanize_rejection(
+    conn: sqlite3.Connection,
+    goal_id: int,
+    reason_line: str,
+) -> str | None:
+    if ":" not in reason_line:
+        return None
+    title, reason = reason_line.split(":", 1)
+    lowered = reason.strip().lower()
+    if "duplicate title" not in lowered and "duplicate fingerprint" not in lowered:
+        return None
+    reference = _duplicate_task_reference(conn, goal_id, title.strip())
+    if reference is None:
+        return "没有创建重复任务；已有同类任务正在运行。"
+    task_id, state = reference
+    return f"没有创建重复任务；已有同类任务 {task_id} 正在 {state}。"
+
+
+def _format_admitted_task_lines(
+    conn: sqlite3.Connection,
+    task_ids: list[str],
+) -> list[str]:
+    if not task_ids:
+        return []
+    count = len(task_ids)
+    lines = [f"已创建 {count} 个任务。" if count > 1 else "已创建 1 个任务。"]
+    for task_id in task_ids:
+        task = get_task(conn, task_id)
+        lines.append(f"{task_id} [{task['state']}] {task['title']}")
+        verification_commands = [
+            line for line in task["verification_commands"].splitlines() if line.strip()
+        ]
+        if verification_commands:
+            lines.append(f"Verify: {'; '.join(verification_commands)}")
+    return lines
+
+
 def _format_commander_reply(
+    conn: sqlite3.Connection,
+    goal_id: int,
     response: CommanderResponse,
     admission: CommanderAdmissionResult,
 ) -> str:
-    del admission
-    return response.user_reply
+    parts = [response.user_reply.rstrip()]
+    parts.extend(_format_admitted_task_lines(conn, admission.accepted_task_ids))
+    for reason_line in admission.rejection_reasons:
+        human = _humanize_rejection(conn, goal_id, reason_line)
+        if human and human not in parts:
+            parts.append(human)
+    return "\n".join(parts)
 
 
 def send_project_chat_message(
@@ -236,7 +307,7 @@ def send_project_chat_message(
         project_id=project_id,
     )
     update_goal_progress(conn, goal_id, response.progress_summary)
-    message = _format_commander_reply(response, admission)
+    message = _format_commander_reply(conn, goal_id, response, admission)
     add_commander_message(conn, goal_id, "assistant", message)
     return CommanderChatResult(
         message=message,
