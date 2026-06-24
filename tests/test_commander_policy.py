@@ -42,8 +42,11 @@ def _proposal(**overrides) -> CommanderTaskProposal:
 
 
 def _response(*tasks: CommanderTaskProposal) -> CommanderResponse:
+    intent = "task_request" if tasks else "conversation"
     return CommanderResponse(
-        schema_version=1,
+        schema_version=2,
+        intent=intent,
+        user_reply="I'll create the requested tasks.",
         goal_status="active",
         progress_summary="Ready for first slice",
         tasks=list(tasks),
