@@ -147,6 +147,33 @@ run_discovery_before_tasks = true
         printed = " ".join(str(c) for c in mock_print.call_args_list)
         self.assertIn("Commander: 收到", printed)
 
+    def test_greeting_creates_zero_tasks_via_bridge(self) -> None:
+        """Greetings/questions must not create any tasks through the bridge."""
+        conn = connect(self.root / "coordinator.db")
+        init_db(conn)
+        goal_id = create_goal(conn, "Roadmap", "Finish roadmap")
+        run_id = start_commander_run(conn, goal_id, "initial_plan", 1, Path("/tmp/p.md"))
+        finish_commander_run(conn, run_id, status="succeeded")
+        transition_goal(conn, goal_id, "active")
+        conn.close()
+
+        # The mock send_chat_message returns a plain conversation reply.
+        with patch("builtins.input", side_effect=["你好", "/quit"]):
+            with patch(
+                "local_cli_coordinator.cli.send_chat_message",
+                return_value="你好！有什么可以帮你的吗？",
+            ):
+                with patch("builtins.print"):
+                    result = _cmd_chat(_make_args(self.root))
+        self.assertEqual(result, 0)
+
+        # Verify no tasks were created in the database.
+        conn = connect(self.root / "coordinator.db")
+        init_db(conn)
+        tasks = conn.execute("select * from tasks").fetchall()
+        conn.close()
+        self.assertEqual(tasks, [])
+
 
 if __name__ == "__main__":
     unittest.main()

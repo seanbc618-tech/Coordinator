@@ -38,6 +38,14 @@ from local_cli_coordinator.supervisor_protocol import RequestEnvelope
 
 _PYTHON = sys.executable
 
+# Admission-language tokens that must never appear in visible user replies.
+_ADMISSION_LEAK_TOKENS = [
+    "duplicate title",
+    "linked task",
+    "admission",
+    "no duplicate",
+]
+
 
 def _request(method: str, project_id: str, **params) -> RequestEnvelope:
     return RequestEnvelope(
@@ -73,6 +81,27 @@ def _write_commander_fixture(tmp_dir: Path) -> str:
                 }],
                 "stop_reason": None,
             }
+            print(json.dumps(response))
+            """
+        ).strip()
+    )
+    return f"{_PYTHON} {script}"
+
+
+def _write_conversation_fixture(tmp_dir: Path, summary: str = "Greeting acknowledged") -> str:
+    """Commander fixture that returns zero tasks (pure conversation)."""
+    script = tmp_dir / "fixture_conversation.py"
+    script.write_text(
+        textwrap.dedent(
+            f"""
+            import json
+            response = {{
+                "schema_version": 1,
+                "goal_status": "active",
+                "progress_summary": {json.dumps(summary)},
+                "tasks": [],
+                "stop_reason": None,
+            }}
             print(json.dumps(response))
             """
         ).strip()
@@ -252,6 +281,117 @@ class ChatSendBridgeTests(unittest.TestCase):
             (self.goal_id,),
         ).fetchall()
         self.assertIn("assistant", {m["role"] for m in msgs})
+
+
+class ConversationRegressionTests(unittest.TestCase):
+    """Greetings and questions must create zero tasks; admission internals
+    must never leak into visible Commander text."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.repo = _git_repo(self.root)
+        self.conn = connect(self.root / "coordinator.db")
+        init_db(self.conn)
+        self.broker = EventBroker()
+        # Use conversation fixture (no tasks) by default.
+        self.config = _test_config(
+            self.repo,
+            _write_conversation_fixture(self.root),
+        )
+        self.methods = SupervisorMethods(broker=self.broker, config=self.config)
+        draft = inspect_project(self.repo)
+        self.project_id = register_project(self.conn, draft, confirmed=True)
+        self.goal_id = create_goal(
+            self.conn,
+            "Roadmap",
+            "Finish roadmap",
+            project_id=self.project_id,
+            repo_ids=["demo"],
+        )
+        run_id = start_commander_run(
+            self.conn, self.goal_id, "initial_plan", 1, Path("/tmp/prompt.md")
+        )
+        finish_commander_run(self.conn, run_id, status="succeeded")
+        transition_goal(self.conn, self.goal_id, "active")
+
+    def tearDown(self) -> None:
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def _tasks_created(self) -> list[dict]:
+        rows = self.conn.execute("select * from tasks").fetchall()
+        return [dict(r) for r in rows]
+
+    def _coordinator_messages(self) -> list[str]:
+        events = self.broker.replay(self.conn, self.project_id)
+        return [
+            e.payload.get("text", "")
+            for e in events
+            if e.event_type == "chat.message"
+            and e.payload.get("role") == "coordinator"
+        ]
+
+    # --- Task 0 assertions: greetings create zero tasks ---
+
+    def test_greeting_ni_hao_creates_zero_tasks(self) -> None:
+        resp = self.methods.handle(
+            self.conn,
+            _request("chat.send", self.project_id, text="你好"),
+        )
+        self.assertTrue(resp.ok, resp.error)
+        self.assertEqual(self._tasks_created(), [])
+
+    def test_greeting_question_marks_creates_zero_tasks(self) -> None:
+        resp = self.methods.handle(
+            self.conn,
+            _request("chat.send", self.project_id, text="？？？"),
+        )
+        self.assertTrue(resp.ok, resp.error)
+        self.assertEqual(self._tasks_created(), [])
+
+    def test_greeting_how_to_start_creates_zero_tasks(self) -> None:
+        resp = self.methods.handle(
+            self.conn,
+            _request("chat.send", self.project_id, text="如何启动？"),
+        )
+        self.assertTrue(resp.ok, resp.error)
+        self.assertEqual(self._tasks_created(), [])
+
+    # --- Explicit task request CAN create work ---
+
+    def test_explicit_task_request_can_create_work(self) -> None:
+        task_config = _test_config(
+            self.repo,
+            _write_commander_fixture(self.root),
+        )
+        task_methods = SupervisorMethods(broker=self.broker, config=task_config)
+        resp = task_methods.handle(
+            self.conn,
+            _request(
+                "chat.send",
+                self.project_id,
+                text="创建一个只读任务，运行 uv run ruff check src/ tests/ 并报告结果。",
+            ),
+        )
+        self.assertTrue(resp.ok, resp.error)
+        self.assertGreater(len(self._tasks_created()), 0)
+
+    # --- Admission language must not leak into visible text ---
+
+    def test_visible_text_hides_admission_language(self) -> None:
+        resp = self.methods.handle(
+            self.conn,
+            _request("chat.send", self.project_id, text="你好"),
+        )
+        self.assertTrue(resp.ok, resp.error)
+        for msg in self._coordinator_messages():
+            for token in _ADMISSION_LEAK_TOKENS:
+                self.assertNotIn(
+                    token,
+                    msg.lower(),
+                    f"admission token {token!r} leaked into visible text: {msg}",
+                )
 
 
 if __name__ == "__main__":
