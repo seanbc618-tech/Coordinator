@@ -53,6 +53,7 @@ def publish_commander_chat_events(
         },
     )
     if result.run_id is not None:
+        admission = result.admission
         broker.publish(
             conn,
             project_id,
@@ -60,15 +61,16 @@ def publish_commander_chat_events(
             {
                 "goal_id": result.goal_id,
                 "run_id": result.run_id,
-                "admitted": (
-                    len(result.admission.accepted_task_ids)
-                    if result.admission
-                    else 0
+                "intent": result.intent,
+                "user_reply": result.message,
+                "progress_summary": result.progress_summary,
+                "admitted": len(admission.accepted_task_ids) if admission else 0,
+                "rejected": len(admission.rejection_reasons) if admission else 0,
+                "accepted_task_ids": (
+                    list(admission.accepted_task_ids) if admission else []
                 ),
-                "rejected": (
-                    len(result.admission.rejection_reasons)
-                    if result.admission
-                    else 0
+                "rejection_reasons": (
+                    list(admission.rejection_reasons) if admission else []
                 ),
                 "succeeded": result.succeeded,
             },

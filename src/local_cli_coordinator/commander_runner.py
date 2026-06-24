@@ -13,6 +13,14 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from .commander_protocol import (
+    COMMANDER_SCHEMA_VERSION,
+    CommanderResponse,
+    CommanderTaskProposal,
+    commander_response_schema,
+    commander_trigger_instructions,
+    parse_commander_response,
+)
 from .config import CoordinatorConfig, select_agent_by_role
 from .goals import (
     acquire_commander_run_slot,
@@ -25,8 +33,6 @@ from .goals import (
 from .process import run_command
 from .reporting import NULL_REPORTER, ExecutionContext, Reporter
 
-COMMANDER_SCHEMA_VERSION = 1
-COMMANDER_GOAL_STATUSES = frozenset({"active", "blocked", "completed"})
 MAX_CONTEXT_CHARS = 20_000
 MAX_LINKED_TASKS = 20
 MAX_MESSAGES = 5
@@ -47,29 +53,6 @@ class CommanderRunResult:
     exit_code: int
     timed_out: bool
     error: str | None
-
-
-@dataclass(frozen=True)
-class CommanderTaskProposal:
-    title: str
-    repo: str
-    capabilities: list[str]
-    goal: str
-    acceptance_criteria: list[str]
-    verification_commands: list[str]
-    expected_files: int
-    expected_minutes: int
-    parent_task_id: str | None
-    rationale: str
-
-
-@dataclass(frozen=True)
-class CommanderResponse:
-    schema_version: int
-    goal_status: str
-    progress_summary: str
-    tasks: list[CommanderTaskProposal]
-    stop_reason: str | None
 
 
 # ---------------------------------------------------------------------------
@@ -199,168 +182,6 @@ def _render_command_tokens(
 
 
 # ---------------------------------------------------------------------------
-# Response parsing
-# ---------------------------------------------------------------------------
-
-def parse_commander_response(raw: str) -> CommanderResponse:
-    """Parse and validate a Commander JSON response.
-
-    Raises ValueError on any schema violation.
-    """
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"invalid JSON: {exc}") from exc
-
-    if not isinstance(data, dict):
-        raise ValueError("response must be a JSON object")
-
-    # Check for unknown fields
-    allowed = {"schema_version", "goal_status", "progress_summary", "tasks", "stop_reason"}
-    unknown = set(data.keys()) - allowed
-    if unknown:
-        raise ValueError(f"unknown fields: {unknown}")
-
-    # Check required fields
-    for field in allowed:
-        if field not in data:
-            raise ValueError(f"missing required field: {field}")
-
-    # Validate schema_version
-    if data["schema_version"] != COMMANDER_SCHEMA_VERSION:
-        raise ValueError(
-            f"unsupported schema version: {data['schema_version']}, "
-            f"expected {COMMANDER_SCHEMA_VERSION}"
-        )
-
-    # Validate goal_status
-    if data["goal_status"] not in COMMANDER_GOAL_STATUSES:
-        raise ValueError(
-            f"unsupported goal status: {data['goal_status']!r}, "
-            f"expected one of {COMMANDER_GOAL_STATUSES}"
-        )
-
-    # Validate progress_summary
-    if not isinstance(data["progress_summary"], str) or not data["progress_summary"].strip():
-        raise ValueError("progress_summary must be a non-empty string")
-
-    # Validate stop_reason for completed status
-    if data["goal_status"] == "completed" and not data.get("stop_reason"):
-        raise ValueError("completed status requires a stop_reason")
-
-    # Validate tasks
-    tasks_raw = data.get("tasks", [])
-    if not isinstance(tasks_raw, list):
-        raise ValueError("tasks must be a list")
-    if len(tasks_raw) > 3:
-        raise ValueError(f"too many tasks: {len(tasks_raw)}, max 3")
-
-    tasks = []
-    for i, task_raw in enumerate(tasks_raw):
-        tasks.append(_parse_task_proposal(task_raw, i))
-
-    return CommanderResponse(
-        schema_version=data["schema_version"],
-        goal_status=data["goal_status"],
-        progress_summary=data["progress_summary"],
-        tasks=tasks,
-        stop_reason=data.get("stop_reason"),
-    )
-
-
-def _parse_task_proposal(raw: dict, index: int) -> CommanderTaskProposal:
-    """Parse a single task proposal."""
-    if not isinstance(raw, dict):
-        raise ValueError(f"task {index} must be a JSON object")
-
-    allowed = {
-        "title", "repo", "capabilities", "goal", "acceptance_criteria",
-        "verification_commands", "expected_files", "expected_minutes",
-        "parent_task_id", "rationale",
-    }
-    unknown = set(raw.keys()) - allowed
-    if unknown:
-        raise ValueError(f"task {index} has unknown fields: {unknown}")
-
-    for field in allowed:
-        if field not in raw:
-            raise ValueError(f"task {index} missing required field: {field}")
-
-    # Validate strings are non-empty
-    for str_field in ("title", "repo", "goal", "rationale"):
-        if not isinstance(raw[str_field], str) or not raw[str_field].strip():
-            raise ValueError(f"task {index} {str_field} must be a non-empty string")
-
-    # Validate lists
-    for list_field in ("capabilities", "acceptance_criteria", "verification_commands"):
-        if not isinstance(raw[list_field], list):
-            raise ValueError(f"task {index} {list_field} must be a list")
-
-    if len(raw["acceptance_criteria"]) > 5:
-        raise ValueError(f"task {index} has too many acceptance criteria: {len(raw['acceptance_criteria'])}")
-
-    # Validate numeric fields
-    if not isinstance(raw["expected_files"], int) or raw["expected_files"] < 0:
-        raise ValueError(f"task {index} expected_files must be a non-negative integer")
-    if not isinstance(raw["expected_minutes"], int) or raw["expected_minutes"] < 0:
-        raise ValueError(f"task {index} expected_minutes must be a non-negative integer")
-
-    return CommanderTaskProposal(
-        title=raw["title"],
-        repo=raw["repo"],
-        capabilities=raw["capabilities"],
-        goal=raw["goal"],
-        acceptance_criteria=raw["acceptance_criteria"],
-        verification_commands=raw["verification_commands"],
-        expected_files=raw["expected_files"],
-        expected_minutes=raw["expected_minutes"],
-        parent_task_id=raw.get("parent_task_id"),
-        rationale=raw["rationale"],
-    )
-
-
-def commander_response_schema() -> dict:
-    """Return the JSON schema for Commander responses."""
-    return {
-        "type": "object",
-        "required": ["schema_version", "goal_status", "progress_summary", "tasks", "stop_reason"],
-        "properties": {
-            "schema_version": {"type": "integer", "const": 1},
-            "goal_status": {"type": "string", "enum": ["active", "blocked", "completed"]},
-            "progress_summary": {"type": "string", "minLength": 1},
-            "tasks": {
-                "type": "array",
-                "maxItems": 3,
-                "items": {
-                    "type": "object",
-                    "required": [
-                        "title", "repo", "capabilities", "goal",
-                        "acceptance_criteria", "verification_commands",
-                        "expected_files", "expected_minutes",
-                        "parent_task_id", "rationale",
-                    ],
-                    "properties": {
-                        "title": {"type": "string", "minLength": 1},
-                        "repo": {"type": "string", "minLength": 1},
-                        "capabilities": {"type": "array", "items": {"type": "string"}},
-                        "goal": {"type": "string", "minLength": 1},
-                        "acceptance_criteria": {"type": "array", "items": {"type": "string"}, "maxItems": 5},
-                        "verification_commands": {"type": "array", "items": {"type": "string"}},
-                        "expected_files": {"type": "integer", "minimum": 0},
-                        "expected_minutes": {"type": "integer", "minimum": 0},
-                        "parent_task_id": {"type": ["string", "null"]},
-                        "rationale": {"type": "string", "minLength": 1},
-                    },
-                    "additionalProperties": False,
-                },
-            },
-            "stop_reason": {"type": ["string", "null"]},
-        },
-        "additionalProperties": False,
-    }
-
-
-# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 
@@ -443,6 +264,9 @@ def run_commander(
         raise ValueError("no agent configured with 'commander' role")
 
     context = build_commander_context(conn, config, root, goal_id, rejected_fingerprints)
+    trigger_instructions = commander_trigger_instructions(trigger)
+    if trigger_instructions:
+        context = f"{context}\n\n{trigger_instructions}"
 
     goal = get_goal(conn, goal_id)
     repo_ids = json.loads(goal["repo_ids"])
@@ -573,6 +397,8 @@ def run_commander(
             parsed_output_path = raw_output_path.parent / "parsed.json"
             parsed_output_path.write_text(json.dumps({
                 "schema_version": response.schema_version,
+                "intent": response.intent,
+                "user_reply": response.user_reply,
                 "goal_status": response.goal_status,
                 "progress_summary": response.progress_summary,
                 "tasks": [

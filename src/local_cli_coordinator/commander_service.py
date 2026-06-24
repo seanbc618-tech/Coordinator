@@ -50,6 +50,8 @@ class CommanderChatResult:
     run_id: int | None
     admission: CommanderAdmissionResult | None
     succeeded: bool
+    intent: str | None = None
+    progress_summary: str | None = None
 
 
 @dataclass(frozen=True)
@@ -166,12 +168,8 @@ def _format_commander_reply(
     response: CommanderResponse,
     admission: CommanderAdmissionResult,
 ) -> str:
-    parts = [f"Commander: {response.progress_summary}"]
-    if admission.accepted_task_ids:
-        parts.append(f"admitted {len(admission.accepted_task_ids)} task(s)")
-    if admission.rejection_reasons:
-        parts.append("rejected: " + "; ".join(admission.rejection_reasons))
-    return " | ".join(parts)
+    del admission
+    return response.user_reply
 
 
 def send_project_chat_message(
@@ -246,6 +244,8 @@ def send_project_chat_message(
         run_id=result.run_id,
         admission=admission,
         succeeded=True,
+        intent=response.intent,
+        progress_summary=response.progress_summary,
     )
 
 

@@ -44,7 +44,9 @@ def _write_fixture_script(tmp_dir: Path) -> Path:
     script.write_text('''
 import json
 response = {
-    "schema_version": 1,
+    "schema_version": 2,
+    "intent": "task_request",
+    "user_reply": "Ready to start the first slice.",
     "goal_status": "active",
     "progress_summary": "Ready",
     "tasks": [
@@ -245,7 +247,8 @@ class CommanderRunnerTests(unittest.TestCase):
             "import json, sys\n"
             "print('progress', file=sys.stderr, flush=True)\n"
             "print(json.dumps({"
-            "'schema_version': 1, 'goal_status': 'active', 'progress_summary': 'Ready', "
+            "'schema_version': 2, 'intent': 'task_request', 'user_reply': 'Ready', "
+            "'goal_status': 'active', 'progress_summary': 'Ready', "
             "'tasks': [], 'stop_reason': None"
             "}))\n"
             "print('stderr-msg', file=sys.stderr, flush=True)\n"
@@ -312,14 +315,18 @@ class CommanderRunnerTests(unittest.TestCase):
 class CommanderResponseParsingTests(unittest.TestCase):
     def test_valid_response_parsed(self) -> None:
         raw = json.dumps({
-            "schema_version": 1,
+            "schema_version": 2,
+            "intent": "conversation",
+            "user_reply": "Hello.",
             "goal_status": "active",
             "progress_summary": "Ready",
             "tasks": [],
             "stop_reason": None,
         })
         resp = parse_commander_response(raw)
-        self.assertEqual(resp.schema_version, 1)
+        self.assertEqual(resp.schema_version, 2)
+        self.assertEqual(resp.intent, "conversation")
+        self.assertEqual(resp.user_reply, "Hello.")
         self.assertEqual(resp.goal_status, "active")
         self.assertEqual(resp.progress_summary, "Ready")
         self.assertEqual(resp.tasks, [])
@@ -327,7 +334,9 @@ class CommanderResponseParsingTests(unittest.TestCase):
 
     def test_unknown_response_fields_are_rejected(self) -> None:
         raw = json.dumps({
-            "schema_version": 1,
+            "schema_version": 2,
+            "intent": "conversation",
+            "user_reply": "Hello.",
             "goal_status": "active",
             "progress_summary": "Ready",
             "tasks": [],
@@ -339,45 +348,52 @@ class CommanderResponseParsingTests(unittest.TestCase):
 
     def test_missing_required_field_rejected(self) -> None:
         raw = json.dumps({
-            "schema_version": 1,
+            "schema_version": 2,
+            "intent": "conversation",
             "goal_status": "active",
             "tasks": [],
             "stop_reason": None,
         })
-        with self.assertRaisesRegex(ValueError, "missing required field"):
+        with self.assertRaisesRegex(ValueError, "missing required fields"):
             parse_commander_response(raw)
 
     def test_wrong_schema_version_rejected(self) -> None:
         raw = json.dumps({
-            "schema_version": 2,
+            "schema_version": 1,
+            "intent": "conversation",
+            "user_reply": "Hello.",
             "goal_status": "active",
             "progress_summary": "Ready",
             "tasks": [],
             "stop_reason": None,
         })
-        with self.assertRaisesRegex(ValueError, "unsupported schema version"):
+        with self.assertRaisesRegex(ValueError, "unsupported schema_version"):
             parse_commander_response(raw)
 
     def test_invalid_goal_status_rejected(self) -> None:
         raw = json.dumps({
-            "schema_version": 1,
+            "schema_version": 2,
+            "intent": "conversation",
+            "user_reply": "Hello.",
             "goal_status": "invalid",
             "progress_summary": "Ready",
             "tasks": [],
             "stop_reason": None,
         })
-        with self.assertRaisesRegex(ValueError, "unsupported goal status"):
+        with self.assertRaisesRegex(ValueError, "unsupported goal_status"):
             parse_commander_response(raw)
 
     def test_completed_without_stop_reason_rejected(self) -> None:
         raw = json.dumps({
-            "schema_version": 1,
+            "schema_version": 2,
+            "intent": "conversation",
+            "user_reply": "Done.",
             "goal_status": "completed",
             "progress_summary": "Done",
             "tasks": [],
             "stop_reason": None,
         })
-        with self.assertRaisesRegex(ValueError, "completed.*stop_reason"):
+        with self.assertRaisesRegex(ValueError, "stop_reason"):
             parse_commander_response(raw)
 
     def test_too_many_tasks_rejected(self) -> None:
@@ -397,18 +413,22 @@ class CommanderResponseParsingTests(unittest.TestCase):
             for i in range(4)
         ]
         raw = json.dumps({
-            "schema_version": 1,
+            "schema_version": 2,
+            "intent": "task_request",
+            "user_reply": "Batch ready.",
             "goal_status": "active",
             "progress_summary": "Ready",
             "tasks": tasks,
             "stop_reason": None,
         })
-        with self.assertRaisesRegex(ValueError, "too many tasks"):
+        with self.assertRaisesRegex(ValueError, "at most 3 tasks"):
             parse_commander_response(raw)
 
     def test_unknown_task_field_rejected(self) -> None:
         raw = json.dumps({
-            "schema_version": 1,
+            "schema_version": 2,
+            "intent": "task_request",
+            "user_reply": "Batch ready.",
             "goal_status": "active",
             "progress_summary": "Ready",
             "tasks": [{
@@ -431,7 +451,9 @@ class CommanderResponseParsingTests(unittest.TestCase):
 
     def test_negative_expected_files_rejected(self) -> None:
         raw = json.dumps({
-            "schema_version": 1,
+            "schema_version": 2,
+            "intent": "task_request",
+            "user_reply": "Batch ready.",
             "goal_status": "active",
             "progress_summary": "Ready",
             "tasks": [{
@@ -448,18 +470,20 @@ class CommanderResponseParsingTests(unittest.TestCase):
             }],
             "stop_reason": None,
         })
-        with self.assertRaisesRegex(ValueError, "non-negative integer"):
+        with self.assertRaisesRegex(ValueError, "non-negative"):
             parse_commander_response(raw)
 
     def test_empty_progress_summary_rejected(self) -> None:
         raw = json.dumps({
-            "schema_version": 1,
+            "schema_version": 2,
+            "intent": "conversation",
+            "user_reply": "Hello.",
             "goal_status": "active",
             "progress_summary": "",
             "tasks": [],
             "stop_reason": None,
         })
-        with self.assertRaisesRegex(ValueError, "non-empty string"):
+        with self.assertRaisesRegex(ValueError, "non-blank string"):
             parse_commander_response(raw)
 
 

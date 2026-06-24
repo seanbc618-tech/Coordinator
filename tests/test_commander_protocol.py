@@ -36,6 +36,8 @@ def _valid_task(**overrides) -> dict:
 def _valid_response(**overrides) -> dict:
     base = {
         "schema_version": COMMANDER_SCHEMA_VERSION,
+        "intent": "task_request",
+        "user_reply": "Ready to start the next slice.",
         "goal_status": "active",
         "progress_summary": "Ready",
         "tasks": [_valid_task()],
@@ -51,7 +53,9 @@ class CommanderProtocolTests(unittest.TestCase):
         response = parse_commander_response(raw)
 
         self.assertIsInstance(response, CommanderResponse)
-        self.assertEqual(response.schema_version, 1)
+        self.assertEqual(response.schema_version, 2)
+        self.assertEqual(response.intent, "task_request")
+        self.assertEqual(response.user_reply, "Ready to start the next slice.")
         self.assertEqual(response.goal_status, "active")
         self.assertEqual(response.progress_summary, "Ready")
         self.assertEqual(len(response.tasks), 1)
@@ -108,9 +112,32 @@ class CommanderProtocolTests(unittest.TestCase):
             parse_commander_response(raw)
 
     def test_unsupported_schema_version_is_rejected(self) -> None:
-        raw = json.dumps(_valid_response(schema_version=2))
+        raw = json.dumps(_valid_response(schema_version=1))
         with self.assertRaisesRegex(ValueError, "unsupported schema_version"):
             parse_commander_response(raw)
+
+    def test_conversation_with_tasks_is_rejected(self) -> None:
+        raw = json.dumps(
+            _valid_response(
+                intent="conversation",
+                user_reply="你好。",
+                tasks=[_valid_task()],
+            )
+        )
+        with self.assertRaisesRegex(ValueError, "must not include tasks"):
+            parse_commander_response(raw)
+
+    def test_conversation_without_tasks_is_accepted(self) -> None:
+        raw = json.dumps(
+            _valid_response(
+                intent="conversation",
+                user_reply="你好，需要我解释状态还是创建一个小任务？",
+                tasks=[],
+            )
+        )
+        response = parse_commander_response(raw)
+        self.assertEqual(response.intent, "conversation")
+        self.assertEqual(response.tasks, [])
 
     def test_unsupported_goal_status_is_rejected(self) -> None:
         raw = json.dumps(_valid_response(goal_status="paused"))

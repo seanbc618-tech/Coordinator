@@ -2,14 +2,19 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from typing import Literal
 
-COMMANDER_SCHEMA_VERSION = 1
+COMMANDER_SCHEMA_VERSION = 2
 COMMANDER_GOAL_STATUSES = frozenset({"active", "blocked", "completed"})
+COMMANDER_INTENTS = frozenset({"conversation", "status_question", "task_request"})
+NON_TASK_INTENTS = frozenset({"conversation", "status_question"})
 MAX_COMMANDER_TASKS = 3
 MAX_ACCEPTANCE_CRITERIA = 5
 
 _RESPONSE_FIELDS = frozenset({
     "schema_version",
+    "intent",
+    "user_reply",
     "goal_status",
     "progress_summary",
     "tasks",
@@ -29,6 +34,8 @@ _TASK_FIELDS = frozenset({
     "rationale",
 })
 
+CommanderIntent = Literal["conversation", "status_question", "task_request"]
+
 
 @dataclass(frozen=True)
 class CommanderTaskProposal:
@@ -47,6 +54,8 @@ class CommanderTaskProposal:
 @dataclass(frozen=True)
 class CommanderResponse:
     schema_version: int
+    intent: str
+    user_reply: str
     goal_status: str
     progress_summary: str
     tasks: list[CommanderTaskProposal]
@@ -61,6 +70,11 @@ def commander_response_schema() -> dict:
         "required": list(_RESPONSE_FIELDS),
         "properties": {
             "schema_version": {"type": "integer", "const": COMMANDER_SCHEMA_VERSION},
+            "intent": {
+                "type": "string",
+                "enum": sorted(COMMANDER_INTENTS),
+            },
+            "user_reply": {"type": "string", "minLength": 1},
             "goal_status": {
                 "type": "string",
                 "enum": sorted(COMMANDER_GOAL_STATUSES),
@@ -102,6 +116,41 @@ def commander_response_schema() -> dict:
             },
         },
     }
+
+
+def commander_trigger_instructions(trigger: str) -> str:
+    """Return trigger-specific Commander response contract instructions."""
+    if trigger == "chat":
+        return (
+            "## Commander response contract (schema v2)\n"
+            "- Answer the latest user message directly in `user_reply`.\n"
+            "- Keep orchestration memory in `progress_summary` only.\n"
+            "- Use `intent` = `conversation` or `status_question` for greetings, "
+            "clarifications, and status questions; those intents must return "
+            "`tasks: []`.\n"
+            "- Use `intent` = `task_request` only when the user explicitly asks "
+            "for work or a concrete action.\n"
+            "- Never expose duplicate-title, admission, linked-task, or policy "
+            "diagnostics in `user_reply`.\n"
+        )
+    if trigger == "initial_plan":
+        return (
+            "## Commander response contract (schema v2)\n"
+            "- Produce the first executable batch in `tasks` with "
+            "`intent` = `task_request`.\n"
+            "- `user_reply` should briefly summarize the proposed first step "
+            "for the operator.\n"
+            "- `progress_summary` captures durable goal memory.\n"
+        )
+    if trigger == "replenishment":
+        return (
+            "## Commander response contract (schema v2)\n"
+            "- Replenish only when additional work is warranted.\n"
+            "- Use `intent` = `task_request` when proposing tasks.\n"
+            "- `user_reply` briefly explains the next batch; `progress_summary` "
+            "updates orchestration memory.\n"
+        )
+    return ""
 
 
 def _require_mapping(value: object, label: str) -> dict:
@@ -224,6 +273,14 @@ def parse_commander_response(raw: str) -> CommanderResponse:
             f"expected {COMMANDER_SCHEMA_VERSION}"
         )
 
+    intent = data["intent"]
+    if not isinstance(intent, str) or intent not in COMMANDER_INTENTS:
+        raise ValueError(
+            f"unsupported intent {intent!r}; expected one of {sorted(COMMANDER_INTENTS)}"
+        )
+
+    user_reply = _require_non_blank_string(data["user_reply"], "user_reply")
+
     goal_status = data["goal_status"]
     if not isinstance(goal_status, str) or goal_status not in COMMANDER_GOAL_STATUSES:
         raise ValueError(
@@ -252,8 +309,13 @@ def parse_commander_response(raw: str) -> CommanderResponse:
 
     tasks = [_parse_task(task, index) for index, task in enumerate(tasks_raw)]
 
+    if intent in NON_TASK_INTENTS and tasks:
+        raise ValueError(f"{intent} responses must not include tasks")
+
     return CommanderResponse(
         schema_version=schema_version,
+        intent=intent,
+        user_reply=user_reply,
         goal_status=goal_status,
         progress_summary=progress_summary,
         tasks=tasks,

@@ -12,7 +12,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from local_cli_coordinator.commander_policy import CommanderAdmissionResult
-from local_cli_coordinator.commander_runner import CommanderResponse, CommanderRunResult
+from local_cli_coordinator.commander_protocol import CommanderResponse
+from local_cli_coordinator.commander_runner import CommanderRunResult
 from local_cli_coordinator.commander_service import (
     CommanderChatResult,
     send_project_chat_message,
@@ -64,7 +65,9 @@ def _write_commander_fixture(tmp_dir: Path) -> str:
             """
             import json
             response = {
-                "schema_version": 1,
+                "schema_version": 2,
+                "intent": "task_request",
+                "user_reply": "好的，我来添加 helper 模块。",
                 "goal_status": "active",
                 "progress_summary": "Slice ready",
                 "tasks": [{
@@ -96,7 +99,9 @@ def _write_conversation_fixture(tmp_dir: Path, summary: str = "Greeting acknowle
             f"""
             import json
             response = {{
-                "schema_version": 1,
+                "schema_version": 2,
+                "intent": "conversation",
+                "user_reply": "你好！有什么可以帮你的吗？",
                 "goal_status": "active",
                 "progress_summary": {json.dumps(summary)},
                 "tasks": [],
