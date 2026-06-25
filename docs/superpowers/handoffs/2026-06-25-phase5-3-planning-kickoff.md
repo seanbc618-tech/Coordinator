@@ -58,7 +58,9 @@ Codex        → Gate E sign-off
 
 ## First Action
 
-**Claude Code:** start Task 0 — `test: capture Phase 5.3 CLI prompt regressions`
+**Claude Code:** read and execute
+`docs/superpowers/handoffs/2026-06-25-phase5-3-claude-code-task0.md`
+→ commit `test: capture Phase 5.3 CLI prompt regressions` → send hash to Grok → **stop**
 
 **Grok:** wait for Task 0 hash, then read
 `docs/superpowers/handoffs/2026-06-25-phase5-3-grok-implementation.md`
