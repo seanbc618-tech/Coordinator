@@ -1105,8 +1105,8 @@ def build_prompt_parser() -> argparse.ArgumentParser:
 
 
 def normalize_prompt_args(args: argparse.Namespace) -> None:
-    """Derive ``prompt_text`` and apply ``--print`` → ``--no-tui``."""
-    if args.print_mode:
+    """Derive ``prompt_text`` and apply headless mode flags."""
+    if args.print_mode or args.mode == "json":
         args.no_tui = True
     parts: list[str] = []
     if args.prompt_flag:

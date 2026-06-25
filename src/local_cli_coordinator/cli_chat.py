@@ -233,6 +233,8 @@ def _emit_outcome(outcome: PromptOutcome, *, mode: str) -> None:
         return
     if outcome.user_reply:
         print(outcome.user_reply)
+    if not outcome.ok and outcome.error_message:
+        print(f"error: {outcome.error_message}", file=sys.stderr)
 
 
 def run_cli_prompt(args: argparse.Namespace) -> int:

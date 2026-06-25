@@ -93,6 +93,11 @@ class CliPromptParserTests(unittest.TestCase):
         args = self._parse_prompt(["-p", "hello"])
         self.assertFalse(args.no_tui)
 
+    def test_mode_json_implies_no_tui(self) -> None:
+        args = self._parse_prompt(["--mode", "json", "-p", "hello"])
+        self.assertTrue(args.no_tui)
+        self.assertFalse(args.print_mode)
+
     def test_existing_supervisor_subcommand_unaffected(self) -> None:
         """supervisor status must still parse and run (guard: not broken by new flags)."""
         result = _run_cli_with_home(Path(tempfile.mkdtemp()), "supervisor", "status")
@@ -175,6 +180,20 @@ class CliPromptPrintRedTests(unittest.TestCase):
             result = _run_cli_with_home(self.home, "--print", "-p", "你好", cwd=self.repo)
         launch_mock.assert_not_called()
 
+    def test_json_mode_without_print_does_not_launch_tui(self) -> None:
+        """--mode json without --print must stay headless for scriptability."""
+        with mock.patch(
+            "local_cli_coordinator.tui_launcher.launch_tui",
+        ) as launch_mock:
+            result = _run_cli_with_home(
+                self.home, "--mode", "json", "-p", "/status", cwd=self.repo,
+            )
+        self.assertEqual(result.returncode, 0,
+                         "expected exit 0, got %d; stderr=%s" % (result.returncode, result.stderr[:200]))
+        launch_mock.assert_not_called()
+        data = json.loads(result.stdout)
+        self.assertTrue(data.get("ok"))
+
 
 # ---------------------------------------------------------------------------
 # 3. JSON envelope red tests
@@ -255,6 +274,27 @@ class CliPromptProjectRedTests(unittest.TestCase):
         result = _run_cli_with_home(home, "--print", "-p", "hello", cwd=not_a_repo)
         self.assertNotEqual(result.returncode, 0,
                             "should fail for unregistered repo, got exit 0")
+
+    def test_text_mode_error_emits_stderr(self) -> None:
+        """Text mode failures must print error: <message> to stderr."""
+        tmp = tempfile.TemporaryDirectory()
+        home = Path(tmp.name)
+        repo = home / "repo"
+        init_git_repo(repo)
+        paths = RuntimePaths(home / "config", home / "data", home / "state")
+        paths.create()
+        try:
+            result = _run_cli_with_home(home, "-p", "hello", cwd=repo)
+            self.assertEqual(result.returncode, 1,
+                             "expected exit 1, got %d; stderr=%s" % (result.returncode, result.stderr[:200]))
+            self.assertEqual(result.stdout, "")
+            self.assertTrue(
+                result.stderr.startswith("error: "),
+                "stderr should start with 'error: ', got %r" % result.stderr[:200],
+            )
+            self.assertIn("project not registered", result.stderr)
+        finally:
+            tmp.cleanup()
 
 
 # ---------------------------------------------------------------------------
