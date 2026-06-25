@@ -1108,11 +1108,25 @@ def normalize_prompt_args(args: argparse.Namespace) -> None:
     """Derive ``prompt_text`` and apply headless mode flags."""
     if args.print_mode or args.mode == "json":
         args.no_tui = True
+    context_tokens: list[str] = []
+    prompt_parts: list[str] = []
+    for word in args.prompt_words:
+        if word.startswith("@@"):
+            prompt_parts.append(word[1:])
+        elif word.startswith("@") and len(word) > 1:
+            context_tokens.append(word[1:])
+        else:
+            prompt_parts.append(word)
+    args.context_file_tokens = context_tokens
     parts: list[str] = []
-    if args.prompt_flag:
-        parts.append(args.prompt_flag)
-    if args.prompt_words:
-        parts.extend(args.prompt_words)
+    if context_tokens:
+        if args.prompt_flag:
+            parts.append(args.prompt_flag)
+        parts.extend(prompt_parts)
+    else:
+        parts.extend(prompt_parts)
+        if args.prompt_flag:
+            parts.append(args.prompt_flag)
     args.prompt_text = " ".join(parts).strip()
     args.command = "prompt"
 

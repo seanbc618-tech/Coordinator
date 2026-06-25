@@ -40,6 +40,7 @@ class PromptOutcome:
     accepted_task_ids: list[str] | None = None
     error_code: str | None = None
     error_message: str | None = None
+    context_files: list[dict[str, Any]] | None = None
 
     def to_json_dict(self) -> dict[str, Any]:
         return {
@@ -51,6 +52,7 @@ class PromptOutcome:
             "admitted": self.admitted,
             "rejected": self.rejected,
             "accepted_task_ids": list(self.accepted_task_ids or []),
+            "context_files": list(self.context_files or []),
             "error": (
                 {"code": self.error_code, "message": self.error_message}
                 if not self.ok
