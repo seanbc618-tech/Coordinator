@@ -17,10 +17,12 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from local_cli_coordinator.cli import build_prompt_parser, normalize_prompt_args
 from local_cli_coordinator.db import connect, init_db
 from local_cli_coordinator.goals import (
+    active_goal_for_project,
     create_goal,
     get_goal,
     transition_goal,
@@ -88,18 +90,14 @@ class GoalCandidateListingTests(unittest.TestCase):
         g1 = create_goal(
             self.conn, "Goal A", "objective A", project_id=self.project_id
         )
-        g2 = create_goal(
-            self.conn, "Goal B", "objective B", project_id=self.project_id
-        )
-        # Different project
+        # Different project (at most one non-terminal goal per project_id).
         create_goal(
             self.conn, "Other", "other project", project_id="other-project"
         )
         candidates = list_project_goal_candidates(self.conn, self.project_id)
         ids = [c["id"] for c in candidates]
         self.assertIn(g1, ids)
-        self.assertIn(g2, ids)
-        self.assertEqual(len(candidates), 2)
+        self.assertEqual(len(candidates), 1)
 
     def test_candidates_ordered_by_id_desc(self):
         """Newer goals (higher id) appear first."""
@@ -108,15 +106,17 @@ class GoalCandidateListingTests(unittest.TestCase):
         g1 = create_goal(
             self.conn, "First", "first", project_id=self.project_id
         )
+        transition_goal(self.conn, g1, "completed")
         g2 = create_goal(
             self.conn, "Second", "second", project_id=self.project_id
         )
+        transition_goal(self.conn, g2, "completed")
         g3 = create_goal(
             self.conn, "Third", "third", project_id=self.project_id
         )
         candidates = list_project_goal_candidates(self.conn, self.project_id)
         ids = [c["id"] for c in candidates]
-        self.assertEqual(ids, [g3, g2, g1])
+        self.assertEqual(ids, [g3])
 
     def test_candidates_include_linked_task_counts(self):
         """Each candidate includes linked task count."""
@@ -134,18 +134,18 @@ class GoalCandidateListingTests(unittest.TestCase):
         """Completed/failed/abandoned goals are not candidates."""
         from local_cli_coordinator.goal_sessions import list_project_goal_candidates
 
-        g1 = create_goal(
-            self.conn, "Active", "active goal", project_id=self.project_id
-        )
-        transition_goal(self.conn, g1, "active")
-        g2 = create_goal(
+        done = create_goal(
             self.conn, "Done", "completed goal", project_id=self.project_id
         )
-        transition_goal(self.conn, g2, "completed")
+        transition_goal(self.conn, done, "completed")
+        active = create_goal(
+            self.conn, "Active", "active goal", project_id=self.project_id
+        )
+        transition_goal(self.conn, active, "active")
         candidates = list_project_goal_candidates(self.conn, self.project_id)
         ids = [c["id"] for c in candidates]
-        self.assertIn(g1, ids)
-        self.assertNotIn(g2, ids)
+        self.assertIn(active, ids)
+        self.assertNotIn(done, ids)
 
 
 # ---------------------------------------------------------------------------
@@ -190,6 +190,9 @@ class GoalResumeStateTests(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _create_goal_in_state(self, state: str) -> int:
+        existing = active_goal_for_project(self.conn, self.project_id)
+        if existing is not None:
+            transition_goal(self.conn, existing["id"], "completed")
         g = create_goal(
             self.conn, f"Goal {state}", f"objective {state}",
             project_id=self.project_id,
@@ -334,35 +337,32 @@ class GoalConflictTests(unittest.TestCase):
         import shutil
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def test_resume_blocked_by_active_goal(self):
+    @mock.patch(
+        "local_cli_coordinator.goal_sessions._other_non_terminal_goals",
+        return_value=[{"id": 999}],
+    )
+    def test_resume_blocked_by_active_goal(self, _mock_others):
         from local_cli_coordinator.goal_sessions import (
             GoalSessionError,
             resume_project_goal,
         )
-        # Create an active goal (the blocker)
-        blocker = create_goal(
-            self.conn, "Blocker", "blocker", project_id=self.project_id
-        )
-        transition_goal(self.conn, blocker, "active")
-        # Create a paused goal to resume
         target = create_goal(
             self.conn, "Target", "target", project_id=self.project_id
         )
         transition_goal(self.conn, target, "paused")
-        # Resume should fail because blocker is active
         with self.assertRaises(GoalSessionError) as ctx:
             resume_project_goal(self.conn, self.project_id, target)
         self.assertEqual(ctx.exception.code, "goal_conflict")
 
-    def test_resume_blocked_by_paused_goal(self):
+    @mock.patch(
+        "local_cli_coordinator.goal_sessions._other_non_terminal_goals",
+        return_value=[{"id": 999}],
+    )
+    def test_resume_blocked_by_paused_goal(self, _mock_others):
         from local_cli_coordinator.goal_sessions import (
             GoalSessionError,
             resume_project_goal,
         )
-        blocker = create_goal(
-            self.conn, "Blocker", "blocker", project_id=self.project_id
-        )
-        transition_goal(self.conn, blocker, "paused")
         target = create_goal(
             self.conn, "Target", "target", project_id=self.project_id
         )
@@ -376,14 +376,14 @@ class GoalConflictTests(unittest.TestCase):
             GoalSessionError,
             fork_project_goal,
         )
-        blocker = create_goal(
-            self.conn, "Blocker", "blocker", project_id=self.project_id
-        )
-        transition_goal(self.conn, blocker, "active")
         source = create_goal(
             self.conn, "Source", "source", project_id=self.project_id
         )
         transition_goal(self.conn, source, "completed")
+        blocker = create_goal(
+            self.conn, "Blocker", "blocker", project_id=self.project_id
+        )
+        transition_goal(self.conn, blocker, "active")
         with self.assertRaises(GoalSessionError) as ctx:
             fork_project_goal(
                 self.conn, self.project_id, source, "continue work"
@@ -488,10 +488,33 @@ class GoalForkLineageTests(unittest.TestCase):
             self.conn, "Source", "objective", project_id=self.project_id
         )
         transition_goal(self.conn, source, "completed")
-        # Simulate linked tasks (would be done by commander_service)
         self.conn.execute(
-            "INSERT INTO task_goal_links (task_id, goal_id) VALUES (?, ?)",
-            ("task-001", source),
+            """
+            insert into tasks(
+                id, title, repo, state, priority, capabilities, source_path,
+                goal, acceptance_criteria, verification_commands, project_id
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "task-001",
+                "Linked task",
+                "repo-a",
+                "done",
+                "high",
+                "[]",
+                "",
+                "test",
+                "[]",
+                "[]",
+                self.project_id,
+            ),
+        )
+        self.conn.execute(
+            """
+            insert into task_goal_links(goal_id, task_id, proposal_fingerprint)
+            values (?, ?, ?)
+            """,
+            (source, "task-001", "fp-001"),
         )
         self.conn.commit()
         new_id = fork_project_goal(
