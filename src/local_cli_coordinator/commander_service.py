@@ -25,6 +25,7 @@ from .commander_runner import (
 from .config import CoordinatorConfig
 from .db import create_task, get_task, next_ready_task
 from .reporting import NULL_REPORTER, Reporter
+from .context_files import ContextFile, format_user_message
 from .goals import (
     add_commander_message,
     active_goal,
@@ -252,10 +253,12 @@ def send_project_chat_message(
     content: str,
     *,
     project_id: str,
+    context_files: list[ContextFile] | None = None,
     reporter: Reporter = NULL_REPORTER,
 ) -> CommanderChatResult:
     """Run Commander chat trigger, admit proposals, return structured outcome."""
-    add_commander_message(conn, goal_id, "user", content)
+    stored_content = format_user_message(content, context_files or [])
+    add_commander_message(conn, goal_id, "user", stored_content)
     try:
         result = run_commander(
             conn,
@@ -265,6 +268,7 @@ def send_project_chat_message(
             "chat",
             COMMANDER_TIMEOUT_SECONDS,
             reporter=reporter,
+            context_files=context_files,
         )
     except CommanderRunActiveError:
         message = (

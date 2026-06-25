@@ -7,6 +7,12 @@ from pathlib import Path
 from typing import Any
 
 from .commander_service import CommanderChatResult, send_project_chat_message
+from .context_files import (
+    ContextFile,
+    ContextFileError,
+    load_context_files_from_params,
+    public_metadata_from_context_files,
+)
 from .config import CoordinatorConfig, select_agent_by_role
 from .db import get_task
 from .goals import active_goal_for_project, get_goal, has_live_commander_run
@@ -166,6 +172,19 @@ def handle_chat_send(
             "Commander is already running; try again after the current run finishes.",
         )
 
+    context_params = request.params.get("context_files") or []
+    context_files: list[ContextFile] = []
+    if context_params:
+        if not isinstance(context_params, list):
+            return _error(request, "context_files must be a list")
+        try:
+            context_files = load_context_files_from_params(
+                project_root,
+                context_params,
+            )
+        except ContextFileError as exc:
+            return _error(request, str(exc))
+
     broker.publish(
         conn,
         project_id,
@@ -186,6 +205,7 @@ def handle_chat_send(
         goal_id,
         text,
         project_id=project_id,
+        context_files=context_files,
     )
     publish_commander_chat_events(broker, conn, project_id, result, config=config)
 
@@ -208,5 +228,6 @@ def handle_chat_send(
             "user_reply": result.user_reply or result.message,
             "intent": result.intent or "conversation",
             "accepted_task_ids": accepted_task_ids,
+            "context_files": public_metadata_from_context_files(context_files),
         },
     )

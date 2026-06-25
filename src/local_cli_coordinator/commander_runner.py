@@ -22,6 +22,7 @@ from .commander_protocol import (
     parse_commander_response,
 )
 from .config import CoordinatorConfig, select_agent_by_role
+from .context_files import ContextFile
 from .goals import (
     acquire_commander_run_slot,
     finish_commander_run,
@@ -254,6 +255,8 @@ def run_commander(
     timeout_seconds: float = 30,
     rejected_fingerprints: list[str] | None = None,
     reporter: Reporter = NULL_REPORTER,
+    context_files: list[ContextFile] | None = None,
+    execution_policy: dict[str, object] | None = None,
 ) -> CommanderRunResult:
     """Run the Commander agent and return structured results.
 

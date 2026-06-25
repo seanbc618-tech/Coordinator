@@ -11,6 +11,12 @@ from pathlib import Path
 from typing import Any
 
 from .commander_service import COMMANDER_TIMEOUT_SECONDS
+from .context_files import (
+    ContextFile,
+    ContextFileError,
+    load_context_files,
+    public_metadata_from_context_files,
+)
 from .db import connect, init_db
 from .goals import active_goal_for_project, latest_non_terminal_goal_for_project
 from .projects import find_project_by_path
@@ -63,6 +69,20 @@ class PromptOutcome:
 
 def _error_outcome(code: str, message: str) -> PromptOutcome:
     return PromptOutcome(ok=False, error_code=code, error_message=message)
+
+
+def _load_cli_context(
+    repo_root: Path,
+    tokens: list[str],
+    *,
+    cwd: Path,
+) -> tuple[list[ContextFile], PromptOutcome | None]:
+    if not tokens:
+        return [], None
+    try:
+        return load_context_files(repo_root, cwd, tokens), None
+    except ContextFileError as exc:
+        return [], _error_outcome(exc.code, str(exc))
 
 
 def _resolve_project(paths: RuntimePaths, git_root: Path) -> tuple[str | None, PromptOutcome | None]:
@@ -203,10 +223,13 @@ def _chat_send(
     project_id: str,
     text: str,
     goal_id: int | None,
+    context_files: list[ContextFile] | None = None,
 ) -> PromptOutcome:
     params: dict[str, Any] = {"text": text}
     if goal_id is not None:
         params["goal_id"] = goal_id
+    if context_files:
+        params["context_files"] = [{"path": item.path} for item in context_files]
     result, err = _send_rpc(
         paths,
         project_id=project_id,
@@ -217,6 +240,9 @@ def _chat_send(
     if err is not None:
         return err
     assert result is not None
+    context_metadata = result.get("context_files")
+    if not isinstance(context_metadata, list) or not context_metadata:
+        context_metadata = public_metadata_from_context_files(context_files or [])
     return PromptOutcome(
         ok=True,
         project_id=project_id,
@@ -226,6 +252,7 @@ def _chat_send(
         admitted=int(result.get("admitted") or 0),
         rejected=int(result.get("rejected") or 0),
         accepted_task_ids=list(result.get("accepted_task_ids") or []),
+        context_files=list(context_metadata),
     )
 
 
@@ -271,6 +298,19 @@ def run_cli_prompt(args: argparse.Namespace) -> int:
         return 1
 
     continue_goal = bool(getattr(args, "continue_goal", False))
+    context_tokens = list(getattr(args, "context_file_tokens", []) or [])
+    context_cwd = Path.cwd()
+    root_arg = Path(args.root).resolve()
+    if root_arg != context_cwd.resolve() and root_arg == git_root.resolve():
+        context_cwd = git_root
+    context_files, context_err = _load_cli_context(
+        git_root,
+        context_tokens,
+        cwd=context_cwd,
+    )
+    if context_err is not None:
+        _emit_outcome(context_err, mode=args.mode)
+        return 1
 
     if prompt_text.startswith("/"):
         outcome = _handle_slash(paths, project_id, prompt_text)
@@ -289,6 +329,7 @@ def run_cli_prompt(args: argparse.Namespace) -> int:
             project_id=project_id,
             text=prompt_text,
             goal_id=goal_id if continue_goal else None,
+            context_files=context_files,
         )
 
     _emit_outcome(outcome, mode=args.mode)
