@@ -19,7 +19,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from local_cli_coordinator.cli import build_parser
+from local_cli_coordinator.cli import build_prompt_parser, build_parser, normalize_prompt_args
 from local_cli_coordinator.db import connect, init_db
 from local_cli_coordinator.goals import create_goal
 from local_cli_coordinator.projects import inspect_project, register_project
@@ -56,39 +56,42 @@ def _run_cli_with_home(home: Path, *args: str, cwd: Path | None = None) -> subpr
 # 1. Parser red tests — flags not implemented yet
 # ---------------------------------------------------------------------------
 
-class CliPromptParserRedTests(unittest.TestCase):
-    """Argparse should reject --print / --mode / --continue today."""
+class CliPromptParserTests(unittest.TestCase):
+    """Pi-inspired prompt flags parse via build_prompt_parser."""
+
+    def _parse_prompt(self, argv: list[str]):
+        parser = build_prompt_parser()
+        args = parser.parse_args(argv)
+        normalize_prompt_args(args)
+        return args
 
     def test_print_prompt_flag_parses(self) -> None:
-        """-p '你好' --print should parse (fails today: unknown arg)."""
-        parser = build_parser()
-        # After implementation: parse_args returns without error.
-        # Today: SystemExit(2) because --print / -p are unknown.
-        with self.assertRaises(SystemExit) as ctx:
-            parser.parse_args(["-p", "你好", "--print"])
-        self.assertEqual(ctx.exception.code, 2,
-                         "expected argparse rejection, got exit code %s" % ctx.exception.code)
+        args = self._parse_prompt(["-p", "你好", "--print"])
+        self.assertEqual(args.prompt_text, "你好")
+        self.assertTrue(args.print_mode)
+        self.assertTrue(args.no_tui)
 
     def test_mode_json_flag_parses(self) -> None:
-        """--mode json -p hello --print should parse."""
-        parser = build_parser()
-        with self.assertRaises(SystemExit) as ctx:
-            parser.parse_args(["--mode", "json", "-p", "hello", "--print"])
-        self.assertEqual(ctx.exception.code, 2)
+        args = self._parse_prompt(["--mode", "json", "-p", "hello", "--print"])
+        self.assertEqual(args.mode, "json")
+        self.assertEqual(args.prompt_text, "hello")
+        self.assertTrue(args.print_mode)
 
     def test_continue_flag_parses(self) -> None:
-        """--continue -p next --print should parse."""
-        parser = build_parser()
-        with self.assertRaises(SystemExit) as ctx:
-            parser.parse_args(["--continue", "-p", "next", "--print"])
-        self.assertEqual(ctx.exception.code, 2)
+        args = self._parse_prompt(["--continue", "-p", "next", "--print"])
+        self.assertTrue(args.continue_goal)
+        self.assertEqual(args.prompt_text, "next")
 
     def test_positional_prompt_parses(self) -> None:
-        """'检查项目状态' --print should parse (positional prompt)."""
-        parser = build_parser()
-        with self.assertRaises(SystemExit) as ctx:
-            parser.parse_args(["检查项目状态", "--print"])
-        self.assertEqual(ctx.exception.code, 2)
+        args = self._parse_prompt(["检查项目状态", "--print"])
+        self.assertEqual(args.prompt_text, "检查项目状态")
+        self.assertTrue(args.print_mode)
+
+    def test_print_implies_no_tui(self) -> None:
+        args = self._parse_prompt(["-p", "hello", "--print"])
+        self.assertTrue(args.no_tui)
+        args = self._parse_prompt(["-p", "hello"])
+        self.assertFalse(args.no_tui)
 
     def test_existing_supervisor_subcommand_unaffected(self) -> None:
         """supervisor status must still parse and run (guard: not broken by new flags)."""

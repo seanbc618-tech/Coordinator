@@ -1037,6 +1037,92 @@ def _cmd_migrate(args: argparse.Namespace) -> int:
     return 0
 
 
+_ADMIN_COMMANDS = frozenset({
+    "daemon",
+    "status",
+    "doctor",
+    "digest",
+    "discover",
+    "inbox",
+    "task",
+    "agent",
+    "repo",
+    "goal",
+    "chat",
+    "logs",
+    "supervisor",
+    "project",
+    "migrate",
+    "config",
+})
+
+_PROMPT_FLAGS = frozenset({
+    "--print",
+    "-p",
+    "--prompt",
+    "--continue",
+    "--no-tui",
+    "--mode",
+})
+
+
+def _skip_global_options(argv: list[str], index: int) -> int:
+    """Advance past ``--root`` / ``--db`` option pairs."""
+    while index < len(argv):
+        if argv[index] in ("--root", "--db") and index + 1 < len(argv):
+            index += 2
+            continue
+        break
+    return index
+
+
+def is_prompt_argv(argv: list[str]) -> bool:
+    """Return True when *argv* should use the Pi-inspired prompt parser."""
+    if not argv:
+        return False
+    index = _skip_global_options(argv, 0)
+    if index >= len(argv):
+        return False
+    if argv[index] in _ADMIN_COMMANDS:
+        return False
+    if any(token in _PROMPT_FLAGS for token in argv):
+        return True
+    # Single positional string that is not an admin subcommand.
+    return not argv[index].startswith("-")
+
+
+def build_prompt_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="coordinator")
+    parser.add_argument("--root", default=".")
+    parser.add_argument("--db", default="coordinator.db")
+    parser.add_argument("-p", "--prompt", dest="prompt_flag", default=None)
+    parser.add_argument("prompt_words", nargs="*", default=[])
+    parser.add_argument("--print", dest="print_mode", action="store_true")
+    parser.add_argument("--mode", choices=("text", "json"), default="text")
+    parser.add_argument("--continue", dest="continue_goal", action="store_true")
+    parser.add_argument("--no-tui", dest="no_tui", action="store_true")
+    return parser
+
+
+def normalize_prompt_args(args: argparse.Namespace) -> None:
+    """Derive ``prompt_text`` and apply ``--print`` → ``--no-tui``."""
+    if args.print_mode:
+        args.no_tui = True
+    parts: list[str] = []
+    if args.prompt_flag:
+        parts.append(args.prompt_flag)
+    if args.prompt_words:
+        parts.extend(args.prompt_words)
+    args.prompt_text = " ".join(parts).strip()
+    args.command = "prompt"
+
+
+def _cmd_prompt(args: argparse.Namespace) -> int:
+    """Placeholder until Task 2 wires Supervisor ``chat.send``."""
+    print("error: CLI prompt mode is not implemented yet", file=sys.stderr)
+    return 2
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="coordinator")
     parser.add_argument("--root", default=".")
@@ -1088,6 +1174,8 @@ def build_parser() -> argparse.ArgumentParser:
     # Chat command
     subparsers.add_parser("chat")
 
+    subparsers.add_parser("config")
+
     subparsers.add_parser("logs").add_argument("task_id")
 
     # Supervisor commands
@@ -1119,8 +1207,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    cli_argv = list(argv) if argv is not None else sys.argv[1:]
+    if is_prompt_argv(cli_argv):
+        prompt_parser = build_prompt_parser()
+        args = prompt_parser.parse_args(cli_argv)
+        normalize_prompt_args(args)
+        return _cmd_prompt(args)
+
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(cli_argv)
     if args.command == "doctor":
         return _cmd_doctor(args)
     if args.command == "digest":
@@ -1174,8 +1269,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "migrate":
         return _cmd_migrate(args)
     if args.command is None:
-        from .tui_launcher import launch_tui
+        if not cli_argv:
+            from .tui_launcher import launch_tui
 
-        return launch_tui(start_path=Path(args.root).resolve())
+            return launch_tui(start_path=Path(args.root).resolve())
+        parser.error(f"unknown command: {cli_argv[0]}")
+    if args.command == "config":
+        print("error: coordinator config is not implemented yet", file=sys.stderr)
+        return 2
     print(f"{args.command}: command is registered")
     return 0
