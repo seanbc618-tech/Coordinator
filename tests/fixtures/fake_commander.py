@@ -8,7 +8,7 @@ import json
 import sys
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 repo_id = "test-repo"
 if len(sys.argv) > 1:
@@ -18,6 +18,8 @@ if len(sys.argv) > 1:
 
 output = {
     "schema_version": SCHEMA_VERSION,
+    "intent": "task_request",
+    "user_reply": "Fake Commander: plan generated",
     "goal_status": "active",
     "progress_summary": "Fake Commander: plan generated",
     "tasks": [

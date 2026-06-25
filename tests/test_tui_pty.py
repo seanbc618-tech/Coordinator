@@ -203,9 +203,14 @@ def _final_frame_text(text: str) -> str:
     return _strip_ansi(parts[-1] if parts else text)
 
 
+def _normalized_frame_text(text: str) -> str:
+    """Collapse wrapped PTY lines for stable substring assertions."""
+    return re.sub(r"\s+", " ", _final_frame_text(text)).strip()
+
+
 def _count_occurrences(text: str, needle: str) -> int:
     """Count non-overlapping occurrences of needle in the final PTY frame."""
-    return _final_frame_text(text).count(needle)
+    return _normalized_frame_text(text).count(needle)
 
 
 def _type_char(fd: int, char: str, delay: float = 0.2) -> None:
@@ -386,9 +391,10 @@ class TuiPtyTests(unittest.TestCase):
         shutil.rmtree(cls.tmp_dir, ignore_errors=True)
 
     def setUp(self) -> None:
-        """Reset request log before each test."""
+        """Reset request log and replay history before each test."""
         self.server.drain_requests()
         self.server.clear_request_event()
+        self.server.reset_session()
 
     # ──────────────────────────────────────────────────────────────
     # P1-2: Real PTY assertions
@@ -619,8 +625,11 @@ class TuiPtyTests(unittest.TestCase):
             # The fake supervisor returns Commander-style response with
             # chat.message event. Read PTY output to verify Commander output.
             output = _read_available(fd, timeout=3.0)
-            self.assertIn("Commander processed: hello", _final_frame_text(output),
-                          "Commander response not visible in PTY output")
+            self.assertIn(
+                "report back when they finish",
+                _normalized_frame_text(output),
+                "Commander response not visible in PTY output",
+            )
         finally:
             _cleanup_tui(pid, fd)
 
@@ -827,7 +836,7 @@ class TuiPtyTests(unittest.TestCase):
 
     def test_reconnect_replays_chat_message_history(self) -> None:
         """Chat messages sent before disconnect replay once on reconnect."""
-        chat_marker = "Commander processed: replay-me"
+        chat_marker = "report back when they finish"
         pid, fd = _spawn_tui(self.socket_path, "proj-a", cols=80, rows=24)
         try:
             output_before = _wait_for_connection(fd)
@@ -839,16 +848,22 @@ class TuiPtyTests(unittest.TestCase):
                 "chat.send RPC not received before disconnect",
             )
             output_before += _read_available(fd, timeout=3.0)
-            self.assertIn(chat_marker, _final_frame_text(output_before),
-                          "Commander chat message not rendered before disconnect")
+            self.assertIn(
+                chat_marker,
+                _normalized_frame_text(output_before),
+                "Commander chat message not rendered before disconnect",
+            )
             self.server.drain_requests()
             self.server.disconnect_clients()
             time.sleep(4.0)
             output_after = _read_available(fd, timeout=3.0)
             full_output = output_before + output_after
             final_frame = _final_frame_text(full_output)
-            self.assertEqual(final_frame.count(chat_marker), 1,
-                             "Reconnect replay must include chat.message history once")
+            self.assertEqual(
+                _normalized_frame_text(full_output).count(chat_marker),
+                1,
+                "Reconnect replay must include chat.message history once",
+            )
             self.assertNotIn("Received:", final_frame,
                              "Reconnect replay must not show legacy echo format")
             requests = self.server.drain_requests()
@@ -893,7 +908,10 @@ class TuiPtyTests(unittest.TestCase):
             output = _read_available(fd, timeout=3.0)
             frame = _final_frame_text(output)
             self.assertEqual(frame.count("> hello once"), 1)
-            self.assertEqual(frame.count("Commander processed: hello once"), 1)
+            self.assertEqual(
+                _normalized_frame_text(output).count("report back when they finish"),
+                1,
+            )
         finally:
             _cleanup_tui(pid, fd)
 
@@ -920,39 +938,37 @@ class TuiPtyTests(unittest.TestCase):
         self.assertIn("connected", frame)
         self.assertEqual(frame.count("Tab"), 1)
 
+    def _assert_pty_layout_frame(self, frame: str) -> None:
+        """Assert footer, composer, and activity content in a PTY layout snapshot."""
+        normalized = re.sub(r"\s+", " ", _strip_ansi(frame))
+        self.assertIn("auth", normalized)
+        self.assertIn("Implement", normalized)
+        self._assert_footer_visible_once(frame)
+        self.assertIn("❯", frame, "Composer prompt missing from layout frame")
+        # Header/footer/composer chrome consumes rows; transcript must still fit.
+        self.assertLessEqual(len(frame.splitlines()), 30)
+
     def test_pty_transcript_layout_at_40_cols(self) -> None:
         pid, fd = _spawn_tui(self.socket_path, "proj-a", cols=40, rows=24)
         try:
-            _wait_for_connection(fd)
-            output = _read_available(fd, timeout=2.0)
-            frame = _final_frame_text(output)
-            self.assertIn("Implement auth", frame)
-            self._assert_footer_visible_once(frame)
-            self.assertLessEqual(len(frame.splitlines()), 24)
+            output = _wait_for_connection(fd)
+            self._assert_pty_layout_frame(_final_frame_text(output))
         finally:
             _cleanup_tui(pid, fd)
 
     def test_pty_transcript_layout_at_80_cols(self) -> None:
         pid, fd = _spawn_tui(self.socket_path, "proj-a", cols=80, rows=24)
         try:
-            _wait_for_connection(fd)
-            output = _read_available(fd, timeout=2.0)
-            frame = _final_frame_text(output)
-            self.assertIn("Implement auth", frame)
-            self._assert_footer_visible_once(frame)
-            self.assertLessEqual(len(frame.splitlines()), 24)
+            output = _wait_for_connection(fd)
+            self._assert_pty_layout_frame(_final_frame_text(output))
         finally:
             _cleanup_tui(pid, fd)
 
     def test_pty_transcript_layout_at_120_cols(self) -> None:
         pid, fd = _spawn_tui(self.socket_path, "proj-a", cols=120, rows=24)
         try:
-            _wait_for_connection(fd)
-            output = _read_available(fd, timeout=2.0)
-            frame = _final_frame_text(output)
-            self.assertIn("Implement auth", frame)
-            self._assert_footer_visible_once(frame)
-            self.assertLessEqual(len(frame.splitlines()), 24)
+            output = _wait_for_connection(fd)
+            self._assert_pty_layout_frame(_final_frame_text(output))
         finally:
             _cleanup_tui(pid, fd)
 

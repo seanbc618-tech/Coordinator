@@ -180,7 +180,9 @@ def _commander_fixture(tmp: Path) -> str:
             """
             import json
             print(json.dumps({
-                "schema_version": 1,
+                "schema_version": 2,
+                "intent": "conversation",
+                "user_reply": "Preview is ready — no tasks proposed yet.",
                 "goal_status": "active",
                 "progress_summary": "Preview ready",
                 "tasks": [],

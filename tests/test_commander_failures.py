@@ -38,10 +38,18 @@ def _high_risk_tasks() -> list[dict]:
 
 def _write_fixture_script(tmp_dir: Path, tasks: list[dict]) -> Path:
     script = tmp_dir / "fixture_commander.py"
+    intent = "task_request" if tasks else "conversation"
+    user_reply = (
+        "I'll start with the proposed slice."
+        if tasks
+        else "No new tasks right now."
+    )
     script.write_text(f"""
 import json
 response = {{
-    "schema_version": 1,
+    "schema_version": 2,
+    "intent": {intent!r},
+    "user_reply": {user_reply!r},
     "goal_status": "active",
     "progress_summary": "Ready",
     "tasks": {repr(tasks)},

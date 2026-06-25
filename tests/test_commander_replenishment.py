@@ -44,11 +44,19 @@ def _write_fixture_script(tmp_dir: Path, tasks: list[dict] | None = None) -> Pat
         }]
 
     script = tmp_dir / "fixture_commander.py"
+    intent = "task_request" if tasks else "conversation"
+    user_reply = (
+        "I'll queue the next slice for the goal."
+        if tasks
+        else "Nothing new to queue right now."
+    )
     # Use repr() to get valid Python literals (None instead of null)
     script.write_text(f'''
 import json
 response = {{
-    "schema_version": 1,
+    "schema_version": 2,
+    "intent": {intent!r},
+    "user_reply": {user_reply!r},
     "goal_status": "active",
     "progress_summary": "Ready",
     "tasks": {repr(tasks)},

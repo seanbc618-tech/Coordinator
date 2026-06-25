@@ -239,7 +239,9 @@ class CommanderAdversarialTests(unittest.TestCase):
         transition_task(self.conn, task_id, "running", "worker started")
 
         response = {
-            "schema_version": 1,
+            "schema_version": 2,
+            "intent": "conversation",
+            "user_reply": "All linked tasks are finished.",
             "goal_status": "completed",
             "progress_summary": "All done",
             "tasks": [],
@@ -266,7 +268,9 @@ class CommanderAdversarialTests(unittest.TestCase):
             _write_response_script(
                 self.root,
                 {
-                    "schema_version": 1,
+                    "schema_version": 2,
+                    "intent": "task_request",
+                    "user_reply": "Proposing a helper slice to advance the goal.",
                     "goal_status": "active",
                     "progress_summary": "Ready",
                     "tasks": [_proposal_task()],
@@ -290,7 +294,9 @@ class CommanderAdversarialTests(unittest.TestCase):
             _write_response_script(
                 self.root,
                 {
-                    "schema_version": 1,
+                    "schema_version": 2,
+                    "intent": "task_request",
+                    "user_reply": "Proposing a helper slice to advance the goal.",
                     "goal_status": "active",
                     "progress_summary": "Ready",
                     "tasks": [_proposal_task()],

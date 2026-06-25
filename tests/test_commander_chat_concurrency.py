@@ -68,7 +68,9 @@ def _commander_noop_command(tmp: Path) -> str:
             """
             import json
             print(json.dumps({
-                "schema_version": 1,
+                "schema_version": 2,
+                "intent": "conversation",
+                "user_reply": "Got it — no new tasks for now.",
                 "goal_status": "active",
                 "progress_summary": "ok",
                 "tasks": [],
@@ -235,7 +237,9 @@ class CommanderChatConcurrencyTests(unittest.TestCase):
 
     def test_project_status_responds_while_chat_commander_blocks(self) -> None:
         response = CommanderResponse(
-            schema_version=1,
+            schema_version=2,
+            intent="conversation",
+            user_reply="Working on your message.",
             goal_status="active",
             progress_summary="slow",
             tasks=[],

@@ -13,11 +13,15 @@ Enhanced with:
 from __future__ import annotations
 
 import json
+import os
 import socket
 import sys
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
+
+from local_cli_coordinator.supervisor_identity import build_ping_result
 
 
 PROTOCOL_VERSION = 1
@@ -56,6 +60,7 @@ class FakeSupervisor:
     def __init__(self, socket_path: str, project_id: str = "proj-a") -> None:
         self.socket_path = socket_path
         self.project_id = project_id
+        self._started_at = datetime.now(timezone.utc).isoformat()
         self._server: socket.socket | None = None
         self._thread: threading.Thread | None = None
         self._running = False
@@ -114,6 +119,12 @@ class FakeSupervisor:
             result = list(self._request_log)
             self._request_log.clear()
             return result
+
+    def reset_session(self) -> None:
+        """Clear replay history so PTY tests start from a clean event stream."""
+        with self._lock:
+            self._event_history.clear()
+            self._cursor = 0
 
     def count_requests(self, method: str) -> int:
         """Count logged requests for a method without clearing the log."""
@@ -253,7 +264,18 @@ class FakeSupervisor:
         params = msg.get("params", {})
 
         if method == "system.ping":
-            self._respond(conn, request_id, {"pong": True, "projects": {self.project_id: {"ready": 1}}})
+            with self._clients_lock:
+                active_workers = len(self._clients)
+            self._respond(
+                conn,
+                request_id,
+                build_ping_result(
+                    pid=os.getpid(),
+                    started_at=self._started_at,
+                    active_workers=active_workers,
+                    extra={"projects": {self.project_id: {"ready": 1}}},
+                ),
+            )
 
         elif method == "project.snapshot":
             self._respond(conn, request_id, {
@@ -280,6 +302,11 @@ class FakeSupervisor:
 
         elif method == "chat.send":
             text = params.get("text", "")
+            coordinator_reply = (
+                "Understood — I'll queue the requested checks and "
+                "report back when they finish."
+            )
+            progress_summary = "Queued baseline acceptance checks"
             self._respond(conn, request_id, {
                 "received": True,
                 "goal_id": 1,
@@ -294,7 +321,7 @@ class FakeSupervisor:
             })
             self._send_event(conn, "chat.message", {
                 "role": "coordinator",
-                "text": f"Commander processed: {text}",
+                "text": coordinator_reply,
                 "goal_id": 1,
             })
             self._send_event(conn, "task.created", {
@@ -309,8 +336,14 @@ class FakeSupervisor:
             self._send_event(conn, "commander.completed", {
                 "goal_id": 1,
                 "run_id": 42,
+                "intent": "task_request",
+                "user_reply": coordinator_reply,
+                "progress_summary": progress_summary,
                 "admitted": 1,
                 "rejected": 0,
+                "accepted_task_ids": ["task-cmd-001"],
+                "rejection_reasons": [],
+                "succeeded": True,
             })
 
         elif method == "project.status":

@@ -60,7 +60,9 @@ state_file.write_text(json.dumps(state))
 
 if state["call_count"] == 1:
     response = {
-        "schema_version": 1,
+        "schema_version": 2,
+        "intent": "task_request",
+        "user_reply": "Starting with the first slice: create first.txt.",
         "goal_status": "active",
         "progress_summary": "First batch ready",
         "tasks": [{
@@ -79,7 +81,9 @@ if state["call_count"] == 1:
     }
 elif state["call_count"] == 2:
     response = {
-        "schema_version": 1,
+        "schema_version": 2,
+        "intent": "task_request",
+        "user_reply": "First slice is done; next I'll create second.txt.",
         "goal_status": "active",
         "progress_summary": "Second batch ready",
         "tasks": [{
@@ -98,7 +102,9 @@ elif state["call_count"] == 2:
     }
 else:
     response = {
-        "schema_version": 1,
+        "schema_version": 2,
+        "intent": "conversation",
+        "user_reply": "All slices are complete — the goal is finished.",
         "goal_status": "completed",
         "progress_summary": "All tasks done",
         "tasks": [],
