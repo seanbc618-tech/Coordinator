@@ -25,6 +25,13 @@ from .db import (
     task_latest_event,
     task_list_artifacts_for_project,
 )
+from .goal_sessions import (
+    GoalSessionError,
+    fork_project_goal,
+    format_goal_session_error,
+    list_project_goal_candidates,
+    resume_project_goal,
+)
 from .goals import active_goal_for_project, get_latest_commander_run
 from .projects import ProjectDraft, get_project, inspect_project, register_project
 from .runtime_paths import RuntimePaths
@@ -162,6 +169,9 @@ class SupervisorMethods:
         self._handlers: dict[str, Callable] = {
             "project.status": self._handle_project_status,
             "project.goal": self._handle_project_goal,
+            "project.goals": self._handle_project_goals,
+            "project.goal.resume": self._handle_project_goal_resume,
+            "project.goal.fork": self._handle_project_goal_fork,
             "project.tasks": self._handle_project_tasks,
             "project.task": self._handle_project_task,
             "project.logs": self._handle_project_logs,
@@ -369,6 +379,77 @@ class SupervisorMethods:
                 "goal": goal_summary,
             },
         )
+
+    def _handle_project_goals(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        project_id = request.project_id
+        if not project_id:
+            return self._error(request, "project_id is required")
+        if get_project(conn, project_id) is None:
+            return self._error(request, f"project {project_id!r} not registered")
+
+        candidates = list_project_goal_candidates(conn, project_id)
+        return self._ok(request, {"candidates": candidates})
+
+    def _handle_project_goal_resume(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        project_id = request.project_id
+        if not project_id:
+            return self._error(request, "project_id is required")
+        if get_project(conn, project_id) is None:
+            return self._error(request, f"project {project_id!r} not registered")
+
+        goal_id = request.params.get("goal_id")
+        try:
+            goal_id_int = int(goal_id)
+        except (TypeError, ValueError):
+            return self._error(request, "goal_id is required")
+
+        try:
+            goal = resume_project_goal(conn, project_id, goal_id_int)
+        except GoalSessionError as exc:
+            return self._error(request, format_goal_session_error(exc))
+
+        return self._ok(
+            request,
+            {
+                "goal_id": goal["id"],
+                "status": goal["status"],
+                "title": goal["title"],
+            },
+        )
+
+    def _handle_project_goal_fork(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        project_id = request.project_id
+        if not project_id:
+            return self._error(request, "project_id is required")
+        if get_project(conn, project_id) is None:
+            return self._error(request, f"project {project_id!r} not registered")
+
+        source_goal_id = request.params.get("goal_id")
+        instruction = request.params.get("instruction", "")
+        if not isinstance(instruction, str):
+            instruction = ""
+        try:
+            source_goal_id_int = int(source_goal_id)
+        except (TypeError, ValueError):
+            return self._error(request, "goal_id is required")
+
+        try:
+            new_goal_id = fork_project_goal(
+                conn,
+                project_id,
+                source_goal_id_int,
+                instruction,
+            )
+        except GoalSessionError as exc:
+            return self._error(request, format_goal_session_error(exc))
+
+        return self._ok(request, {"goal_id": new_goal_id, "status": "draft"})
 
     def _handle_project_goal(
         self, conn: sqlite3.Connection, request: RequestEnvelope

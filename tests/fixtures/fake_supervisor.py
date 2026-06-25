@@ -412,6 +412,19 @@ class FakeSupervisor:
                 "artifacts": [{"kind": "agent_log", "path": "/tmp/agent.log"}],
             })
 
+        elif method in (
+            "project.goals",
+            "project.goal.resume",
+            "project.goal.fork",
+        ):
+            self._handle_goal_session_rpc(
+                conn,
+                request_id,
+                method,
+                params,
+                msg.get("project_id"),
+            )
+
         elif method in ("project.pause", "project.resume", "project.stop"):
             self._respond(conn, request_id, {"ok": True})
 
@@ -421,11 +434,141 @@ class FakeSupervisor:
         else:
             self._respond(conn, request_id, {"method": method})
 
-    def _respond(self, conn: socket.socket, request_id: str, result: dict | None = None) -> None:
+    def _respond(
+        self,
+        conn: socket.socket,
+        request_id: str,
+        result: dict | None = None,
+        *,
+        ok: bool = True,
+        error: str | None = None,
+    ) -> None:
         try:
-            conn.sendall(_make_response(request_id, result=result).encode())
+            conn.sendall(
+                _make_response(request_id, ok=ok, result=result, error=error).encode()
+            )
         except OSError:
             pass
+
+    def _handle_goal_session_rpc(
+        self,
+        conn: socket.socket,
+        request_id: str,
+        method: str,
+        params: dict,
+        project_id: str | None,
+    ) -> None:
+        home = os.environ.get("COORDINATOR_HOME")
+        if not home:
+            self._respond(
+                conn,
+                request_id,
+                ok=False,
+                error="COORDINATOR_HOME not set",
+            )
+            return
+
+        from local_cli_coordinator.db import connect, init_db
+        from local_cli_coordinator.goal_sessions import (
+            GoalSessionError,
+            fork_project_goal,
+            format_goal_session_error,
+            list_project_goal_candidates,
+            resume_project_goal,
+        )
+        from local_cli_coordinator.runtime_paths import RuntimePaths
+
+        home_path = Path(home)
+        paths = RuntimePaths(
+            home_path / "config",
+            home_path / "data",
+            home_path / "state",
+        )
+        db = connect(paths.database)
+        try:
+            init_db(db)
+            effective_project_id = project_id
+            if not effective_project_id:
+                row = db.execute("select id from projects limit 1").fetchone()
+                effective_project_id = row["id"] if row else self.project_id
+
+            if method == "project.goals":
+                candidates = list_project_goal_candidates(
+                    db, effective_project_id
+                )
+                self._respond(conn, request_id, {"candidates": candidates})
+                return
+
+            if method == "project.goal.resume":
+                try:
+                    goal_id = int(params.get("goal_id"))
+                except (TypeError, ValueError):
+                    self._respond(
+                        conn,
+                        request_id,
+                        ok=False,
+                        error="goal_id is required",
+                    )
+                    return
+                try:
+                    goal = resume_project_goal(
+                        db, effective_project_id, goal_id
+                    )
+                except GoalSessionError as exc:
+                    self._respond(
+                        conn,
+                        request_id,
+                        ok=False,
+                        error=format_goal_session_error(exc),
+                    )
+                    return
+                self._respond(
+                    conn,
+                    request_id,
+                    {
+                        "goal_id": goal["id"],
+                        "status": goal["status"],
+                        "title": goal["title"],
+                    },
+                )
+                return
+
+            if method == "project.goal.fork":
+                instruction = params.get("instruction", "")
+                if not isinstance(instruction, str):
+                    instruction = ""
+                try:
+                    source_goal_id = int(params.get("goal_id"))
+                except (TypeError, ValueError):
+                    self._respond(
+                        conn,
+                        request_id,
+                        ok=False,
+                        error="goal_id is required",
+                    )
+                    return
+                try:
+                    new_goal_id = fork_project_goal(
+                        db,
+                        effective_project_id,
+                        source_goal_id,
+                        instruction,
+                    )
+                except GoalSessionError as exc:
+                    self._respond(
+                        conn,
+                        request_id,
+                        ok=False,
+                        error=format_goal_session_error(exc),
+                    )
+                    return
+                self._respond(
+                    conn,
+                    request_id,
+                    {"goal_id": new_goal_id, "status": "draft"},
+                )
+        finally:
+            db.close()
 
     def _emit_initial_events(self, conn: socket.socket) -> None:
         """Send the deterministic initial event sequence on first subscribe."""

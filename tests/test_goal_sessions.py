@@ -680,12 +680,18 @@ class GoalNoCandidateOutputTests(unittest.TestCase):
             "SELECT id FROM projects LIMIT 1"
         ).fetchone()
         self.project_id = row["id"]
+        self._old_coordinator_home = os.environ.get("COORDINATOR_HOME")
+        os.environ["COORDINATOR_HOME"] = str(self.home)
         self.server = FakeSupervisor(str(self.paths.socket))
         self.server.start()
 
     def tearDown(self):
         self.server.stop()
         self.conn.close()
+        if self._old_coordinator_home is None:
+            os.environ.pop("COORDINATOR_HOME", None)
+        else:
+            os.environ["COORDINATOR_HOME"] = self._old_coordinator_home
         import shutil
         shutil.rmtree(self.tmp, ignore_errors=True)
 

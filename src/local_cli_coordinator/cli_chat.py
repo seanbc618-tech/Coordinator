@@ -18,6 +18,7 @@ from .context_files import (
     parse_context_error_message,
     public_metadata_from_context_files,
 )
+from .goal_sessions import parse_goal_session_error_message
 from .db import connect, init_db
 from .goals import active_goal_for_project, latest_non_terminal_goal_for_project
 from .projects import find_project_by_path
@@ -48,9 +49,10 @@ class PromptOutcome:
     error_code: str | None = None
     error_message: str | None = None
     context_files: list[dict[str, Any]] | None = None
+    candidates: list[dict[str, Any]] | None = None
 
     def to_json_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "ok": self.ok,
             "project_id": self.project_id,
             "goal_id": self.goal_id,
@@ -66,6 +68,9 @@ class PromptOutcome:
                 else None
             ),
         }
+        if self.candidates is not None:
+            payload["candidates"] = list(self.candidates)
+        return payload
 
 
 def _error_outcome(code: str, message: str) -> PromptOutcome:
@@ -124,6 +129,13 @@ def _resolve_goal_id(
         conn.close()
 
 
+def _parse_rpc_error(error: str | None) -> tuple[str, str]:
+    code, message = parse_goal_session_error_message(error)
+    if code != "supervisor_error":
+        return code, message
+    return parse_context_error_message(error)
+
+
 def _send_rpc(
     paths: RuntimePaths,
     *,
@@ -144,9 +156,88 @@ def _send_rpc(
     except SupervisorTransportError as exc:
         return None, _error_outcome("supervisor_unreachable", str(exc))
     if not response.ok or response.result is None:
-        code, message = parse_context_error_message(response.error)
+        code, message = _parse_rpc_error(response.error)
         return None, _error_outcome(code, message)
     return response.result, None
+
+
+def _format_goal_candidates(candidates: list[dict[str, Any]]) -> str:
+    if not candidates:
+        return "No resumable goals."
+    lines = ["Resumable goals:"]
+    for index, candidate in enumerate(candidates, start=1):
+        lines.append(
+            "  {index}. [{status}] {title} (id={id})".format(
+                index=index,
+                status=candidate.get("status"),
+                title=candidate.get("title"),
+                id=candidate.get("id"),
+            )
+        )
+    return "\n".join(lines)
+
+
+def _list_goal_candidates(
+    paths: RuntimePaths,
+    project_id: str,
+) -> PromptOutcome:
+    result, err = _send_rpc(
+        paths,
+        project_id=project_id,
+        method="project.goals",
+        params={},
+    )
+    if err is not None:
+        return err
+    assert result is not None
+    candidates = list(result.get("candidates") or [])
+    return PromptOutcome(
+        ok=True,
+        project_id=project_id,
+        user_reply=_format_goal_candidates(candidates),
+        candidates=candidates,
+    )
+
+
+def _resume_goal(
+    paths: RuntimePaths,
+    project_id: str,
+    goal_id: int,
+) -> PromptOutcome | None:
+    _, err = _send_rpc(
+        paths,
+        project_id=project_id,
+        method="project.goal.resume",
+        params={"goal_id": goal_id},
+    )
+    return err
+
+
+def _fork_goal(
+    paths: RuntimePaths,
+    project_id: str,
+    source_goal_id: int,
+    instruction: str,
+) -> PromptOutcome:
+    result, err = _send_rpc(
+        paths,
+        project_id=project_id,
+        method="project.goal.fork",
+        params={"goal_id": source_goal_id, "instruction": instruction},
+    )
+    if err is not None:
+        return err
+    assert result is not None
+    new_goal_id = int(result.get("goal_id") or 0)
+    return PromptOutcome(
+        ok=True,
+        project_id=project_id,
+        goal_id=new_goal_id,
+        user_reply=(
+            f"Forked goal {new_goal_id} (draft). "
+            "Run /goal confirm to activate."
+        ),
+    )
 
 
 def _format_status(result: dict[str, Any]) -> str:
@@ -266,8 +357,20 @@ def _emit_outcome(outcome: PromptOutcome, *, mode: str) -> None:
 
 
 def run_cli_prompt(args: argparse.Namespace) -> int:
+    resume = getattr(args, "resume", None)
+    fork_goal_id = getattr(args, "fork", None)
     prompt_text = getattr(args, "prompt_text", "").strip()
-    if not prompt_text:
+
+    if resume == "":
+        pass
+    elif fork_goal_id is not None:
+        if not prompt_text:
+            _emit_outcome(
+                _error_outcome("fork_conflict", "fork instruction is required"),
+                mode=args.mode,
+            )
+            return 1
+    elif not prompt_text:
         print("error: prompt text is required", file=sys.stderr)
         return 2
 
@@ -296,6 +399,20 @@ def run_cli_prompt(args: argparse.Namespace) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
+    if resume == "":
+        outcome = _list_goal_candidates(paths, project_id)
+        _emit_outcome(outcome, mode=args.mode)
+        return 2 if outcome.ok else 1
+
+    if fork_goal_id is not None:
+        outcome = _fork_goal(paths, project_id, fork_goal_id, prompt_text)
+        _emit_outcome(outcome, mode=args.mode)
+        if not outcome.ok:
+            return 1
+        if args.print_mode or args.no_tui:
+            return 0
+        return launch_tui(start_path=git_root)
+
     continue_goal = bool(getattr(args, "continue_goal", False))
     context_tokens = list(getattr(args, "context_file_tokens", []) or [])
     context_files, context_err = _load_cli_context(
@@ -306,6 +423,37 @@ def run_cli_prompt(args: argparse.Namespace) -> int:
     if context_err is not None:
         _emit_outcome(context_err, mode=args.mode)
         return 1
+
+    if resume is not None:
+        goal_id = int(resume)
+        resume_err = _resume_goal(paths, project_id, goal_id)
+        if resume_err is not None:
+            _emit_outcome(resume_err, mode=args.mode)
+            return 1
+        if not prompt_text:
+            outcome = PromptOutcome(
+                ok=True,
+                project_id=project_id,
+                goal_id=goal_id,
+                user_reply=f"Resumed goal {goal_id}.",
+            )
+            _emit_outcome(outcome, mode=args.mode)
+            if args.print_mode or args.no_tui:
+                return 0
+            return launch_tui(start_path=git_root)
+        outcome = _chat_send(
+            paths,
+            project_id=project_id,
+            text=prompt_text,
+            goal_id=goal_id,
+            context_files=context_files,
+        )
+        _emit_outcome(outcome, mode=args.mode)
+        if not outcome.ok:
+            return 1
+        if args.print_mode or args.no_tui:
+            return 0
+        return launch_tui(start_path=git_root)
 
     if prompt_text.startswith("/"):
         outcome = _handle_slash(paths, project_id, prompt_text)

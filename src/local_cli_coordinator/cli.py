@@ -1061,6 +1061,8 @@ _PROMPT_FLAGS = frozenset({
     "-p",
     "--prompt",
     "--continue",
+    "--resume",
+    "--fork",
     "--no-tui",
     "--mode",
 })
@@ -1099,7 +1101,10 @@ def build_prompt_parser() -> argparse.ArgumentParser:
     parser.add_argument("prompt_words", nargs="*", default=[])
     parser.add_argument("--print", dest="print_mode", action="store_true")
     parser.add_argument("--mode", choices=("text", "json"), default="text")
-    parser.add_argument("--continue", dest="continue_goal", action="store_true")
+    session = parser.add_mutually_exclusive_group()
+    session.add_argument("--continue", dest="continue_goal", action="store_true")
+    session.add_argument("--resume", nargs="?", const="", default=None, metavar="GOAL_ID")
+    session.add_argument("--fork", type=int, default=None, metavar="GOAL_ID")
     parser.add_argument("--no-tui", dest="no_tui", action="store_true")
     return parser
 
