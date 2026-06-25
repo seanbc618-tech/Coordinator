@@ -302,46 +302,60 @@ class FakeSupervisor:
 
         elif method == "chat.send":
             text = params.get("text", "")
-            coordinator_reply = (
-                "Understood — I'll queue the requested checks and "
-                "report back when they finish."
-            )
+            goal_id = params.get("goal_id", 1)
+            if "你好" in text or "任务" in text:
+                coordinator_reply = "你好！有什么可以帮你的吗？"
+                intent = "conversation"
+                admitted = 0
+                accepted_task_ids: list[str] = []
+            else:
+                coordinator_reply = (
+                    "Understood — I'll queue the requested checks and "
+                    "report back when they finish."
+                )
+                intent = "task_request"
+                admitted = 1
+                accepted_task_ids = ["task-cmd-001"]
             progress_summary = "Queued baseline acceptance checks"
             self._respond(conn, request_id, {
                 "received": True,
-                "goal_id": 1,
+                "goal_id": goal_id,
                 "commander_run_id": 42,
-                "admitted": 1,
+                "admitted": admitted,
                 "rejected": 0,
+                "user_reply": coordinator_reply,
+                "intent": intent,
+                "accepted_task_ids": accepted_task_ids,
             })
             self._send_event(conn, "chat.message", {
                 "role": "user",
                 "text": text,
-                "goal_id": 1,
+                "goal_id": goal_id,
             })
             self._send_event(conn, "chat.message", {
                 "role": "coordinator",
                 "text": coordinator_reply,
-                "goal_id": 1,
+                "goal_id": goal_id,
             })
-            self._send_event(conn, "task.created", {
-                "task_id": "task-cmd-001",
-                "goal_id": 1,
-                "title": "Run baseline acceptance checks",
-                "state": "ready",
-                "goal": "Run verification commands without changing code",
-                "acceptance_criteria": "Record pytest and ruff results",
-                "verification_commands": ["uv run pytest -q", "uv run ruff check src/ tests/"],
-            })
+            if admitted:
+                self._send_event(conn, "task.created", {
+                    "task_id": "task-cmd-001",
+                    "goal_id": goal_id,
+                    "title": "Run baseline acceptance checks",
+                    "state": "ready",
+                    "goal": "Run verification commands without changing code",
+                    "acceptance_criteria": "Record pytest and ruff results",
+                    "verification_commands": ["uv run pytest -q", "uv run ruff check src/ tests/"],
+                })
             self._send_event(conn, "commander.completed", {
-                "goal_id": 1,
+                "goal_id": goal_id,
                 "run_id": 42,
-                "intent": "task_request",
+                "intent": intent,
                 "user_reply": coordinator_reply,
                 "progress_summary": progress_summary,
-                "admitted": 1,
+                "admitted": admitted,
                 "rejected": 0,
-                "accepted_task_ids": ["task-cmd-001"],
+                "accepted_task_ids": accepted_task_ids,
                 "rejection_reasons": [],
                 "succeeded": True,
             })

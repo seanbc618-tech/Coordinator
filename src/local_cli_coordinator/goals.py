@@ -71,6 +71,22 @@ def active_goal_for_project(
     ).fetchone()
 
 
+def latest_non_terminal_goal_for_project(
+    conn: sqlite3.Connection,
+    project_id: str,
+) -> sqlite3.Row | None:
+    """Return the newest non-terminal goal for project_id, or None."""
+    return conn.execute(
+        """
+        select * from goals
+        where project_id = ?
+          and status in ('draft', 'active', 'paused', 'blocked')
+        order by id desc limit 1
+        """,
+        (project_id,),
+    ).fetchone()
+
+
 def active_goal(conn: sqlite3.Connection) -> sqlite3.Row | None:
     """CLI/daemon backward compat — legacy-default project scope."""
     return active_goal_for_project(conn, "legacy-default")

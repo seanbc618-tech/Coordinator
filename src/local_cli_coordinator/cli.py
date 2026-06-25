@@ -1118,9 +1118,9 @@ def normalize_prompt_args(args: argparse.Namespace) -> None:
 
 
 def _cmd_prompt(args: argparse.Namespace) -> int:
-    """Placeholder until Task 2 wires Supervisor ``chat.send``."""
-    print("error: CLI prompt mode is not implemented yet", file=sys.stderr)
-    return 2
+    from .cli_chat import run_cli_prompt
+
+    return run_cli_prompt(args)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1275,7 +1275,8 @@ def main(argv: list[str] | None = None) -> int:
             return launch_tui(start_path=Path(args.root).resolve())
         parser.error(f"unknown command: {cli_argv[0]}")
     if args.command == "config":
-        print("error: coordinator config is not implemented yet", file=sys.stderr)
-        return 2
+        from .cli_config import run_config_command
+
+        return run_config_command()
     print(f"{args.command}: command is registered")
     return 0

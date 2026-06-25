@@ -9,7 +9,7 @@ from typing import Any
 from .commander_service import CommanderChatResult, send_project_chat_message
 from .config import CoordinatorConfig, select_agent_by_role
 from .db import get_task
-from .goals import active_goal_for_project, has_live_commander_run
+from .goals import active_goal_for_project, get_goal, has_live_commander_run
 from .supervisor_events import EventBroker
 from .supervisor_protocol import PROTOCOL_VERSION, RequestEnvelope, ResponseEnvelope
 
@@ -130,7 +130,16 @@ def handle_chat_send(
     project_id: str,
     text: str,
 ) -> ResponseEnvelope:
-    goal = active_goal_for_project(conn, project_id)
+    goal_id_override = request.params.get("goal_id")
+    if goal_id_override is not None:
+        try:
+            goal = get_goal(conn, int(goal_id_override))
+        except (KeyError, TypeError, ValueError):
+            return _error(request, "goal_id is invalid")
+        if goal["project_id"] != project_id:
+            return _error(request, "goal_id does not belong to this project")
+    else:
+        goal = active_goal_for_project(conn, project_id)
     if goal is None:
         return _error(
             request,
@@ -183,17 +192,21 @@ def handle_chat_send(
     if not result.succeeded:
         return _error(request, result.message)
 
+    accepted_task_ids = (
+        list(result.admission.accepted_task_ids) if result.admission else []
+    )
     return _ok(
         request,
         {
             "received": True,
             "goal_id": result.goal_id,
             "commander_run_id": result.run_id,
-            "admitted": (
-                len(result.admission.accepted_task_ids) if result.admission else 0
-            ),
+            "admitted": len(accepted_task_ids),
             "rejected": (
                 len(result.admission.rejection_reasons) if result.admission else 0
             ),
+            "user_reply": result.user_reply or result.message,
+            "intent": result.intent or "conversation",
+            "accepted_task_ids": accepted_task_ids,
         },
     )

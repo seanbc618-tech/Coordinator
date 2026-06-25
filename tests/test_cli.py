@@ -50,12 +50,12 @@ class CliSmokeTests(unittest.TestCase):
                 self.assertEqual(main(["supervisor", "status"]), 1)
             launch_mock.assert_not_called()
 
-    def test_unknown_subcommand_enters_prompt_stub(self) -> None:
+    def test_unknown_subcommand_enters_prompt_mode(self) -> None:
         """Bare unknown tokens route to prompt mode (Phase 5.3)."""
         from local_cli_coordinator.cli import main
 
         code = main(["not-a-command"])
-        self.assertEqual(code, 2)
+        self.assertNotEqual(code, 0)
 
     def test_invalid_supervisor_subcommand_still_errors(self) -> None:
         from local_cli_coordinator.cli import main

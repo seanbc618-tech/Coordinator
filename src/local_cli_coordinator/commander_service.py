@@ -52,6 +52,7 @@ class CommanderChatResult:
     succeeded: bool
     intent: str | None = None
     progress_summary: str | None = None
+    user_reply: str | None = None
 
 
 @dataclass(frozen=True)
@@ -317,6 +318,7 @@ def send_project_chat_message(
         succeeded=True,
         intent=response.intent,
         progress_summary=response.progress_summary,
+        user_reply=response.user_reply,
     )
 
 
