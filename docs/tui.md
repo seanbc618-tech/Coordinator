@@ -60,6 +60,38 @@ While Commander runs, the transcript shows `Commander is thinking…` and admits
 or rejects proposed tasks with reasons. A single Commander run is in flight per
 goal at a time.
 
+## Trusted runtime (Phase 5.2)
+
+Coordinator compares the running Supervisor against the installed TUI bundle.
+If the server is too old or missing required capabilities, launch fails with:
+
+```text
+Supervisor is incompatible with this Coordinator install.
+Run: coordinator supervisor restart
+```
+
+Repair with:
+
+```bash
+coordinator supervisor restart
+```
+
+This sends a graceful shutdown, waits for the socket and lock to clear, then
+starts one fresh Supervisor process with a new PID.
+
+## Conversation vs tasks vs slash commands
+
+| Input kind | Example | Behavior |
+|---|---|---|
+| Greeting / status question | `你好`, `如何启动？` | Commander answers in natural language; **no tasks** are created |
+| Explicit task request | `创建一个只读任务，运行 uv run ruff check…` | Commander may admit tasks after policy checks |
+| Slash command | `/tasks`, `/task <id>` | Deterministic local or RPC handling; **never** sent to Commander |
+| Unknown slash | `/taskz` | Local error: `Unknown command: /taskz. Use /help.` |
+
+Visible chat text is Commander's `user_reply`. Internal orchestration memory and
+policy rejection details stay in `commander.completed` diagnostics (expandable in
+the activity area), not in the main transcript.
+
 ## Plain-language use
 
 Type natural-language messages at the `❯` prompt:

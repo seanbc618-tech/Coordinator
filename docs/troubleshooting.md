@@ -56,6 +56,34 @@ rm -f ~/.local/state/coordinator/supervisor.lock
 
 Then run `coordinator` again (it starts a fresh detached Supervisor).
 
+## Supervisor is incompatible with this Coordinator install
+
+**Symptom:** TUI or `coordinator` exits immediately with:
+
+```text
+Supervisor is incompatible with this Coordinator install.
+Run: coordinator supervisor restart
+```
+
+**Cause:** A stale Supervisor from an older install is still serving on the Unix
+socket. It responds to `system.ping` but lacks the runtime identity and
+capabilities expected by the current Coordinator package.
+
+**Fix:**
+
+```bash
+coordinator supervisor restart
+coordinator supervisor status
+```
+
+`restart` shuts down the old process, waits for the socket and lock to disappear,
+then starts exactly one new Supervisor. Verify the PID changed and only one
+`coordinator supervisor status` reports running.
+
+If `restart` times out, check for orphaned processes manually, remove stale
+`coordinator.sock` / `supervisor.lock` only when no Coordinator process is active,
+then run `coordinator supervisor restart` again.
+
 ## TUI bundle missing or corrupt
 
 **Symptom:**
