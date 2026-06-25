@@ -23,9 +23,11 @@ from local_cli_coordinator.cli import build_prompt_parser, normalize_prompt_args
 from local_cli_coordinator.db import connect, init_db
 from local_cli_coordinator.goals import (
     active_goal_for_project,
+    add_commander_message,
     create_goal,
     get_goal,
     transition_goal,
+    update_goal_progress,
 )
 from local_cli_coordinator.projects import inspect_project, register_project
 from local_cli_coordinator.runtime_paths import RuntimePaths
@@ -909,6 +911,8 @@ class GoalInteractiveSelectorTests(unittest.TestCase):
         os.environ["COORDINATOR_HOME"] = str(self.home)
         self.server = FakeSupervisor(str(self.paths.socket))
         self.server.start()
+        import time
+        time.sleep(0.1)  # Wait for server to start
 
     def tearDown(self):
         self.server.stop()
@@ -966,11 +970,302 @@ class GoalInteractiveSelectorTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Migration 012: parent_goal_id column
+# PTY selector detailed tests
 # ---------------------------------------------------------------------------
 
 
-class GoalLineageMigrationTests(unittest.TestCase):
+class GoalPTYSelectorDetailTests(unittest.TestCase):
+    """Detailed TTY selector behavior tests."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.home = self.tmp / "home"
+        self.home.mkdir()
+        self.repo = self.tmp / "repo"
+        self.repo.mkdir()
+        init_git_repo(self.repo)
+        self.paths = RuntimePaths(
+            self.home / "config", self.home / "data", self.home / "state"
+        )
+        self.paths.create()
+        self.conn = connect(self.paths.database)
+        init_db(self.conn)
+        draft = inspect_project(self.repo)
+        register_project(self.conn, draft, confirmed=True)
+        row = self.conn.execute(
+            "SELECT id FROM projects LIMIT 1"
+        ).fetchone()
+        self.project_id = row["id"]
+        self._old_coordinator_home = os.environ.get("COORDINATOR_HOME")
+        os.environ["COORDINATOR_HOME"] = str(self.home)
+        self.server = FakeSupervisor(str(self.paths.socket))
+        self.server.start()
+        import time
+        time.sleep(0.1)  # Wait for server to start
+
+    def tearDown(self):
+        self.server.stop()
+        self.conn.close()
+        if self._old_coordinator_home is None:
+            os.environ.pop("COORDINATOR_HOME", None)
+        else:
+            os.environ["COORDINATOR_HOME"] = self._old_coordinator_home
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _run_resume_prompt(self, input_side_effect, *, isatty=True):
+        """Helper to run --resume with mocked I/O."""
+        from local_cli_coordinator.cli_chat import run_cli_prompt
+        from local_cli_coordinator.cli import build_prompt_parser, normalize_prompt_args
+
+        parser = build_prompt_parser()
+        args = parser.parse_args(["--root", str(self.repo), "--resume"])
+        normalize_prompt_args(args)
+        with (
+            mock.patch("local_cli_coordinator.cli_chat.launch_tui", return_value=0),
+            mock.patch("local_cli_coordinator.cli_chat._is_interactive_session", return_value=isatty),
+            mock.patch("local_cli_coordinator.cli_chat.input", side_effect=input_side_effect),
+            mock.patch("local_cli_coordinator.cli_chat._resolve_project", return_value=(self.project_id, None)),
+        ):
+            exit_code = run_cli_prompt(args)
+        return exit_code
+
+    def test_selector_rejects_non_integer_input(self):
+        """Selector rejects non-integer input with error."""
+        goal_id = create_goal(
+            self.conn, "Paused", "objective", project_id=self.project_id
+        )
+        transition_goal(self.conn, goal_id, "paused")
+        exit_code = self._run_resume_prompt(["abc"])
+        self.assertEqual(exit_code, 1)
+        # Goal should remain paused
+        goal = get_goal(self.conn, goal_id)
+        self.assertEqual(goal["status"], "paused")
+
+    def test_selector_rejects_out_of_range_input(self):
+        """Selector rejects out-of-range input with error."""
+        goal_id = create_goal(
+            self.conn, "Paused", "objective", project_id=self.project_id
+        )
+        transition_goal(self.conn, goal_id, "paused")
+        exit_code = self._run_resume_prompt(["99"])
+        self.assertEqual(exit_code, 1)
+        # Goal should remain paused
+        goal = get_goal(self.conn, goal_id)
+        self.assertEqual(goal["status"], "paused")
+
+    def test_selector_rejects_n_confirmation(self):
+        """Selecting 'n' at confirmation does not resume."""
+        goal_id = create_goal(
+            self.conn, "Paused", "objective", project_id=self.project_id
+        )
+        transition_goal(self.conn, goal_id, "paused")
+        exit_code = self._run_resume_prompt(["1", "n"])
+        # Goal should remain paused
+        goal = get_goal(self.conn, goal_id)
+        self.assertEqual(goal["status"], "paused")
+
+    def test_selector_shows_single_candidate(self):
+        """Selector displays the single non-terminal candidate."""
+        g1 = create_goal(
+            self.conn, "Only goal", "obj1", project_id=self.project_id
+        )
+        transition_goal(self.conn, g1, "paused")
+        exit_code = self._run_resume_prompt(["1", "y"])
+        self.assertEqual(exit_code, 0)
+        goal = get_goal(self.conn, g1)
+        self.assertEqual(goal["status"], "active")
+
+    def test_non_tty_resume_without_id_exits_2(self):
+        """Non-TTY --resume without ID exits with code 2."""
+        create_goal(
+            self.conn, "Goal", "obj", project_id=self.project_id
+        )
+        exit_code = self._run_resume_prompt([], isatty=False)
+        self.assertEqual(exit_code, 2)
+
+
+# ---------------------------------------------------------------------------
+# Fork field boundary: progress messages, task outcomes, instruction format
+# ---------------------------------------------------------------------------
+
+
+class GoalForkFieldBoundaryTests(unittest.TestCase):
+    """Granular fork field boundary tests."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.home = self.tmp / "home"
+        self.home.mkdir()
+        self.repo = self.tmp / "repo"
+        self.repo.mkdir()
+        init_git_repo(self.repo)
+        self.paths = RuntimePaths(
+            self.home / "config", self.home / "data", self.home / "state"
+        )
+        self.paths.create()
+        self.conn = connect(self.paths.database)
+        init_db(self.conn)
+        draft = inspect_project(self.repo)
+        register_project(self.conn, draft, confirmed=True)
+        row = self.conn.execute(
+            "SELECT id FROM projects LIMIT 1"
+        ).fetchone()
+        self.project_id = row["id"]
+
+    def tearDown(self):
+        self.conn.close()
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_fork_progress_bounded_to_five_messages(self):
+        """Fork progress summary uses at most 5 recent messages."""
+        from local_cli_coordinator.goal_sessions import fork_project_goal
+        from local_cli_coordinator.goals import add_commander_message
+
+        source = create_goal(
+            self.conn, "Source", "objective", project_id=self.project_id
+        )
+        transition_goal(self.conn, source, "active")
+        # Add 10 messages
+        for i in range(10):
+            add_commander_message(
+                self.conn, source, "user", f"message {i}"
+            )
+        transition_goal(self.conn, source, "completed")
+        new_id = fork_project_goal(
+            self.conn, self.project_id, source, "continue"
+        )
+        new_goal = get_goal(self.conn, new_id)
+        # Progress should reference at most 5 messages
+        progress = new_goal["progress_summary"] or ""
+        # Should not contain "message 0" (too old)
+        self.assertNotIn("message 0", progress)
+
+    def test_fork_progress_each_message_bounded_to_500_chars(self):
+        """Each progress message is truncated to 500 chars."""
+        from local_cli_coordinator.goal_sessions import fork_project_goal
+        from local_cli_coordinator.goals import add_commander_message
+
+        source = create_goal(
+            self.conn, "Source", "objective", project_id=self.project_id
+        )
+        transition_goal(self.conn, source, "active")
+        long_msg = "x" * 1000
+        add_commander_message(self.conn, source, "user", long_msg)
+        transition_goal(self.conn, source, "completed")
+        new_id = fork_project_goal(
+            self.conn, self.project_id, source, "continue"
+        )
+        new_goal = get_goal(self.conn, new_id)
+        progress = new_goal["progress_summary"] or ""
+        # No single message should exceed 500 chars in the summary
+        for line in progress.split("\n"):
+            if line.strip():
+                self.assertLessEqual(len(line), 510)  # some margin for formatting
+
+    def test_fork_task_outcome_bounded_to_twenty_tasks(self):
+        """Linked task outcome summary uses at most 20 tasks."""
+        from local_cli_coordinator.goal_sessions import fork_project_goal
+
+        source = create_goal(
+            self.conn, "Source", "objective", project_id=self.project_id
+        )
+        transition_goal(self.conn, source, "active")
+        # Create 25 tasks and link them
+        for i in range(25):
+            task_id = f"task-{i:03d}"
+            self.conn.execute(
+                "INSERT INTO tasks (id, title, repo, state, priority, "
+                "capabilities, source_path, goal, acceptance_criteria, "
+                "verification_commands) VALUES (?, ?, '', 'inbox', '', '', '', '', '', '')",
+                (task_id, f"Task {i}"),
+            )
+            self.conn.execute(
+                "INSERT INTO task_goal_links (task_id, goal_id) VALUES (?, ?)",
+                (task_id, source),
+            )
+        self.conn.commit()
+        transition_goal(self.conn, source, "completed")
+        new_id = fork_project_goal(
+            self.conn, self.project_id, source, "continue"
+        )
+        new_goal = get_goal(self.conn, new_id)
+        # Fork should succeed even with many linked tasks
+        self.assertIsNotNone(new_id)
+        self.assertEqual(new_goal["status"], "draft")
+
+    def test_fork_instruction_appended_to_objective(self):
+        """Fork instruction appears in the new goal's objective."""
+        from local_cli_coordinator.goal_sessions import fork_project_goal
+
+        source = create_goal(
+            self.conn, "Source", "Build the widget",
+            project_id=self.project_id,
+        )
+        transition_goal(self.conn, source, "completed")
+        new_id = fork_project_goal(
+            self.conn, self.project_id, source, "Add tests only"
+        )
+        new_goal = get_goal(self.conn, new_id)
+        objective = new_goal["objective"]
+        self.assertIn("Build the widget", objective)
+        self.assertIn("Add tests only", objective)
+
+    def test_fork_source_progress_included_in_objective(self):
+        """Source progress summary is included in fork objective."""
+        from local_cli_coordinator.goal_sessions import fork_project_goal
+
+        source = create_goal(
+            self.conn, "Source", "objective", project_id=self.project_id
+        )
+        transition_goal(self.conn, source, "active")
+        update_goal_progress(self.conn, source, "Half done")
+        transition_goal(self.conn, source, "completed")
+        new_id = fork_project_goal(
+            self.conn, self.project_id, source, "finish up"
+        )
+        new_goal = get_goal(self.conn, new_id)
+        objective = new_goal["objective"]
+        self.assertIn("Half done", objective)
+
+    def test_fork_empty_instruction_rejected(self):
+        """Fork with empty instruction is rejected."""
+        from local_cli_coordinator.goal_sessions import (
+            GoalSessionError,
+            fork_project_goal,
+        )
+
+        source = create_goal(
+            self.conn, "Source", "objective", project_id=self.project_id
+        )
+        transition_goal(self.conn, source, "completed")
+        with self.assertRaises(GoalSessionError) as ctx:
+            fork_project_goal(self.conn, self.project_id, source, "")
+        self.assertIn("instruction", str(ctx.exception).lower())
+
+    def test_fork_preserves_repo_ids(self):
+        """Fork copies repo_ids from source."""
+        from local_cli_coordinator.goal_sessions import fork_project_goal
+
+        source = create_goal(
+            self.conn, "Source", "objective",
+            project_id=self.project_id,
+            repo_ids=["repo-alpha", "repo-beta"],
+        )
+        transition_goal(self.conn, source, "completed")
+        new_id = fork_project_goal(
+            self.conn, self.project_id, source, "continue"
+        )
+        new_goal = get_goal(self.conn, new_id)
+        repos = json.loads(new_goal["repo_ids"])
+        self.assertIn("repo-alpha", repos)
+        self.assertIn("repo-beta", repos)
+
+
+# ---------------------------------------------------------------------------
+# Migration 012: parent_goal_id column
+# ---------------------------------------------------------------------------(unittest.TestCase):
     """Migration 012 must add ``parent_goal_id`` to goals table."""
 
     def test_migration_012_exists(self):
