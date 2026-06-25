@@ -201,6 +201,9 @@ def acquire_commander_run_slot(
     trigger: str,
     schema_version: int,
     prompt_path: Path,
+    *,
+    context_manifest: str = "[]",
+    execution_policy: str = "{}",
 ) -> int | None:
     """Atomically claim a Commander run slot, or return None if one is active."""
     interrupt_stale_commander_runs(conn, goal_id)
@@ -211,10 +214,25 @@ def acquire_commander_run_slot(
             return None
         cursor = conn.execute(
             """
-            insert into commander_runs(goal_id, trigger, schema_version, prompt_path, status)
-            values (?, ?, ?, ?, 'running')
+            insert into commander_runs(
+                goal_id,
+                trigger,
+                schema_version,
+                prompt_path,
+                status,
+                context_manifest,
+                execution_policy
+            )
+            values (?, ?, ?, ?, 'running', ?, ?)
             """,
-            (goal_id, trigger, schema_version, str(prompt_path)),
+            (
+                goal_id,
+                trigger,
+                schema_version,
+                str(prompt_path),
+                context_manifest,
+                execution_policy,
+            ),
         )
         run_id = cursor.lastrowid
         conn.commit()

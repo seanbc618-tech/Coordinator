@@ -22,7 +22,12 @@ from .commander_protocol import (
     parse_commander_response,
 )
 from .config import CoordinatorConfig, select_agent_by_role
-from .context_files import ContextFile
+from .context_files import (
+    ContextFile,
+    append_file_context_to_prompt,
+    manifest_from_context_files,
+    render_redacted_prompt,
+)
 from .goals import (
     acquire_commander_run_slot,
     finish_commander_run,
@@ -203,20 +208,33 @@ def _finish_commander_attempt(
     error: str | None,
     duration: float,
     status: str | None = None,
+    base_context: str | None = None,
+    context_files: list[ContextFile] | None = None,
 ) -> tuple[Path, Path, Path | None]:
-    finish_commander_run(
-        conn,
-        run_id_db,
-        status=status or ("succeeded" if response is not None else "failed"),
-        exit_code=exit_code,
-        timed_out=timed_out,
-        raw_output_path=str(raw_output_path),
-        parsed_output_path=str(parsed_output_path) if parsed_output_path else "",
-        progress_summary=response.progress_summary if response else "",
-        stop_reason=response.stop_reason or "" if response else "",
-        error=error or "",
-        duration_seconds=duration,
-    )
+    try:
+        finish_commander_run(
+            conn,
+            run_id_db,
+            status=status or ("succeeded" if response is not None else "failed"),
+            exit_code=exit_code,
+            timed_out=timed_out,
+            raw_output_path=str(raw_output_path),
+            parsed_output_path=str(parsed_output_path) if parsed_output_path else "",
+            progress_summary=response.progress_summary if response else "",
+            stop_reason=response.stop_reason or "" if response else "",
+            error=error or "",
+            duration_seconds=duration,
+        )
+    finally:
+        if (
+            context_files
+            and base_context is not None
+            and prompt_path.is_file()
+        ):
+            prompt_path.write_text(
+                render_redacted_prompt(base_context, context_files),
+                encoding="utf-8",
+            )
     return prompt_path, raw_output_path, parsed_output_path
 
 
@@ -266,10 +284,23 @@ def run_commander(
     if agent is None:
         raise ValueError("no agent configured with 'commander' role")
 
-    context = build_commander_context(conn, config, root, goal_id, rejected_fingerprints)
+    base_context = build_commander_context(
+        conn,
+        config,
+        root,
+        goal_id,
+        rejected_fingerprints,
+    )
     trigger_instructions = commander_trigger_instructions(trigger)
     if trigger_instructions:
-        context = f"{context}\n\n{trigger_instructions}"
+        base_context = f"{base_context}\n\n{trigger_instructions}"
+
+    context = base_context
+    if context_files:
+        context = append_file_context_to_prompt(base_context, context_files)
+
+    manifest_json = json.dumps(manifest_from_context_files(context_files or []))
+    policy_json = json.dumps(execution_policy or {})
 
     goal = get_goal(conn, goal_id)
     repo_ids = json.loads(goal["repo_ids"])
@@ -285,6 +316,8 @@ def run_commander(
         trigger,
         COMMANDER_SCHEMA_VERSION,
         pending_prompt,
+        context_manifest=manifest_json,
+        execution_policy=policy_json,
     )
     if run_id_db is None:
         raise CommanderRunActiveError("commander run already active")
@@ -311,6 +344,8 @@ def run_commander(
             timed_out=False,
             error=str(exc),
             duration=0.0,
+            base_context=base_context,
+            context_files=context_files,
         )
         return CommanderRunResult(
             succeeded=False,
@@ -336,6 +371,8 @@ def run_commander(
             timed_out=False,
             error="empty command",
             duration=0.0,
+            base_context=base_context,
+            context_files=context_files,
         )
         return CommanderRunResult(
             succeeded=False,
@@ -372,13 +409,20 @@ def run_commander(
             )
         except KeyboardInterrupt:
             duration = time.monotonic() - start_time
-            finish_commander_run(
+            _finish_commander_attempt(
                 conn,
-                run_id_db,
-                status="interrupted",
+                run_id_db=run_id_db,
+                prompt_path=prompt_path,
+                raw_output_path=raw_output_path,
+                parsed_output_path=None,
+                response=None,
+                exit_code=130,
+                timed_out=False,
                 error="interrupted by operator",
-                duration_seconds=duration,
-                raw_output_path=str(raw_output_path),
+                duration=duration,
+                status="interrupted",
+                base_context=base_context,
+                context_files=context_files,
             )
             raise
     duration = time.monotonic() - start_time
@@ -435,6 +479,8 @@ def run_commander(
         timed_out=result.timed_out,
         error=error,
         duration=duration,
+        base_context=base_context,
+        context_files=context_files,
     )
 
     return CommanderRunResult(
