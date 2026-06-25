@@ -77,26 +77,24 @@ git diff --check
 
 (no output — clean)
 
-## Manual Smoke (Task 6 — Grok)
+## Task 6 — Integration Gates (Claude Code)
 
-```bash
-cd /Users/xiafan/polymarket-crypto-threshold
-coordinator supervisor restart
-coordinator supervisor status
-coordinator
-/help
-你好
-？？？
-如何启动？
-创建一个只读任务，运行 uv run ruff check src/ tests/ 并报告结果。
-/tasks
-/task <new-id>
-/quit
-```
+**Owner:** Claude Code
+**Handoff:** `docs/superpowers/handoffs/2026-06-25-phase5-2-claude-code-task6.md`
 
-Verify: one serving Supervisor PID, greetings create zero tasks, explicit task
-request may admit work, unknown slash stays local, incompatible-runtime message
-recovers via `coordinator supervisor restart`.
+Grok completed integration prep at `0401823`:
+
+- TUI bundle synced (`build_hash: fa5e760bfe0d0573`)
+- Task 5 fixtures/docs committed
+- No pending production changes
+
+Claude Code runs Gates 1–6 (TypeScript, full Python, focused regressions, wheel,
+whitespace, polymarket smoke) and appends exact output here under **Task 6 Gate
+Results**.
+
+### Task 6 Gate Results
+
+_Pending Claude Code run._
 
 ## Known Limitations
 
