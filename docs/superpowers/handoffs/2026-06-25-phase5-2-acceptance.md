@@ -94,7 +94,66 @@ Results**.
 
 ### Task 6 Gate Results
 
-_Pending Claude Code run._
+Date: 2026-06-25, commit `343a95d`
+Coordinator: `/Library/Frameworks/Python.framework/Versions/3.13/bin/coordinator`
+Supervisor PID (polymarket): 27375 (restarted before smoke)
+
+#### Gate 1 — TypeScript
+
+```text
+typecheck: PASS (no errors)
+lint: PASS (no warnings)
+test: 14 files, 138 tests passed
+build: PASS (build_hash: fa5e760bfe0d0573)
+bundle sync: PASS (no diff)
+```
+
+#### Gate 2 — Full Python Suite (isolated XDG)
+
+```text
+Ran 792 tests in 351.914s
+OK
+```
+
+#### Gate 3 — Focused Phase 5.2 Regression Subset
+
+```text
+Ran 130 tests in 270.261s
+OK
+```
+
+Modules: `test_supervisor_process`, `test_supervisor_cli`, `test_commander_protocol`,
+`test_commander_runner`, `test_commander_chat`, `test_supervisor_commander`,
+`test_tui_pty`, `test_tui_bundle`, `test_global_tui_e2e`
+
+#### Gate 4 — Wheel Packaging
+
+```text
+Ran 2 tests in 4.857s
+OK
+```
+
+#### Gate 5 — Whitespace
+
+```text
+(no output — clean)
+```
+
+#### Gate 6 — Real TUI Smoke (polymarket)
+
+Supervisor restarted before test (PID changed to 27375).
+
+```text
+tui_launched: PASS
+connected: PASS
+project_id (proj-b110e514a458): PASS
+status_bar (● connected): PASS
+help_hint (/help visible): PASS
+detach_hint (Ctrl+C visible): PASS
+/help typed and entered: PASS
+```
+
+All six gates passed. No product bugs found.
 
 ## Known Limitations
 
