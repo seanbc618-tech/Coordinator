@@ -15,6 +15,7 @@ from .context_files import (
     ContextFile,
     ContextFileError,
     load_context_files,
+    parse_context_error_message,
     public_metadata_from_context_files,
 )
 from .db import connect, init_db
@@ -143,10 +144,8 @@ def _send_rpc(
     except SupervisorTransportError as exc:
         return None, _error_outcome("supervisor_unreachable", str(exc))
     if not response.ok or response.result is None:
-        return None, _error_outcome(
-            "supervisor_error",
-            response.error or "supervisor request failed",
-        )
+        code, message = parse_context_error_message(response.error)
+        return None, _error_outcome(code, message)
     return response.result, None
 
 
@@ -299,14 +298,10 @@ def run_cli_prompt(args: argparse.Namespace) -> int:
 
     continue_goal = bool(getattr(args, "continue_goal", False))
     context_tokens = list(getattr(args, "context_file_tokens", []) or [])
-    context_cwd = Path.cwd()
-    root_arg = Path(args.root).resolve()
-    if root_arg != context_cwd.resolve() and root_arg == git_root.resolve():
-        context_cwd = git_root
     context_files, context_err = _load_cli_context(
         git_root,
         context_tokens,
-        cwd=context_cwd,
+        cwd=Path.cwd(),
     )
     if context_err is not None:
         _emit_outcome(context_err, mode=args.mode)

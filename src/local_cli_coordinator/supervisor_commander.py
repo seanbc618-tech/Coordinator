@@ -10,6 +10,7 @@ from .commander_service import CommanderChatResult, send_project_chat_message
 from .context_files import (
     ContextFile,
     ContextFileError,
+    format_context_error,
     load_context_files_from_params,
     public_metadata_from_context_files,
 )
@@ -183,7 +184,7 @@ def handle_chat_send(
                 context_params,
             )
         except ContextFileError as exc:
-            return _error(request, str(exc))
+            return _error(request, format_context_error(exc))
 
     broker.publish(
         conn,

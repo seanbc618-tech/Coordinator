@@ -10,6 +10,15 @@ MAX_CONTEXT_FILES = 16
 MAX_CONTEXT_FILE_BYTES = 128 * 1024
 MAX_CONTEXT_TOTAL_BYTES = 512 * 1024
 
+CONTEXT_ERROR_CODES = frozenset(
+    {
+        "context_missing",
+        "context_outside_repo",
+        "context_binary",
+        "context_too_large",
+    }
+)
+
 
 class ContextFileError(Exception):
     """Raised when a referenced context file fails validation."""
@@ -132,17 +141,6 @@ def load_context_files(
                 "context_outside_repo",
                 f"context file resolves outside repository: {token}",
             )
-        if raw_path.is_symlink():
-            link_target = raw_path.readlink()
-            if isinstance(link_target, Path):
-                link_text = str(link_target)
-            else:
-                link_text = link_target
-            if link_text.startswith("/") or ".." in Path(link_text).parts:
-                raise ContextFileError(
-                    "context_outside_repo",
-                    f"context file symlink resolves outside repository: {token}",
-                )
         if candidate in seen:
             continue
         seen.add(candidate)
@@ -194,6 +192,20 @@ def load_context_files(
         )
 
     return loaded
+
+
+def format_context_error(exc: ContextFileError) -> str:
+    return f"{exc.code}: {exc}"
+
+
+def parse_context_error_message(error: str | None) -> tuple[str, str]:
+    message = error or "supervisor request failed"
+    if ":" in message:
+        code, _, remainder = message.partition(":")
+        code = code.strip()
+        if code in CONTEXT_ERROR_CODES:
+            return code, remainder.strip() or message
+    return "supervisor_error", message
 
 
 def load_context_files_from_params(

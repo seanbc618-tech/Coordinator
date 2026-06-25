@@ -21,8 +21,17 @@ from pathlib import Path
 from unittest import mock
 
 from local_cli_coordinator.cli import build_prompt_parser, normalize_prompt_args
+from local_cli_coordinator.commander_service import send_project_chat_message
+from local_cli_coordinator.config import (
+    AgentConfig,
+    CoordinatorConfig,
+    DaemonPolicyConfig,
+    PolicyConfig,
+    RepoConfig,
+)
+from local_cli_coordinator.context_files import load_context_files
 from local_cli_coordinator.db import connect, init_db
-from local_cli_coordinator.goals import create_goal
+from local_cli_coordinator.goals import create_goal, list_commander_messages
 from local_cli_coordinator.projects import inspect_project, register_project
 from local_cli_coordinator.runtime_paths import RuntimePaths
 from tests.fixtures.fake_supervisor import FakeSupervisor
@@ -150,7 +159,7 @@ def _create_fixtures(tmp: Path) -> dict[str, Path]:
     fixtures["agg_dir"] = agg_dir
 
     # Symlink pointing outside repo
-    outside = tmp / "outside_repo.txt"
+    outside = tmp.parent / "outside_repo.txt"
     outside.write_text("secret\n", encoding="utf-8")
     symlink = tmp / "escape_link.txt"
     symlink.symlink_to(outside)
@@ -290,6 +299,17 @@ class ContextFileValidationTests(unittest.TestCase):
             )
         self.assertIn("outside", str(ctx.exception).lower())
 
+    def test_absolute_symlink_inside_repo_accepted(self):
+        from local_cli_coordinator.context_files import load_context_files
+
+        link = self.repo_root / "abs_link.txt"
+        link.symlink_to((self.repo_root / "valid.txt").resolve())
+        result = load_context_files(
+            self.repo_root, self.repo_root, ["abs_link.txt"]
+        )
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].path, "valid.txt")
+
     def test_sha256_computed(self):
         from local_cli_coordinator.context_files import load_context_files
 
@@ -374,6 +394,51 @@ class SupervisorBoundaryContextTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
+def _failing_commander_config(repo: Path) -> CoordinatorConfig:
+    return CoordinatorConfig(
+        agents={
+            "codex_commander": AgentConfig(
+                id="codex_commander",
+                command="/nonexistent/coordinator-commander-agent",
+                capabilities=["code", "tests", "docs", "research"],
+                max_concurrency=1,
+                role="commander",
+            ),
+            "worker": AgentConfig(
+                id="worker",
+                command="true",
+                capabilities=["code", "tests", "docs", "research"],
+                max_concurrency=1,
+                role="worker",
+            ),
+        },
+        repos={
+            "demo": RepoConfig(
+                id="demo",
+                path=repo,
+                default_branch="main",
+                remote="origin",
+                branch_prefix="coord/",
+                allow_push=False,
+                merge_policy="no_push",
+                verify_commands=["true"],
+            ),
+        },
+        policy=PolicyConfig(
+            require_single_repo=True,
+            require_acceptance_criteria=True,
+            require_verification_commands=False,
+            require_handoff_summary=False,
+            max_files_touched=3,
+            max_expected_minutes=30,
+            max_attempts=3,
+            split_if_touches_multiple_subsystems=False,
+            split_if_research_and_code_are_mixed=False,
+        ),
+        daemon_policy=DaemonPolicyConfig(),
+    )
+
+
 class ContextManifestPersistenceTests(unittest.TestCase):
     """Verify that file bodies are redacted from persisted storage.
 
@@ -406,13 +471,20 @@ class ContextManifestPersistenceTests(unittest.TestCase):
         ).fetchone()
         self.project_id = row["id"]
         goal_id = create_goal(
-            self.conn, "Test goal", "test acceptance",
+            self.conn,
+            "Test goal",
+            "test acceptance",
             project_id=self.project_id,
+            repo_ids=["demo"],
         )
         self.conn.execute(
             "update goals set status = 'active' where id = ?", (goal_id,)
         )
         self.goal_id = goal_id
+        self.config = _failing_commander_config(self.repo)
+        self.context_files = load_context_files(
+            self.repo, self.repo, ["secret.txt"]
+        )
 
     def tearDown(self):
         self.conn.close()
@@ -420,66 +492,90 @@ class ContextManifestPersistenceTests(unittest.TestCase):
 
         shutil.rmtree(self.tmp, ignore_errors=True)
 
+    def _run_context_chat(self) -> None:
+        send_project_chat_message(
+            self.conn,
+            self.config,
+            self.repo,
+            self.goal_id,
+            "analyze",
+            project_id=self.project_id,
+            context_files=self.context_files,
+        )
+
+    def _latest_run_row(self):
+        return self.conn.execute(
+            "SELECT id, goal_id, status, context_manifest "
+            "FROM commander_runs ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+
+    def test_commander_launch_failure_finishes_run_and_redacts_prompt(self):
+        """Popen failures must finish the run and redact prompt bodies."""
+        self._run_context_chat()
+        row = self._latest_run_row()
+        self.assertIsNotNone(row)
+        self.assertNotEqual(row["status"], "running")
+        self.assertNotIn(self.secret_body, row["context_manifest"])
+        prompt_path = (
+            self.repo
+            / "runs"
+            / "commander"
+            / str(row["goal_id"])
+            / str(row["id"])
+            / "prompt.md"
+        )
+        self.assertTrue(prompt_path.exists())
+        self.assertNotIn(self.secret_body, prompt_path.read_text(encoding="utf-8"))
+
     def test_secret_body_not_in_user_message(self):
         """Chat user message must list filenames, not bodies."""
-        # After a chat with @file, the persisted user message should be:
-        #   <operator text>\n\n[context files: secret.txt]
-        # The actual file body must not appear.
-        from local_cli_coordinator.goals import list_commander_messages
-
+        self._run_context_chat()
         messages = list_commander_messages(self.conn, self.goal_id)
-        # Find the user message
         user_msgs = [m for m in messages if m["role"] == "user"]
-        if user_msgs:
-            self.assertNotIn(self.secret_body, user_msgs[-1]["content"])
-            self.assertIn("secret.txt", user_msgs[-1]["content"])
+        self.assertTrue(user_msgs)
+        self.assertNotIn(self.secret_body, user_msgs[-1]["content"])
+        self.assertIn("secret.txt", user_msgs[-1]["content"])
 
     def test_secret_body_not_in_run_manifest(self):
         """Commander run manifest must contain metadata only, no bodies."""
-        row = self.conn.execute(
-            "SELECT context_manifest FROM commander_runs ORDER BY id DESC LIMIT 1"
-        ).fetchone()
-        if row:
-            manifest = row["context_manifest"]
-            self.assertNotIn(self.secret_body, manifest)
-            parsed = json.loads(manifest)
-            self.assertIsInstance(parsed, list)
-            if parsed:
-                self.assertIn("sha256", parsed[0])
-                self.assertIn("path", parsed[0])
-                self.assertNotIn("content", parsed[0])
+        self._run_context_chat()
+        row = self._latest_run_row()
+        self.assertIsNotNone(row)
+        manifest = row["context_manifest"]
+        self.assertNotIn(self.secret_body, manifest)
+        parsed = json.loads(manifest)
+        self.assertIsInstance(parsed, list)
+        self.assertTrue(parsed)
+        self.assertIn("sha256", parsed[0])
+        self.assertIn("path", parsed[0])
+        self.assertNotIn("content", parsed[0])
 
     def test_sha256_present_in_manifest(self):
         """Each manifest entry must include a ``sha256`` field."""
-        row = self.conn.execute(
-            "SELECT context_manifest FROM commander_runs ORDER BY id DESC LIMIT 1"
-        ).fetchone()
-        if row:
-            manifest = json.loads(row["context_manifest"])
-            for entry in manifest:
-                self.assertIn("sha256", entry)
-                self.assertEqual(len(entry["sha256"]), 64)
+        self._run_context_chat()
+        row = self._latest_run_row()
+        self.assertIsNotNone(row)
+        manifest = json.loads(row["context_manifest"])
+        for entry in manifest:
+            self.assertIn("sha256", entry)
+            self.assertEqual(len(entry["sha256"]), 64)
 
     def test_prompt_md_redacted_after_finish(self):
         """The persisted ``prompt.md`` must contain the manifest, not bodies."""
-        # Look for the prompt.md artifact in the run directory
-        row = self.conn.execute(
-            "SELECT id, goal_id FROM commander_runs ORDER BY id DESC LIMIT 1"
-        ).fetchone()
-        if row:
-            run_id = row["id"]
-            goal_id = row["goal_id"]
-            prompt_path = (
-                self.repo
-                / "runs"
-                / "commander"
-                / str(goal_id)
-                / str(run_id)
-                / "prompt.md"
-            )
-            if prompt_path.exists():
-                content = prompt_path.read_text(encoding="utf-8")
-                self.assertNotIn(self.secret_body, content)
+        self._run_context_chat()
+        row = self._latest_run_row()
+        self.assertIsNotNone(row)
+        prompt_path = (
+            self.repo
+            / "runs"
+            / "commander"
+            / str(row["goal_id"])
+            / str(row["id"])
+            / "prompt.md"
+        )
+        self.assertTrue(prompt_path.exists())
+        content = prompt_path.read_text(encoding="utf-8")
+        self.assertNotIn(self.secret_body, content)
 
 
 # ---------------------------------------------------------------------------
@@ -539,6 +635,7 @@ class ContextFileJsonOutputTests(unittest.TestCase):
             "summarize",
             "--mode",
             "json",
+            cwd=self.repo,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         data = json.loads(result.stdout)

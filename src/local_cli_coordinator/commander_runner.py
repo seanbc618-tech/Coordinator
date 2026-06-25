@@ -330,158 +330,108 @@ def run_commander(
         context=context,
     )
 
-    try:
-        argv = _render_command_tokens(agent.command, prompt_path, schema_path, repo_path)
-    except ValueError as exc:
-        prompt_path, raw_output_path, _ = _finish_commander_attempt(
-            conn,
-            run_id_db=run_id_db,
-            prompt_path=prompt_path,
-            raw_output_path=raw_output_path,
-            parsed_output_path=None,
-            response=None,
-            exit_code=1,
-            timed_out=False,
-            error=str(exc),
-            duration=0.0,
-            base_context=base_context,
-            context_files=context_files,
-        )
-        return CommanderRunResult(
-            succeeded=False,
-            response=None,
-            run_id=run_id_db,
-            prompt_path=prompt_path,
-            raw_output_path=raw_output_path,
-            parsed_output_path=None,
-            exit_code=1,
-            timed_out=False,
-            error=str(exc),
-        )
-
-    if not argv:
-        prompt_path, raw_output_path, _ = _finish_commander_attempt(
-            conn,
-            run_id_db=run_id_db,
-            prompt_path=prompt_path,
-            raw_output_path=raw_output_path,
-            parsed_output_path=None,
-            response=None,
-            exit_code=1,
-            timed_out=False,
-            error="empty command",
-            duration=0.0,
-            base_context=base_context,
-            context_files=context_files,
-        )
-        return CommanderRunResult(
-            succeeded=False,
-            response=None,
-            run_id=run_id_db,
-            prompt_path=prompt_path,
-            raw_output_path=raw_output_path,
-            parsed_output_path=None,
-            exit_code=1,
-            timed_out=False,
-            error="empty command",
-        )
-
-    execution_context = ExecutionContext(
-        stage="commander",
-        actor=agent.id,
-        task_id=str(goal_id),
-        log_path=raw_output_path,
-    )
-    start_time = time.monotonic()
-    with (
-        raw_output_path.open("a", encoding="utf-8") as raw_file,
-        stderr_log_path.open("a", encoding="utf-8") as stderr_file,
-    ):
-        try:
-            result = run_command(
-                argv,
-                cwd=repo_path,
-                timeout_seconds=timeout_seconds,
-                reporter=reporter,
-                context=execution_context,
-                stdout_sink=raw_file.write,
-                stderr_sink=stderr_file.write,
-            )
-        except KeyboardInterrupt:
-            duration = time.monotonic() - start_time
-            _finish_commander_attempt(
-                conn,
-                run_id_db=run_id_db,
-                prompt_path=prompt_path,
-                raw_output_path=raw_output_path,
-                parsed_output_path=None,
-                response=None,
-                exit_code=130,
-                timed_out=False,
-                error="interrupted by operator",
-                duration=duration,
-                status="interrupted",
-                base_context=base_context,
-                context_files=context_files,
-            )
-            raise
-    duration = time.monotonic() - start_time
-
+    process_result = None
     response: CommanderResponse | None = None
     parsed_output_path: Path | None = None
     error: str | None = None
+    exit_code = 1
+    timed_out = False
+    duration = 0.0
+    status: str | None = None
+    start_time = time.monotonic()
 
-    if result.timed_out:
-        error = "timeout"
-    elif result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip()
-        error = f"exit code {result.returncode}"
-        if detail:
-            error = f"{error}: {detail[-2000:]}"
-    else:
-        try:
-            response = parse_commander_response(result.stdout)
-            parsed_output_path = raw_output_path.parent / "parsed.json"
-            parsed_output_path.write_text(json.dumps({
-                "schema_version": response.schema_version,
-                "intent": response.intent,
-                "user_reply": response.user_reply,
-                "goal_status": response.goal_status,
-                "progress_summary": response.progress_summary,
-                "tasks": [
-                    {
-                        "title": t.title,
-                        "repo": t.repo,
-                        "capabilities": t.capabilities,
-                        "goal": t.goal,
-                        "acceptance_criteria": t.acceptance_criteria,
-                        "verification_commands": t.verification_commands,
-                        "expected_files": t.expected_files,
-                        "expected_minutes": t.expected_minutes,
-                        "parent_task_id": t.parent_task_id,
-                        "rationale": t.rationale,
-                    }
-                    for t in response.tasks
-                ],
-                "stop_reason": response.stop_reason,
-            }, indent=2))
-        except ValueError as exc:
-            error = f"parse error: {exc}"
+    try:
+        argv = _render_command_tokens(agent.command, prompt_path, schema_path, repo_path)
+        if not argv:
+            error = "empty command"
+        else:
+            execution_context = ExecutionContext(
+                stage="commander",
+                actor=agent.id,
+                task_id=str(goal_id),
+                log_path=raw_output_path,
+            )
+            with (
+                raw_output_path.open("a", encoding="utf-8") as raw_file,
+                stderr_log_path.open("a", encoding="utf-8") as stderr_file,
+            ):
+                process_result = run_command(
+                    argv,
+                    cwd=repo_path,
+                    timeout_seconds=timeout_seconds,
+                    reporter=reporter,
+                    context=execution_context,
+                    stdout_sink=raw_file.write,
+                    stderr_sink=stderr_file.write,
+                )
+            duration = time.monotonic() - start_time
+            exit_code = process_result.returncode
+            timed_out = process_result.timed_out
 
-    prompt_path, raw_output_path, parsed_output_path = _finish_commander_attempt(
-        conn,
-        run_id_db=run_id_db,
-        prompt_path=prompt_path,
-        raw_output_path=raw_output_path,
-        parsed_output_path=parsed_output_path,
-        response=response,
-        exit_code=result.returncode,
-        timed_out=result.timed_out,
-        error=error,
-        duration=duration,
-        base_context=base_context,
-        context_files=context_files,
-    )
+            if process_result.timed_out:
+                error = "timeout"
+            elif process_result.returncode != 0:
+                detail = process_result.stderr.strip() or process_result.stdout.strip()
+                error = f"exit code {process_result.returncode}"
+                if detail:
+                    error = f"{error}: {detail[-2000:]}"
+            else:
+                try:
+                    response = parse_commander_response(process_result.stdout)
+                    parsed_output_path = raw_output_path.parent / "parsed.json"
+                    parsed_output_path.write_text(json.dumps({
+                        "schema_version": response.schema_version,
+                        "intent": response.intent,
+                        "user_reply": response.user_reply,
+                        "goal_status": response.goal_status,
+                        "progress_summary": response.progress_summary,
+                        "tasks": [
+                            {
+                                "title": t.title,
+                                "repo": t.repo,
+                                "capabilities": t.capabilities,
+                                "goal": t.goal,
+                                "acceptance_criteria": t.acceptance_criteria,
+                                "verification_commands": t.verification_commands,
+                                "expected_files": t.expected_files,
+                                "expected_minutes": t.expected_minutes,
+                                "parent_task_id": t.parent_task_id,
+                                "rationale": t.rationale,
+                            }
+                            for t in response.tasks
+                        ],
+                        "stop_reason": response.stop_reason,
+                    }, indent=2))
+                except ValueError as exc:
+                    error = f"parse error: {exc}"
+    except ValueError as exc:
+        error = str(exc)
+        duration = time.monotonic() - start_time
+    except KeyboardInterrupt:
+        error = "interrupted by operator"
+        exit_code = 130
+        status = "interrupted"
+        duration = time.monotonic() - start_time
+        raise
+    except (OSError, FileNotFoundError) as exc:
+        error = str(exc)
+        duration = time.monotonic() - start_time
+    finally:
+        prompt_path, raw_output_path, parsed_output_path = _finish_commander_attempt(
+            conn,
+            run_id_db=run_id_db,
+            prompt_path=prompt_path,
+            raw_output_path=raw_output_path,
+            parsed_output_path=parsed_output_path,
+            response=response,
+            exit_code=exit_code,
+            timed_out=timed_out,
+            error=error,
+            duration=duration,
+            status=status,
+            base_context=base_context,
+            context_files=context_files,
+        )
 
     return CommanderRunResult(
         succeeded=response is not None,
@@ -490,8 +440,8 @@ def run_commander(
         prompt_path=prompt_path,
         raw_output_path=raw_output_path,
         parsed_output_path=parsed_output_path,
-        exit_code=result.returncode,
-        timed_out=result.timed_out,
+        exit_code=exit_code,
+        timed_out=timed_out,
         error=error,
     )
 
