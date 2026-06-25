@@ -756,6 +756,216 @@ class GoalNoCandidateOutputTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Gate B repairs: resume without prompt, fork bounds, TTY selector
+# ---------------------------------------------------------------------------
+
+
+class GoalResumeWithoutPromptTests(unittest.TestCase):
+    """``--resume <id>`` must work without a chat message."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.home = self.tmp / "home"
+        self.home.mkdir()
+        self.repo = self.tmp / "repo"
+        self.repo.mkdir()
+        init_git_repo(self.repo)
+        self.paths = RuntimePaths(
+            self.home / "config", self.home / "data", self.home / "state"
+        )
+        self.paths.create()
+        self.conn = connect(self.paths.database)
+        init_db(self.conn)
+        draft = inspect_project(self.repo)
+        register_project(self.conn, draft, confirmed=True)
+        row = self.conn.execute(
+            "SELECT id FROM projects LIMIT 1"
+        ).fetchone()
+        self.project_id = row["id"]
+        self._old_coordinator_home = os.environ.get("COORDINATOR_HOME")
+        os.environ["COORDINATOR_HOME"] = str(self.home)
+        self.server = FakeSupervisor(str(self.paths.socket))
+        self.server.start()
+
+    def tearDown(self):
+        self.server.stop()
+        self.conn.close()
+        if self._old_coordinator_home is None:
+            os.environ.pop("COORDINATOR_HOME", None)
+        else:
+            os.environ["COORDINATOR_HOME"] = self._old_coordinator_home
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_resume_id_without_prompt_succeeds(self):
+        goal_id = create_goal(
+            self.conn, "Paused goal", "objective", project_id=self.project_id
+        )
+        transition_goal(self.conn, goal_id, "paused")
+        result = _run_cli_with_home(
+            self.home,
+            "--root", str(self.repo),
+            "--resume", str(goal_id),
+            "--print",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"Resumed goal {goal_id}", result.stdout)
+        goal = get_goal(self.conn, goal_id)
+        self.assertEqual(goal["status"], "active")
+
+
+class GoalForkBoundsTests(unittest.TestCase):
+    """Fork must bound copied objective, metadata, and progress fields."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.home = self.tmp / "home"
+        self.home.mkdir()
+        self.repo = self.tmp / "repo"
+        self.repo.mkdir()
+        init_git_repo(self.repo)
+        self.paths = RuntimePaths(
+            self.home / "config", self.home / "data", self.home / "state"
+        )
+        self.paths.create()
+        self.conn = connect(self.paths.database)
+        init_db(self.conn)
+        draft = inspect_project(self.repo)
+        register_project(self.conn, draft, confirmed=True)
+        row = self.conn.execute(
+            "SELECT id FROM projects LIMIT 1"
+        ).fetchone()
+        self.project_id = row["id"]
+
+    def tearDown(self):
+        self.conn.close()
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_fork_bounds_oversized_source_fields(self):
+        from local_cli_coordinator.goal_sessions import (
+            MAX_FORK_JSON_FIELD_CHARS,
+            MAX_FORK_OBJECTIVE_CHARS,
+            MAX_FORK_PROGRESS_CHARS,
+            fork_project_goal,
+        )
+
+        huge = "x" * 200_000
+        source = create_goal(
+            self.conn,
+            huge[:300],
+            huge[:600_000],
+            project_id=self.project_id,
+            completion_criteria=[huge],
+            constraints=[huge],
+            repo_ids=[huge],
+        )
+        self.conn.execute(
+            "update goals set progress_summary = ? where id = ?",
+            (huge, source),
+        )
+        self.conn.commit()
+        transition_goal(self.conn, source, "completed")
+        new_id = fork_project_goal(
+            self.conn, self.project_id, source, "continue safely"
+        )
+        new_goal = get_goal(self.conn, new_id)
+        self.assertLessEqual(len(new_goal["objective"]), MAX_FORK_OBJECTIVE_CHARS)
+        self.assertLessEqual(
+            len(new_goal["progress_summary"] or ""), MAX_FORK_PROGRESS_CHARS
+        )
+        self.assertLessEqual(
+            len(new_goal["completion_criteria"]), MAX_FORK_JSON_FIELD_CHARS
+        )
+        self.assertLessEqual(
+            len(new_goal["constraints"]), MAX_FORK_JSON_FIELD_CHARS
+        )
+        self.assertLessEqual(len(new_goal["repo_ids"]), MAX_FORK_JSON_FIELD_CHARS)
+
+
+class GoalInteractiveSelectorTests(unittest.TestCase):
+    """TTY ``--resume`` without ID must offer a numbered selector."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.home = self.tmp / "home"
+        self.home.mkdir()
+        self.repo = self.tmp / "repo"
+        self.repo.mkdir()
+        init_git_repo(self.repo)
+        self.paths = RuntimePaths(
+            self.home / "config", self.home / "data", self.home / "state"
+        )
+        self.paths.create()
+        self.conn = connect(self.paths.database)
+        init_db(self.conn)
+        draft = inspect_project(self.repo)
+        register_project(self.conn, draft, confirmed=True)
+        row = self.conn.execute(
+            "SELECT id FROM projects LIMIT 1"
+        ).fetchone()
+        self.project_id = row["id"]
+        self._old_coordinator_home = os.environ.get("COORDINATOR_HOME")
+        os.environ["COORDINATOR_HOME"] = str(self.home)
+        self.server = FakeSupervisor(str(self.paths.socket))
+        self.server.start()
+
+    def tearDown(self):
+        self.server.stop()
+        self.conn.close()
+        if self._old_coordinator_home is None:
+            os.environ.pop("COORDINATOR_HOME", None)
+        else:
+            os.environ["COORDINATOR_HOME"] = self._old_coordinator_home
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    @mock.patch("local_cli_coordinator.cli_chat.launch_tui", return_value=0)
+    @mock.patch("local_cli_coordinator.cli_chat._is_interactive_session", return_value=True)
+    @mock.patch(
+        "local_cli_coordinator.cli_chat.input",
+        side_effect=["1", "y"],
+    )
+    @mock.patch("sys.stdin")
+    @mock.patch("sys.stdout")
+    def test_interactive_selector_resumes_confirmed_goal(
+        self,
+        _stdout,
+        _stdin,
+        _input,
+        _interactive,
+        launch_mock,
+    ):
+        from local_cli_coordinator.cli import build_prompt_parser, normalize_prompt_args
+        from local_cli_coordinator.cli_chat import run_cli_prompt
+
+        _stdin.isatty.return_value = True
+        _stdout.isatty.return_value = True
+        goal_id = create_goal(
+            self.conn, "Paused goal", "objective", project_id=self.project_id
+        )
+        transition_goal(self.conn, goal_id, "paused")
+        parser = build_prompt_parser()
+        args = parser.parse_args(["--root", str(self.repo), "--resume"])
+        normalize_prompt_args(args)
+        with mock.patch(
+            "local_cli_coordinator.cli_chat.resolve_git_root",
+            return_value=self.repo.resolve(),
+        ):
+            exit_code = run_cli_prompt(args)
+        self.assertEqual(exit_code, 0)
+        launch_mock.assert_called_once()
+        goal = get_goal(self.conn, goal_id)
+        self.assertEqual(goal["status"], "active")
+        self.assertGreaterEqual(_input.call_count, 2)
+        prompts = [call.args[0] for call in _input.call_args_list]
+        self.assertTrue(any("Select goal number" in prompt for prompt in prompts))
+        self.assertTrue(
+            any(f"Resume goal {goal_id}? [y/N]" in prompt for prompt in prompts)
+        )
+
+
+# ---------------------------------------------------------------------------
 # Migration 012: parent_goal_id column
 # ---------------------------------------------------------------------------
 

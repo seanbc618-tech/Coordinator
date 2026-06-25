@@ -32,6 +32,14 @@ GOAL_SESSION_ERROR_CODES = frozenset(
 MAX_FORK_MESSAGES = 5
 MAX_FORK_MESSAGE_CHARS = 500
 MAX_FORK_TASKS = 20
+MAX_FORK_SOURCE_OBJECTIVE_CHARS = 8_000
+MAX_FORK_PROGRESS_CHARS = 2_000
+MAX_FORK_INSTRUCTION_CHARS = 2_000
+MAX_FORK_TITLE_CHARS = 200
+MAX_FORK_JSON_LIST_ITEMS = 50
+MAX_FORK_JSON_ITEM_CHARS = 500
+MAX_FORK_JSON_FIELD_CHARS = 4_000
+MAX_FORK_OBJECTIVE_CHARS = 20_000
 
 
 class GoalSessionError(Exception):
@@ -161,6 +169,53 @@ def resume_project_goal(
     return get_goal(conn, goal_id)
 
 
+def _truncate_text(value: str, max_chars: int) -> str:
+    text = (value or "").strip()
+    if len(text) <= max_chars:
+        return text
+    if max_chars <= 3:
+        return text[:max_chars]
+    return text[: max_chars - 3] + "..."
+
+
+def _bounded_json_string_list(
+    raw: object,
+    *,
+    max_items: int = MAX_FORK_JSON_LIST_ITEMS,
+    max_item_chars: int = MAX_FORK_JSON_ITEM_CHARS,
+    max_field_chars: int = MAX_FORK_JSON_FIELD_CHARS,
+) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    items: list[str] = []
+    for entry in raw[:max_items]:
+        if not isinstance(entry, str):
+            continue
+        items.append(_truncate_text(entry, max_item_chars))
+    while items:
+        if len(json.dumps(items)) <= max_field_chars:
+            return items
+        items.pop()
+    return []
+
+
+def _bounded_fork_metadata(
+    source: sqlite3.Row,
+) -> tuple[str, str, str, str, str]:
+    title = _truncate_text(source["title"], MAX_FORK_TITLE_CHARS)
+    progress = _truncate_text(source["progress_summary"] or "", MAX_FORK_PROGRESS_CHARS)
+    completion_criteria = json.dumps(
+        _bounded_json_string_list(json.loads(source["completion_criteria"]))
+    )
+    constraints = json.dumps(
+        _bounded_json_string_list(json.loads(source["constraints"]))
+    )
+    repo_ids = json.dumps(
+        _bounded_json_string_list(json.loads(source["repo_ids"]))
+    )
+    return title, progress, completion_criteria, constraints, repo_ids
+
+
 def _bounded_fork_task_summary(conn: sqlite3.Connection, goal_id: int) -> str:
     tasks = list_linked_tasks(conn, goal_id)[:MAX_FORK_TASKS]
     if not tasks:
@@ -187,11 +242,13 @@ def _build_fork_objective(
     source: sqlite3.Row,
     instruction: str,
 ) -> str:
-    progress = (source["progress_summary"] or "").strip() or "(none)"
+    progress = _truncate_text(source["progress_summary"] or "", MAX_FORK_PROGRESS_CHARS)
+    if not progress:
+        progress = "(none)"
     sections = [
-        source["objective"].strip(),
+        _truncate_text(source["objective"], MAX_FORK_SOURCE_OBJECTIVE_CHARS),
         "",
-        f"Fork instruction: {instruction.strip()}",
+        f"Fork instruction: {_truncate_text(instruction, MAX_FORK_INSTRUCTION_CHARS)}",
         f"Source progress: {progress}",
         "",
         "Recent Commander messages:",
@@ -200,7 +257,8 @@ def _build_fork_objective(
         "Linked task outcomes:",
         _bounded_fork_task_summary(conn, source["id"]),
     ]
-    return "\n".join(sections).strip()
+    objective = "\n".join(sections).strip()
+    return _truncate_text(objective, MAX_FORK_OBJECTIVE_CHARS)
 
 
 def fork_project_goal(
@@ -232,9 +290,9 @@ def fork_project_goal(
         )
 
     objective = _build_fork_objective(conn, source, instruction)
-    completion_criteria = json.loads(source["completion_criteria"])
-    constraints = json.loads(source["constraints"])
-    repo_ids = json.loads(source["repo_ids"])
+    title, progress, completion_criteria, constraints, repo_ids = _bounded_fork_metadata(
+        source
+    )
 
     cursor = conn.execute(
         """
@@ -252,13 +310,13 @@ def fork_project_goal(
         values (?, ?, ?, ?, ?, 'draft', ?, ?, ?)
         """,
         (
-            source["title"],
+            title,
             objective,
-            json.dumps(completion_criteria),
-            json.dumps(constraints),
-            json.dumps(repo_ids),
+            completion_criteria,
+            constraints,
+            repo_ids,
             project_id,
-            source["progress_summary"] or "",
+            progress,
             source_goal_id,
         ),
     )

@@ -161,6 +161,44 @@ def _send_rpc(
     return response.result, None
 
 
+def _is_interactive_session(args: argparse.Namespace) -> bool:
+    if args.print_mode or args.mode == "json":
+        return False
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _interactive_resume_selection(candidates: list[dict[str, Any]]) -> int | None:
+    if not candidates:
+        print("No resumable goals.")
+        return None
+
+    print(_format_goal_candidates(candidates))
+    try:
+        choice = input("Select goal number: ").strip()
+    except EOFError:
+        return None
+
+    try:
+        index = int(choice)
+    except ValueError:
+        print("error: enter a number from the list", file=sys.stderr)
+        return None
+
+    if index < 1 or index > len(candidates):
+        print("error: selection out of range", file=sys.stderr)
+        return None
+
+    goal_id = int(candidates[index - 1]["id"])
+    try:
+        confirm = input(f"Resume goal {goal_id}? [y/N] ").strip().lower()
+    except EOFError:
+        return None
+
+    if confirm not in {"y", "yes"}:
+        return None
+    return goal_id
+
+
 def _format_goal_candidates(candidates: list[dict[str, Any]]) -> str:
     if not candidates:
         return "No resumable goals."
@@ -361,7 +399,7 @@ def run_cli_prompt(args: argparse.Namespace) -> int:
     fork_goal_id = getattr(args, "fork", None)
     prompt_text = getattr(args, "prompt_text", "").strip()
 
-    if resume == "":
+    if resume == "" or resume is not None:
         pass
     elif fork_goal_id is not None:
         if not prompt_text:
@@ -401,8 +439,31 @@ def run_cli_prompt(args: argparse.Namespace) -> int:
 
     if resume == "":
         outcome = _list_goal_candidates(paths, project_id)
+        if not outcome.ok:
+            _emit_outcome(outcome, mode=args.mode)
+            return 1
+
+        if _is_interactive_session(args):
+            selected_goal_id = _interactive_resume_selection(
+                list(outcome.candidates or [])
+            )
+            if selected_goal_id is None:
+                return 1
+            resume_err = _resume_goal(paths, project_id, selected_goal_id)
+            if resume_err is not None:
+                _emit_outcome(resume_err, mode=args.mode)
+                return 1
+            outcome = PromptOutcome(
+                ok=True,
+                project_id=project_id,
+                goal_id=selected_goal_id,
+                user_reply=f"Resumed goal {selected_goal_id}.",
+            )
+            _emit_outcome(outcome, mode=args.mode)
+            return launch_tui(start_path=git_root)
+
         _emit_outcome(outcome, mode=args.mode)
-        return 2 if outcome.ok else 1
+        return 2
 
     if fork_goal_id is not None:
         outcome = _fork_goal(paths, project_id, fork_goal_id, prompt_text)
