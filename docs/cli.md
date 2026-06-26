@@ -1,9 +1,12 @@
 # Coordinator CLI Prompt Modes
 
-> **Phase 5.4 merged** — this file now covers `@file` context, `--resume`/`--fork`
-> goal sessions, `--tools`/`--no-tools`/`--exclude-tools` execution policy, and
-> `--mode rpc` envelope output.  See [troubleshooting](troubleshooting.md) for
-> error codes and [migration](migration.md) for schema changes (migrations 012/013).
+> **Phase 5.5 merged** — this file now covers `@file` context, `--resume`/`--fork`
+> goal sessions, `--tools`/`--no-tools`/`--exclude-tools` execution policy,
+> `--mode rpc` envelope output, `/approve`, `/cancel`, `/retry`, `/dashboard`,
+> `/task <id> log`, and `/loop`, `/backlog`, `/evals`, `/loop step` autonomous
+> loop commands.  See [troubleshooting](troubleshooting.md) for error codes,
+> [autonomous-loop](autonomous-loop.md) for loop configuration, and
+> [migration](migration.md) for schema changes (migrations 012–014).
 
 Phase 5.3 adds Pi-inspired headless entry points on top of the global Supervisor
 `chat.send` path. The Ink TUI remains the default interactive shell.
@@ -192,3 +195,60 @@ RPC mode is headless and prints one JSON-encoded Supervisor protocol
 
 Errors also produce a valid `ResponseEnvelope` with `ok: false` and
 `request_id` prefixed `cli-local-`.
+
+## Task control (Phase 5.5)
+
+```bash
+coordinator --print -p "/approve <task-id>"
+coordinator --print -p "/cancel <task-id>"
+coordinator --print -p "/retry <task-id>"
+coordinator --print -p "/task <task-id> log"
+```
+
+- `/approve` transitions `awaiting_human` → merge path.
+- `/cancel` transitions running → failed/blocked; releases lease.
+- `/retry` transitions failed/blocked → ready; respects `max_attempts`.
+- `/task <id> log` returns incremental log tail (cap 64 KiB).
+
+## Dashboard (Phase 5.5)
+
+```bash
+coordinator --print -p "/dashboard"
+```
+
+Returns per-project: goal status, task counts by state, active workers.
+No `project_id` required; aggregate counts only (no cross-project title leakage).
+
+## Autonomous loop (Phase 6)
+
+```bash
+coordinator --print -p "/loop"
+coordinator --print -p "/backlog"
+coordinator --print -p "/evals"
+coordinator --print -p "/loop step"
+```
+
+- `/loop` — active goal, last iteration decision, backlog counts, caps.
+- `/backlog` — latest backlog items with status and linked task ids.
+- `/evals` — latest task evaluations (verdict, summary, next_action).
+- `/loop step` — run one bounded autonomous iteration (requires autonomy enabled).
+
+Autonomy is **off by default**. Enable per-repo in `repos.toml`:
+
+```toml
+[[repos]]
+path = "/path/to/repo"
+autonomy_enabled = true
+```
+
+Or globally in `policy.toml`:
+
+```toml
+[autonomy]
+enabled = true
+max_iterations_per_tick = 1
+max_evaluations_per_iteration = 3
+max_admissions_per_iteration = 1
+```
+
+See [autonomous-loop](autonomous-loop.md) for full configuration and failure modes.
