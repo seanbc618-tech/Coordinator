@@ -21,7 +21,7 @@ from local_cli_coordinator.db import connect, init_db
 from local_cli_coordinator.goals import create_goal, transition_goal
 from local_cli_coordinator.projects import inspect_project, register_project
 from local_cli_coordinator.runtime_paths import RuntimePaths
-from tests.helpers import init_git_repo
+from tests.helpers import init_git_repo, insert_terminal_task
 
 
 class EvaluatorImportTests(unittest.TestCase):
@@ -110,10 +110,12 @@ class EvaluatorTerminalDetectionTests(unittest.TestCase):
             find_unevaluated_terminal_tasks,
         )
         # Create a terminal task directly in DB.
-        self.conn.execute(
-            "insert into tasks (id, title, status, project_id) "
-            "values ('task-uneval', 'test task', 'done', ?)",
-            (self.project_id,),
+        insert_terminal_task(
+            self.conn,
+            task_id="task-uneval",
+            title="test task",
+            state="done",
+            project_id=self.project_id,
         )
         self.conn.commit()
         task_ids = find_unevaluated_terminal_tasks(
@@ -128,10 +130,12 @@ class EvaluatorTerminalDetectionTests(unittest.TestCase):
             find_unevaluated_terminal_tasks,
             record_task_evaluation,
         )
-        self.conn.execute(
-            "insert into tasks (id, title, status, project_id) "
-            "values ('task-evaled', 'done task', 'done', ?)",
-            (self.project_id,),
+        insert_terminal_task(
+            self.conn,
+            task_id="task-evaled",
+            title="done task",
+            state="done",
+            project_id=self.project_id,
         )
         self.conn.commit()
         # Record evaluation first.
@@ -181,10 +185,12 @@ class EvaluatorVerdictTests(unittest.TestCase):
     def test_evaluator_flags_failed_task_as_followup(self) -> None:
         """A failed task evaluates to 'fail' or 'needs_followup'."""
         from local_cli_coordinator.evaluator import evaluate_task
-        self.conn.execute(
-            "insert into tasks (id, title, status, project_id) "
-            "values ('task-fail', 'failed task', 'failed', ?)",
-            (self.project_id,),
+        insert_terminal_task(
+            self.conn,
+            task_id="task-fail",
+            title="failed task",
+            state="failed",
+            project_id=self.project_id,
         )
         self.conn.commit()
         ev = evaluate_task(self.conn, task_id="task-fail")
@@ -193,11 +199,13 @@ class EvaluatorVerdictTests(unittest.TestCase):
     def test_evaluator_passes_completed_task(self) -> None:
         """A completed task with verification passes evaluation."""
         from local_cli_coordinator.evaluator import evaluate_task
-        self.conn.execute(
-            "insert into tasks (id, title, status, project_id, "
-            "verification_commands_json) "
-            "values ('task-done', 'done task', 'done', ?, '[\"true\"]')",
-            (self.project_id,),
+        insert_terminal_task(
+            self.conn,
+            task_id="task-done",
+            title="done task",
+            state="done",
+            project_id=self.project_id,
+            verification_commands="true",
         )
         self.conn.commit()
         ev = evaluate_task(self.conn, task_id="task-done")
@@ -210,10 +218,12 @@ class EvaluatorVerdictTests(unittest.TestCase):
             "none", "admit_followup", "ask_commander",
             "pause_goal", "human_review",
         }
-        self.conn.execute(
-            "insert into tasks (id, title, status, project_id) "
-            "values ('task-na', 'test', 'done', ?)",
-            (self.project_id,),
+        insert_terminal_task(
+            self.conn,
+            task_id="task-na",
+            title="test",
+            state="done",
+            project_id=self.project_id,
         )
         self.conn.commit()
         ev = evaluate_task(self.conn, task_id="task-na")

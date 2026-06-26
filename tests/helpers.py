@@ -32,6 +32,39 @@ def run(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
+def insert_terminal_task(
+    conn,
+    *,
+    task_id: str,
+    title: str,
+    state: str,
+    project_id: str,
+    verification_commands: str = "",
+) -> None:
+    """Insert a minimal task row for Phase 6 evaluator/loop tests."""
+    conn.execute(
+        """
+        insert into tasks(
+            id, title, repo, state, priority, capabilities, source_path,
+            goal, acceptance_criteria, verification_commands, project_id
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            task_id,
+            title,
+            "repo",
+            state,
+            "normal",
+            "code",
+            "test.md",
+            "goal",
+            "criteria",
+            verification_commands,
+            project_id,
+        ),
+    )
+
+
 def init_git_repo(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
     run("git", "init", "-b", "main", cwd=path)
