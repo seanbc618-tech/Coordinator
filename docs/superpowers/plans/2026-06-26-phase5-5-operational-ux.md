@@ -2,7 +2,7 @@
 
 > **Status:** DRAFT — for Gemini adversarial review, then Claude docs/tests, then design spec freeze.  
 > **Prerequisite:** Phase 5.4 merged (`external/coordinator-global-tui` → `main`).  
-> **Review routing:** **Gemini** challenge scope/safety → **Claude** red tests + doc updates → **Grok** implementation → **Codex** Gate E.
+> **Review routing:** **Gemini** → `docs/superpowers/handoffs/2026-06-26-phase5-4-gemini-review.md` · **Claude** red tests + docs → **Grok** impl → **Codex** Gate E.
 
 **Goal:** Make Coordinator feel like a daily **总管** (orchestrator): readable tasks, live worker visibility, explicit task control, multi-project situational awareness, and safe rollback/cleanup — without replacing the Hermes/Ink TUI substrate or Supervisor socket boundary.
 
@@ -271,21 +271,13 @@ PYTHONPATH=src python3 -m unittest \
 
 ---
 
-## Gemini adversarial review checklist
+## Review handoff
 
-- [ ] Scope small enough for one phase? (suggest deferring rollback if Waves A–C slip)
-- [ ] Any RPC breaks protocol v1 clients?
-- [ ] Task cancel vs engine lease race conditions documented?
-- [ ] Multi-project dashboard performance on 50+ projects?
-- [ ] Cleanup commands overlap `repo cleanup-worktrees` — avoid duplicate semantics?
-- [ ] Missing abuse cases: tail loop DoS, dashboard scrape cost?
+Gemini adversarial checklist and attack tasks:
+`docs/superpowers/handoffs/2026-06-26-phase5-4-gemini-review.md` (Attack Task 2 + 3).
 
-## Claude deliverables (after Gemini PASS on draft)
-
-- [ ] `tests/test_phase5_5_*.py` red suites per wave
-- [ ] `docs/cli.md` + `docs/troubleshooting.md` sections per theme
-- [ ] `docs/superpowers/handoffs/2026-06-26-phase5-5-planning-kickoff.md` with exact test commands
-- [ ] Optional: one merge-regression note in Phase 5.4 acceptance doc
+Claude deliverables after Gemini **5.5 PASS** or **CONDITIONAL PASS**: see same handoff
+"After your review" section.
 
 ---
 

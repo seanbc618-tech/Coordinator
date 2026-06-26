@@ -3,7 +3,7 @@
 Date: 2026-06-26  
 Branch: `external/coordinator-global-tui`  
 Gate C: **PASS** (`4d9a8b6` tip)  
-Review routing: **Gemini** adversarial review of this checklist → **Claude** doc nits + merge smoke notes
+Review routing: **Gemini** → `docs/superpowers/handoffs/2026-06-26-phase5-4-gemini-review.md` · **Claude** doc nits + merge smoke notes
 
 ---
 
@@ -237,21 +237,5 @@ git push origin external/coordinator-global-tui
 - [ ] Tag or release note referencing migrations 012/013
 - [ ] Notify operators: new CLI flags documented in `docs/cli.md`
 - [ ] Open Phase 5.5 plan (`docs/superpowers/plans/2026-06-26-phase5-5-operational-ux.md`)
-- [ ] Gemini review of merge readiness + 5.5 draft
+- [ ] Gemini review → `docs/superpowers/handoffs/2026-06-26-phase5-4-gemini-review.md`
 - [ ] Claude: changelog nits, install.md cross-links, merge smoke log
-
----
-
-## Gemini review prompt (adversarial)
-
-1. Confirm no debug script paths appear in `git log --name-only` for the 16 commits.
-2. Challenge migration idempotency on DBs that already ran 012/013 partially.
-3. Verify PR scope does not accidentally include worktree branches.
-4. Check rollback story: can operator downgrade without corrupted goals/tasks?
-5. Flag any doc claim in acceptance handoff not covered by the 156 focused tests.
-
-## Claude follow-up (docs + minor tests)
-
-1. Add `docs/cli.md` merge banner or version note if team convention requires it.
-2. Append merge smoke output to acceptance handoff (optional subsection).
-3. One subprocess test: `git status` clean simulation — ensure packaging excludes `run_attack_*` if ever added to repo root by mistake (lint/test only).
