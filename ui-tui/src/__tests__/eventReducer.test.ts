@@ -157,6 +157,13 @@ describe('reduceEvent', () => {
     expect(state.activities.get('t1')!.output).toEqual(['line1', 'line2', 'line3'])
   })
 
+  it('handles task.log.append like task.output', () => {
+    let state = freshState()
+    state = reduceEvent(state, makeEvent(1, 'task.created', { task_id: 't1' }))
+    state = reduceEvent(state, makeEvent(2, 'task.log.append', { task_id: 't1', output: 'live\n' }))
+    expect(state.activities.get('t1')!.output).toEqual(['live'])
+  })
+
   it('handles task.verification', () => {
     let state = freshState()
     state = reduceEvent(state, makeEvent(1, 'task.created', { task_id: 't1' }))

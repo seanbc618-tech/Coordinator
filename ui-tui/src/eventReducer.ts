@@ -48,6 +48,7 @@ export function reduceEvent(state: TuiState, event: EventEnvelope, projectId?: s
     case 'task.command':
       return reduceTaskCommand(newState, event.payload)
     case 'task.output':
+    case 'task.log.append':
       return reduceTaskOutput(newState, event.payload)
     case 'task.verification':
       return reduceTaskVerification(newState, event.payload)

@@ -10,6 +10,7 @@ from __future__ import annotations
 import dataclasses
 import queue
 import subprocess
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable
@@ -36,6 +37,7 @@ from .goals import active_goal_for_project, get_latest_commander_run
 from .projects import ProjectDraft, get_project, inspect_project, register_project
 from .runtime_paths import RuntimePaths
 from .supervisor_commander import handle_chat_send
+from .log_tail import LogTailError, format_log_tail_error, read_task_log_tail
 from .task_control import (
     TaskControlError,
     approve_task,
@@ -175,6 +177,7 @@ class SupervisorMethods:
         self._stopped: set[str] = set()
         self._live_queues: dict[str, queue.Queue] = {}
         self._subscriptions: dict[str, int] = {}  # sub_id → broker token
+        self._log_tail_last_call: dict[tuple[str, str], float] = {}
         self._handlers: dict[str, Callable] = {
             "project.status": self._handle_project_status,
             "project.goal": self._handle_project_goal,
@@ -186,6 +189,7 @@ class SupervisorMethods:
             "project.task.approve": self._handle_project_task_approve,
             "project.task.retry": self._handle_project_task_retry,
             "project.task.cancel": self._handle_project_task_cancel,
+            "project.task.log": self._handle_project_task_log,
             "supervisor.dashboard": self._handle_supervisor_dashboard,
             "project.logs": self._handle_project_logs,
             "project.inspect": self._handle_project_inspect,
@@ -594,6 +598,58 @@ class SupervisorMethods:
         self, conn: sqlite3.Connection, request: RequestEnvelope
     ) -> ResponseEnvelope:
         return self._mutate_task(conn, request, cancel_task)
+
+    def _handle_project_task_log(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        project_id = request.project_id
+        if not project_id:
+            return self._error(request, "project_id is required")
+        if get_project(conn, project_id) is None:
+            return self._error(request, f"project {project_id!r} not registered")
+
+        task_id = request.params.get("task_id")
+        if not isinstance(task_id, str) or not task_id.strip():
+            args = request.params.get("args")
+            if isinstance(args, str) and args.strip():
+                task_id = args.strip()
+            else:
+                return self._error(request, "task_id is required")
+        task_id = task_id.strip()
+
+        rate_key = (project_id, task_id)
+        now = time.monotonic()
+        last = self._log_tail_last_call.get(rate_key, 0.0)
+        if now - last < 0.5:
+            return self._error(request, "rate_limited: log tail RPC limited to 2 req/s")
+        self._log_tail_last_call[rate_key] = now
+
+        kind = request.params.get("kind", "attempt")
+        if not isinstance(kind, str) or not kind.strip():
+            kind = "attempt"
+        offset_raw = request.params.get("offset", 0)
+        max_bytes_raw = request.params.get("max_bytes", 65536)
+        try:
+            offset = int(offset_raw)
+        except (TypeError, ValueError):
+            offset = 0
+        try:
+            max_bytes = int(max_bytes_raw)
+        except (TypeError, ValueError):
+            max_bytes = 65536
+
+        try:
+            payload = read_task_log_tail(
+                conn,
+                project_id=project_id,
+                task_id=task_id,
+                kind=kind.strip(),
+                offset=offset,
+                max_bytes=max_bytes,
+            )
+        except LogTailError as exc:
+            return self._error(request, format_log_tail_error(exc))
+        return self._ok(request, payload)
 
     def _mutate_task(
         self,

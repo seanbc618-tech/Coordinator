@@ -18,6 +18,7 @@ from local_cli_coordinator.reporting import (
     ExecutionEvent,
     Reporter,
 )
+from local_cli_coordinator.worker_registry import GLOBAL_WORKER_REGISTRY
 
 
 TIMEOUT_EXIT_CODE = 124
@@ -400,6 +401,8 @@ def run_command(
         stderr=subprocess.PIPE,
         start_new_session=os.name == "posix",
     )
+    if task_id:
+        GLOBAL_WORKER_REGISTRY.register(task_id, process)
     if process.stdout is not None:
         _set_nonblocking(process.stdout)
     if process.stderr is not None:
@@ -561,6 +564,8 @@ def run_command(
             selector.close()
         except OSError:
             pass
+        if task_id:
+            GLOBAL_WORKER_REGISTRY.unregister(task_id)
 
     completed_at = monotonic_fn()
     reporter.emit(

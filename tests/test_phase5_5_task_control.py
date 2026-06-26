@@ -213,6 +213,17 @@ class TaskCancelTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         # Safety invariant: no --purge flag means worktree preserved.
 
+    def test_cancel_reports_worker_terminated_field(self) -> None:
+        """Cancel response includes worker_terminated flag."""
+        result = _run_cli_with_home(
+            self.home, "--mode", "rpc", "-p", "/task 1 cancel",
+            cwd=self.repo,
+        )
+        self.assertEqual(result.returncode, 0)
+        envelope = json.loads(result.stdout.strip().splitlines()[-1])
+        self.assertTrue(envelope["ok"])
+        self.assertIn("worker_terminated", envelope.get("result", {}))
+
 
 class TaskRetryTests(unittest.TestCase):
     """project.task.retry transitions failed → ready."""

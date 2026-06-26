@@ -26,6 +26,7 @@ from .db import (
 )
 from .project_runtime import ProjectRuntime, project_is_runnable, run_project_cycle
 from .projects import list_projects
+from .event_stream_reporter import wrap_reporter
 from .reporting import NULL_REPORTER, Reporter
 from .runtime_paths import RuntimePaths
 from .supervisor_capacity import SharedCapacity
@@ -177,10 +178,16 @@ class MultiProjectSupervisor:
                     config=self._config,
                 )
 
+                stream_reporter = wrap_reporter(
+                    self._reporter,
+                    broker=self._broker,
+                    conn=conn,
+                    project_id=project_id,
+                )
                 result = run_project_cycle(
                     conn,
                     runtime,
-                    self._reporter,
+                    stream_reporter,
                     agent_id=agent_id,
                     task_id=task_id,
                 )
