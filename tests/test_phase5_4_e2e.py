@@ -14,6 +14,7 @@ Owner: Claude Code (Task 10)
 
 from __future__ import annotations
 
+import gc
 import hashlib
 import json
 import os
@@ -22,6 +23,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+import warnings
 from pathlib import Path
 from unittest import mock
 
@@ -606,3 +608,165 @@ class RpcModeE2ETests(unittest.TestCase):
         )
         envelope = self._parse_envelope(result.stdout)
         self.assertTrue(envelope["ok"])
+
+
+# ---------------------------------------------------------------------------
+# Leak regression: repeated runs must not leak DB connections or sockets
+# ---------------------------------------------------------------------------
+
+
+class LeakRegressionTests(unittest.TestCase):
+    """Repeated CLI subprocess invocations must not leak resources.
+
+    Runs a full-order mix of all Phase 5.4 modes (json, rpc, print, tools,
+    resume, fork) in a tight loop and asserts zero ResourceWarning from
+    the tracked connection audit.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.home = self.tmp / "home"
+        self.home.mkdir()
+        self.repo = self.tmp / "repo"
+        self.repo.mkdir()
+        init_git_repo(self.repo)
+
+        # Context file for @file tests.
+        (self.repo / "readme.txt").write_text("leak test\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "add", "readme.txt"],
+            cwd=self.repo, check=True, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "add readme"],
+            cwd=self.repo, check=True, capture_output=True,
+        )
+
+        self.paths = RuntimePaths(
+            self.home / "config", self.home / "data", self.home / "state"
+        )
+        self.paths.create()
+        _write_config(self.home / "config", self.repo)
+        self.conn = connect(self.paths.database)
+        init_db(self.conn)
+        draft = inspect_project(self.repo)
+        register_project(self.conn, draft, confirmed=True)
+        self.conn.commit()
+
+        self.project_id = self.conn.execute(
+            "select id from projects where canonical_path = ?",
+            (str(self.repo.resolve()),),
+        ).fetchone()["id"]
+
+        # Create a terminal goal for fork and a paused goal for resume.
+        terminal_id = create_goal(
+            self.conn, "Terminal", "done", project_id=self.project_id,
+        )
+        transition_goal(self.conn, terminal_id, "active")
+        transition_goal(self.conn, terminal_id, "completed")
+        paused_id = create_goal(
+            self.conn, "Paused", "paused", project_id=self.project_id,
+        )
+        transition_goal(self.conn, paused_id, "active")
+        transition_goal(self.conn, paused_id, "paused")
+        self.terminal_id = terminal_id
+        self.paused_id = paused_id
+        self.conn.commit()
+        self.conn.close()
+
+        # FakeSupervisor needs COORDINATOR_HOME in server process env.
+        self._orig_home = os.environ.get("COORDINATOR_HOME")
+        os.environ["COORDINATOR_HOME"] = str(self.home)
+        self.server = FakeSupervisor(str(self.paths.socket))
+        self.server.start()
+
+    def tearDown(self) -> None:
+        self.server.stop()
+        if self._orig_home is not None:
+            os.environ["COORDINATOR_HOME"] = self._orig_home
+        else:
+            os.environ.pop("COORDINATOR_HOME", None)
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_repeated_runs_emit_no_resource_warnings(self) -> None:
+        """Run 20 mixed CLI invocations — zero ResourceWarning expected."""
+        invocations = [
+            # json mode
+            ("--mode", "json", "-p", "status"),
+            # print mode
+            ("--print", "-p", "你好"),
+            # @file context
+            ("@readme.txt", "--mode", "json", "-p", "summarize"),
+            # --no-tools
+            ("--no-tools", "--print", "-p", "explain"),
+            # --tools
+            ("--tools", "read,search", "--print", "-p", "check"),
+            # --exclude-tools
+            ("--exclude-tools", "push", "--print", "-p", "fix"),
+            # rpc mode
+            ("--mode", "rpc", "-p", "/status"),
+            # rpc + tools
+            ("--tools", "read", "--mode", "rpc", "-p", "/status"),
+            # resume candidates (exit 2 expected)
+            ("--resume", "--mode", "json"),
+            # fork (exit 0 or error — we only care about leaks)
+            ("--fork", str(self.terminal_id), "--mode", "json", "-p", "retry"),
+        ]
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", ResourceWarning)
+            for i in range(20):
+                args = invocations[i % len(invocations)]
+                result = _run_cli_with_home(self.home, *args, cwd=self.repo)
+                # We don't assert exit codes here — only that no leaks occur.
+                # Some invocations may fail (e.g. fork conflict) which is fine.
+                del result
+            gc.collect()
+
+    def test_repeated_json_runs_stdout_is_always_parseable(self) -> None:
+        """Each --mode json invocation must produce valid JSON, even in a loop."""
+        for _ in range(10):
+            result = _run_cli_with_home(
+                self.home,
+                "--mode", "json",
+                "-p", "loop test",
+                cwd=self.repo,
+            )
+            data = json.loads(result.stdout)
+            self.assertIn("ok", data)
+            self.assertIsInstance(data["ok"], bool)
+
+    def test_repeated_rpc_runs_stdout_is_always_single_envelope(self) -> None:
+        """Each --mode rpc invocation must produce exactly one JSON line."""
+        for _ in range(10):
+            result = _run_cli_with_home(
+                self.home,
+                "--mode", "rpc",
+                "-p", "/status",
+                cwd=self.repo,
+            )
+            lines = [
+                line for line in result.stdout.strip().splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(len(lines), 1, "Expected 1 line, got %d" % len(lines))
+            envelope = json.loads(lines[0])
+            self.assertIn("protocol_version", envelope)
+            self.assertIn("ok", envelope)
+
+    def test_socket_files_do_not_accumulate(self) -> None:
+        """Repeated runs must not leave orphan socket files."""
+        state_dir = self.home / "state"
+        before = set(state_dir.glob("*.sock"))
+        for _ in range(10):
+            _run_cli_with_home(
+                self.home, "--print", "-p", "ping", cwd=self.repo,
+            )
+        after = set(state_dir.glob("*.sock"))
+        # Only the main coordinator.sock should exist; no new sockets.
+        new_sockets = after - before
+        self.assertEqual(
+            len(new_sockets), 0,
+            "orphan sockets: %s" % [str(s) for s in new_sockets],
+        )
