@@ -16,6 +16,13 @@ from pathlib import Path
 from typing import Any, Callable
 import sqlite3
 
+from .autonomy_runtime import (
+    build_backlog_payload,
+    build_evaluations_payload,
+    build_loop_status_payload,
+    project_autonomy_enabled,
+    run_project_autonomy,
+)
 from .commander_service import confirm_goal, create_and_preview_goal
 from .config import CoordinatorConfig, RepoConfig
 from .db import (
@@ -198,6 +205,10 @@ class SupervisorMethods:
             "project.pause": self._handle_project_pause,
             "project.resume": self._handle_project_resume,
             "project.stop": self._handle_project_stop,
+            "project.loop.status": self._handle_project_loop_status,
+            "project.backlog": self._handle_project_backlog,
+            "project.evaluations": self._handle_project_evaluations,
+            "project.loop.step": self._handle_project_loop_step,
             "events.subscribe": self._handle_events_subscribe,
             "events.replay": self._handle_events_replay,
         }
@@ -768,6 +779,118 @@ class SupervisorMethods:
         self._stopped.add(request.project_id)
         self._paused.discard(request.project_id)
         return self._ok(request, {"stopped": True})
+
+    def _require_registered_project(
+        self,
+        conn: sqlite3.Connection,
+        request: RequestEnvelope,
+    ) -> str | ResponseEnvelope:
+        project_id = request.project_id
+        if not project_id:
+            return self._error(request, "project_id is required")
+        if get_project(conn, project_id) is None:
+            return self._error(request, f"project {project_id!r} not registered")
+        return project_id
+
+    def _handle_project_loop_status(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        if self._config is None:
+            return self._error(request, "supervisor config is unavailable")
+        return self._ok(
+            request,
+            build_loop_status_payload(
+                conn,
+                project_id=project_id,
+                config=self._config,
+            ),
+        )
+
+    def _handle_project_backlog(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        goal_id = request.params.get("goal_id")
+        parsed_goal_id = int(goal_id) if goal_id is not None else None
+        return self._ok(
+            request,
+            build_backlog_payload(
+                conn,
+                project_id=project_id,
+                goal_id=parsed_goal_id,
+            ),
+        )
+
+    def _handle_project_evaluations(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        goal_id = request.params.get("goal_id")
+        parsed_goal_id = int(goal_id) if goal_id is not None else None
+        return self._ok(
+            request,
+            build_evaluations_payload(
+                conn,
+                project_id=project_id,
+                goal_id=parsed_goal_id,
+            ),
+        )
+
+    def _handle_project_loop_step(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        if self._config is None or self._paths is None:
+            return self._error(request, "supervisor config is unavailable")
+        force = bool(request.params.get("force", False))
+        enabled = project_autonomy_enabled(
+            conn, project_id=project_id, config=self._config
+        )
+        if not enabled and not force:
+            return self._error(
+                request,
+                "autonomy is disabled for this project; pass force=true to override",
+            )
+        decisions = run_project_autonomy(
+            conn,
+            project_id=project_id,
+            config=self._config,
+            paths=self._paths,
+            broker=self._broker,
+            paused_projects=self._paused,
+            stopped_projects=self._stopped,
+        )
+        if not decisions:
+            return self._ok(
+                request,
+                {
+                    "project_id": project_id,
+                    "decision": "wait",
+                    "reason": "no iteration ran",
+                },
+            )
+        latest = decisions[-1]
+        return self._ok(
+            request,
+            {
+                "project_id": project_id,
+                "decision": latest.decision,
+                "reason": latest.reason,
+                "goal_id": latest.goal_id,
+                "evaluated_count": latest.evaluated_count,
+                "admitted_task_ids": list(latest.admitted_task_ids),
+                "generated_backlog_ids": list(latest.generated_backlog_ids),
+            },
+        )
 
     def _handle_events_subscribe(
         self, conn: sqlite3.Connection, request: RequestEnvelope

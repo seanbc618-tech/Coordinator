@@ -413,6 +413,35 @@ def _format_status(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _format_loop_status(result: dict[str, Any]) -> str:
+    goal = result.get("goal")
+    last = result.get("last_iteration")
+    backlog = result.get("backlog_counts") or {}
+    lines = [
+        f"Loop status [{result.get('project_id')}]",
+        f"  autonomy: {'on' if result.get('autonomy_enabled') else 'off'}",
+        f"  unevaluated terminal: {result.get('unevaluated_terminal_count', 0)}",
+        f"  backlog: {backlog or 'empty'}",
+        f"  next: {result.get('next_expected_action', 'wait')}",
+    ]
+    if goal:
+        lines.append(f"  goal: {goal.get('title')} ({goal.get('status')})")
+    else:
+        lines.append("  goal: none")
+    if last:
+        lines.append(
+            f"  last: {last.get('decision')} — {last.get('reason')}"
+        )
+    return "\n".join(lines)
+
+
+def _parse_loop_slash(text: str) -> tuple[str, str | None]:
+    parts = text.strip().split()
+    if len(parts) >= 2 and parts[1].lower() == "step":
+        return "project.loop.step", None
+    return "project.loop.status", None
+
+
 def _handle_slash(
     paths: RuntimePaths,
     project_id: str,
@@ -551,6 +580,82 @@ def _handle_slash(
             for task in tasks:
                 lines.append(
                     f"  {task.get('id')} [{task.get('state')}] {task.get('title')}"
+                )
+            reply = "\n".join(lines)
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=reply,
+            intent="status_question",
+        )
+    if command == "/loop":
+        method, _ = _parse_loop_slash(text)
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method=method,
+            params={"force": True} if method == "project.loop.step" else {},
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        if method == "project.loop.step":
+            reply = (
+                f"Loop step: {result.get('decision')} — {result.get('reason')}"
+            )
+        else:
+            reply = _format_loop_status(result)
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=reply,
+            intent="status_question",
+        )
+    if command == "/backlog":
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="project.backlog",
+            params={},
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        items = result.get("items") or []
+        if not items:
+            reply = "Backlog is empty."
+        else:
+            lines = ["Backlog:"]
+            for item in items:
+                lines.append(
+                    f"  {item.get('id')} [{item.get('status')}] {item.get('title')}"
+                )
+            reply = "\n".join(lines)
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=reply,
+            intent="status_question",
+        )
+    if command == "/evals":
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="project.evaluations",
+            params={},
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        evaluations = result.get("evaluations") or []
+        if not evaluations:
+            reply = "No evaluations yet."
+        else:
+            lines = ["Evaluations:"]
+            for entry in evaluations:
+                lines.append(
+                    f"  {entry.get('task_id')} -> {entry.get('verdict')} "
+                    f"({entry.get('next_action')})"
                 )
             reply = "\n".join(lines)
         return PromptOutcome(
@@ -706,6 +811,37 @@ def _rpc_slash(
             paths,
             project_id=project_id,
             method="project.tasks",
+            params={},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/loop":
+        method, _ = _parse_loop_slash(text)
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method=method,
+            params={"force": True} if method == "project.loop.step" else {},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/backlog":
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="project.backlog",
+            params={},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/evals":
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="project.evaluations",
             params={},
         )
         if envelope is not None:
