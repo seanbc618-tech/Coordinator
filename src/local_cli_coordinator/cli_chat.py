@@ -598,6 +598,36 @@ def run_cli_prompt(args: argparse.Namespace) -> int:
             if resume_err is not None:
                 _emit_outcome(resume_err, mode=args.mode)
                 return 1
+            if prompt_text:
+                execution_policy = _resolve_cli_execution_policy(
+                    paths, git_root, args
+                )
+                context_tokens = list(
+                    getattr(args, "context_file_tokens", []) or []
+                )
+                context_files, context_err = _load_cli_context(
+                    git_root,
+                    context_tokens,
+                    cwd=Path.cwd(),
+                )
+                if context_err is not None:
+                    _emit_outcome(context_err, mode=args.mode)
+                    return 1
+                outcome, envelope = _chat_send(
+                    paths,
+                    project_id=project_id,
+                    text=prompt_text,
+                    goal_id=selected_goal_id,
+                    context_files=context_files,
+                    execution_policy=execution_policy,
+                )
+                if args.mode == "rpc":
+                    return _finish_prompt(args, outcome, envelope=envelope)
+                if not outcome.ok:
+                    _emit_outcome(outcome, mode=args.mode)
+                    return 1
+                _emit_outcome(outcome, mode=args.mode)
+                return launch_tui(start_path=git_root)
             outcome = PromptOutcome(
                 ok=True,
                 project_id=project_id,

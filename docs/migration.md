@@ -205,6 +205,20 @@ Migration never deletes the legacy root. Tests and production code enforce this:
 | `COORDINATOR_LEGACY_ROOT` | Point first-run detection at a specific legacy root |
 | `COORDINATOR_HOME` | Isolated global paths; disables automatic legacy detection |
 
+## Phase 5.4 schema (migrations 012–013)
+
+Applied automatically on `init_db`:
+
+| Migration | Adds |
+|-----------|------|
+| 012 | `goals.parent_goal_id` (fork lineage) |
+| 013 | `commander_runs.context_manifest`, `execution_policy`; `tasks.execution_policy` |
+
+**Downgrade:** running an older Coordinator binary against a database that already
+applied 012/013 is safe (SQLite ignores unknown columns on read). Older binaries
+cannot use goal fork lineage, file manifests, or execution restrictions until
+upgraded again. No manual rollback SQL is required for normal operator use.
+
 ## See also
 
 - [Installation](install.md)

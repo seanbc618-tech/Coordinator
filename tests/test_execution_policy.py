@@ -22,7 +22,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from local_cli_coordinator.cli import build_prompt_parser, normalize_prompt_args
+from local_cli_coordinator.cli import (
+    PromptNormalizeError,
+    build_prompt_parser,
+    normalize_prompt_args,
+)
 from local_cli_coordinator.db import connect, init_db
 from local_cli_coordinator.goals import (
     acquire_commander_run_slot,
@@ -123,21 +127,21 @@ class ExecutionPolicyParserTests(unittest.TestCase):
     # Unknown tool names --------------------------------------------------
 
     def test_unknown_tool_name_is_error(self) -> None:
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(PromptNormalizeError):
             self._parse_prompt(["--tools", "deploy", "-p", "部署"])
 
     def test_unknown_exclude_tool_name_is_error(self) -> None:
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(PromptNormalizeError):
             self._parse_prompt(["--exclude-tools", "rollback", "-p", "回滚"])
 
     # Empty lists ---------------------------------------------------------
 
     def test_empty_tools_list_is_error(self) -> None:
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(PromptNormalizeError):
             self._parse_prompt(["--tools", "", "-p", "空"])
 
     def test_empty_exclude_tools_list_is_error(self) -> None:
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(PromptNormalizeError):
             self._parse_prompt(["--exclude-tools", "", "-p", "空"])
 
     # Mutual exclusivity --------------------------------------------------
@@ -865,6 +869,26 @@ class RpcModeEnvelopeTests(unittest.TestCase):
             envelope["request_id"].startswith("cli-local-"),
             f"Expected cli-local- prefix, got {envelope['request_id']}",
         )
+
+    def test_rpc_unknown_tool_returns_envelope(self) -> None:
+        """Tool parse errors in RPC mode emit ResponseEnvelope, not stderr."""
+        result = _run_cli_with_home(
+            self.home,
+            "--root", str(self.repo),
+            "--mode", "rpc",
+            "--tools", "nonexistent_tool",
+            "-p", "hello",
+            cwd=self.repo,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.stderr.strip(), "")
+        lines = [
+            line for line in result.stdout.strip().splitlines() if line.strip()
+        ]
+        self.assertEqual(len(lines), 1)
+        envelope = json.loads(lines[0])
+        self.assertFalse(envelope["ok"])
+        self.assertIn("unknown tool", (envelope.get("error") or "").lower())
 
     def test_rpc_mode_implies_no_tui(self) -> None:
         """--mode rpc implies --no-tui (headless)."""

@@ -1076,6 +1076,63 @@ class GoalPTYSelectorDetailTests(unittest.TestCase):
         goal = get_goal(self.conn, g1)
         self.assertEqual(goal["status"], "active")
 
+    def test_interactive_resume_forwards_prompt_after_selection(self):
+        """TTY --resume -p must send chat after the operator confirms a goal."""
+        from local_cli_coordinator.cli import build_prompt_parser, normalize_prompt_args
+        from local_cli_coordinator.cli_chat import PromptOutcome, run_cli_prompt
+
+        goal_id = create_goal(
+            self.conn, "Paused", "objective", project_id=self.project_id
+        )
+        transition_goal(self.conn, goal_id, "paused")
+        parser = build_prompt_parser()
+        args = parser.parse_args(
+            [
+                "--root",
+                str(self.repo),
+                "--resume",
+                "-p",
+                "continue with this instruction",
+            ]
+        )
+        normalize_prompt_args(args)
+        chat_outcome = PromptOutcome(
+            ok=True,
+            project_id=self.project_id,
+            goal_id=goal_id,
+            user_reply="ack",
+        )
+        with (
+            mock.patch(
+                "local_cli_coordinator.cli_chat.launch_tui",
+                return_value=0,
+            ),
+            mock.patch(
+                "local_cli_coordinator.cli_chat._is_interactive_session",
+                return_value=True,
+            ),
+            mock.patch(
+                "local_cli_coordinator.cli_chat.input",
+                side_effect=["1", "y"],
+            ),
+            mock.patch(
+                "local_cli_coordinator.cli_chat._resolve_project",
+                return_value=(self.project_id, None),
+            ),
+            mock.patch(
+                "local_cli_coordinator.cli_chat._chat_send",
+                return_value=(chat_outcome, None),
+            ) as chat_mock,
+        ):
+            exit_code = run_cli_prompt(args)
+        self.assertEqual(exit_code, 0)
+        chat_mock.assert_called_once()
+        self.assertEqual(
+            chat_mock.call_args.kwargs["text"],
+            "continue with this instruction",
+        )
+        self.assertEqual(chat_mock.call_args.kwargs["goal_id"], goal_id)
+
     def test_non_tty_resume_without_id_exits_2(self):
         """Non-TTY --resume without ID exits with code 2."""
         create_goal(

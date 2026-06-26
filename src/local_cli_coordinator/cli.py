@@ -1116,6 +1116,10 @@ def build_prompt_parser() -> argparse.ArgumentParser:
     return parser
 
 
+class PromptNormalizeError(ValueError):
+    """Raised when prompt flag normalization fails."""
+
+
 def normalize_prompt_args(args: argparse.Namespace) -> None:
     """Derive ``prompt_text`` and apply headless mode flags."""
     from .execution_policy import parse_tool_csv
@@ -1126,7 +1130,7 @@ def normalize_prompt_args(args: argparse.Namespace) -> None:
         args.tools = parse_tool_csv(getattr(args, "tools", None))
         args.exclude_tools = parse_tool_csv(getattr(args, "exclude_tools", None))
     except ValueError as exc:
-        build_prompt_parser().error(str(exc))
+        raise PromptNormalizeError(str(exc)) from exc
     context_tokens: list[str] = []
     prompt_parts: list[str] = []
     for word in args.prompt_words:
@@ -1244,7 +1248,15 @@ def main(argv: list[str] | None = None) -> int:
     if is_prompt_argv(cli_argv):
         prompt_parser = build_prompt_parser()
         args = prompt_parser.parse_args(cli_argv)
-        normalize_prompt_args(args)
+        try:
+            normalize_prompt_args(args)
+        except PromptNormalizeError as exc:
+            if args.mode == "rpc":
+                from .cli_chat import _emit_rpc, _local_rpc_envelope
+
+                _emit_rpc(_local_rpc_envelope(ok=False, error=str(exc)))
+                return 2
+            prompt_parser.error(str(exc))
         return _cmd_prompt(args)
 
     parser = build_parser()
