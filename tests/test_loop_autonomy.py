@@ -21,7 +21,7 @@ from local_cli_coordinator.db import connect, init_db
 from local_cli_coordinator.goals import create_goal, transition_goal
 from local_cli_coordinator.projects import inspect_project, register_project
 from local_cli_coordinator.runtime_paths import RuntimePaths
-from tests.helpers import init_git_repo
+from tests.helpers import init_git_repo, insert_terminal_task
 
 
 class LoopDecisionTests(unittest.TestCase):
@@ -95,10 +95,12 @@ class AutonomousIterationTests(unittest.TestCase):
     def test_loop_waits_when_project_has_running_task(self) -> None:
         """Iteration decides 'wait' when a task is already running."""
         # Insert a running task.
-        self.conn.execute(
-            "insert into tasks (id, title, status, project_id) "
-            "values ('task-running', 'busy', 'running', ?)",
-            (self.project_id,),
+        insert_terminal_task(
+            self.conn,
+            task_id="task-running",
+            title="busy",
+            state="running",
+            project_id=self.project_id,
         )
         self.conn.commit()
         decision = self._run_iteration(
@@ -143,10 +145,12 @@ class AutonomousIterationTests(unittest.TestCase):
         """Iteration evaluates at most max_evaluations terminal tasks."""
         # Create 5 terminal tasks.
         for i in range(5):
-            self.conn.execute(
-                "insert into tasks (id, title, status, project_id) "
-                "values (?, ?, 'done', ?)",
-                (f"task-eval-{i}", f"task {i}", self.project_id),
+            insert_terminal_task(
+                self.conn,
+                task_id=f"task-eval-{i}",
+                title=f"task {i}",
+                state="done",
+                project_id=self.project_id,
             )
         self.conn.commit()
         decision = self._run_iteration(
@@ -200,9 +204,12 @@ class AutonomousIterationTests(unittest.TestCase):
             propose_backlog_items,
         )
         # Insert a task in a different project.
-        self.conn.execute(
-            "insert into tasks (id, title, status, project_id) "
-            "values ('task-other', 'other', 'done', 'other-project')",
+        insert_terminal_task(
+            self.conn,
+            task_id="task-other",
+            title="other",
+            state="done",
+            project_id="other-project",
         )
         self.conn.commit()
         # Propose backlog for this project only.
