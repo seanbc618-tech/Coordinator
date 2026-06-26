@@ -16,6 +16,31 @@ Branch: `external/coordinator-global-tui`
 | `feed21c` | Claude | Task 10 docs: `docs/cli.md`, `docs/troubleshooting.md` |
 | `687949d` | Claude | Task 10 acceptance handoff (initial) |
 | `9dc5f3e` | Grok | Task 11: integration fixture fix + gate record |
+| `3f6e1ca` | Grok | Gate C repair: join background tick thread |
+| `8307333` | Claude | Gate C repair: `LeakRegressionTests` (4 tests) |
+
+## Gate C Sign-off
+
+**Verdict: PASS** (Codex, 2026-06-26)
+
+```bash
+PYTHONWARNINGS=error::ResourceWarning PYTHONPATH=src python3 -m unittest \
+  tests.test_phase2_gate.GateLiveEventTests.test_gate_socket_client_receives_live_event_after_subscribe -v
+# OK
+
+PYTHONWARNINGS=error::ResourceWarning PYTHONPATH=src python3 -m unittest \
+  tests.test_phase5_4_e2e.LeakRegressionTests -v
+# 4/4 OK
+
+PYTHONWARNINGS=error::ResourceWarning PYTHONPATH=src python3 -m unittest discover -s tests -q
+# 949/949 OK
+
+git diff --check
+# clean
+```
+
+**PR hygiene:** do not stage untracked local debug scripts (`run_attack_*.py`,
+`debug_*.py`, `child*.py`, etc.).
 
 ## Test Counts
 
@@ -24,10 +49,10 @@ Branch: `external/coordinator-global-tui`
 | `test_cli_file_context.py` | 25 | ✅ all pass |
 | `test_goal_sessions.py` | 51 | ✅ all pass |
 | `test_execution_policy.py` | 42 | ✅ all pass |
-| `test_phase5_4_e2e.py` | 13 | ✅ all pass |
+| `test_phase5_4_e2e.py` | 17 | ✅ all pass (incl. 4 leak regression) |
 | `test_cli_prompt.py` | 21 | ✅ all pass (regression) |
-| **Phase 5.4 focused total** | **152** | ✅ all pass |
-| Full suite (`ResourceWarning=error`) | 945 | ✅ all pass |
+| **Phase 5.4 focused total** | **156** | ✅ all pass |
+| Full suite (`ResourceWarning=error`) | 949 | ✅ all pass |
 
 ## Task 11 Integration Gates (2026-06-26)
 
@@ -121,9 +146,9 @@ Smoke requires `COORDINATOR_HOME` in the `FakeSupervisor` host process so
 - [x] Resume/fork state and project isolation (`test_goal_sessions.py`)
 - [x] Policy persistence and engine stage enforcement (`test_execution_policy.py`)
 - [x] JSON/RPC headless output (`test_phase5_4_e2e.py`, `test_cli_prompt.py`)
-- [x] Full regression green (945 passed)
+- [x] Full regression green (949 passed)
 - [x] Wheel packaging (`WheelPackagingTest`, `test_wheel_migrations`)
 - [x] Clean-wheel smoke (six CLI commands above)
 - [x] Documentation updated (`docs/cli.md`, `docs/troubleshooting.md`)
 - [x] Full-suite ResourceWarning leak fixed (`test_phase2_gate` live-event thread join)
-- [ ] Codex Gate C / final independent sign-off (re-run after repair)
+- [x] Codex Gate C / final independent sign-off (PASS)
