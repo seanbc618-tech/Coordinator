@@ -14,6 +14,9 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/goal', description: 'Set or view the current goal', method: 'project.goal' },
   { name: '/tasks', description: 'List project tasks', method: 'project.tasks' },
   { name: '/task', description: 'Show one task in detail', method: 'project.task' },
+  { name: '/approve', description: 'Approve a human-gated task', method: 'project.task.approve' },
+  { name: '/retry', description: 'Retry a failed task', method: 'project.task.retry' },
+  { name: '/dashboard', description: 'Show multi-project dashboard', method: 'supervisor.dashboard' },
   { name: '/logs', description: 'Show recent logs', method: 'project.logs' },
   { name: '/agents', description: 'List active agents', method: 'project.agents' },
   { name: '/pause', description: 'Pause project scheduling', method: 'project.pause' },
@@ -69,6 +72,9 @@ const HELP_COMMAND_NAMES = new Set([
   '/goal',
   '/tasks',
   '/task',
+  '/approve',
+  '/retry',
+  '/dashboard',
   '/logs',
   '/quit',
 ])
@@ -86,6 +92,14 @@ export function formatHelpText(): string {
     }
     if (cmd.name === '/task') {
       lines.push('/task <id> - Show one task in detail')
+      continue
+    }
+    if (cmd.name === '/approve') {
+      lines.push('/approve <task-id> - Unblock awaiting_human task')
+      continue
+    }
+    if (cmd.name === '/retry') {
+      lines.push('/retry <task-id> - Retry a failed task')
       continue
     }
     lines.push(`${cmd.name} - ${cmd.description}`)

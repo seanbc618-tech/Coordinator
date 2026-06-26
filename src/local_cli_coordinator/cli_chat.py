@@ -38,6 +38,7 @@ from .supervisor_protocol import (
     encode_envelope,
 )
 from .supervisor_server import SupervisorTransportError, send_request
+from .task_control import build_orchestration, flatten_task_detail_json
 from .tui_launcher import NotGitRepositoryError, launch_tui, resolve_git_root
 
 CHAT_SEND_TIMEOUT = float(COMMANDER_TIMEOUT_SECONDS) + 10.0
@@ -57,6 +58,7 @@ class PromptOutcome:
     error_message: str | None = None
     context_files: list[dict[str, Any]] | None = None
     candidates: list[dict[str, Any]] | None = None
+    orchestration: dict[str, Any] | None = None
 
     def to_json_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -77,6 +79,8 @@ class PromptOutcome:
         }
         if self.candidates is not None:
             payload["candidates"] = list(self.candidates)
+        if self.orchestration is not None:
+            payload["orchestration"] = dict(self.orchestration)
         return payload
 
 
@@ -177,6 +181,7 @@ def _outcome_to_rpc(outcome: PromptOutcome) -> ResponseEnvelope:
                 "accepted_task_ids": list(outcome.accepted_task_ids or []),
                 "context_files": list(outcome.context_files or []),
                 "candidates": list(outcome.candidates or []),
+                "orchestration": dict(outcome.orchestration or {}),
             },
         )
     message = outcome.error_message or "request failed"
@@ -231,6 +236,8 @@ def _resolve_cli_execution_policy(
     try:
         config = load_config_for_paths(paths)
     except (FileNotFoundError, OSError, ValueError):
+        if getattr(args, "no_tools", False):
+            return {"allowed": [], "source": "effective"}
         return {}
     repo_config = None
     for repo in config.repos.values():
@@ -240,6 +247,8 @@ def _resolve_cli_execution_policy(
     if repo_config is None and config.repos:
         repo_config = next(iter(config.repos.values()))
     if repo_config is None:
+        if getattr(args, "no_tools", False):
+            return {"allowed": [], "source": "effective"}
         return {}
     effective = resolve_effective_policy(
         repo_config,
@@ -367,6 +376,27 @@ def _fork_goal(
     )
 
 
+def _parse_task_slash(text: str) -> tuple[str | None, str | None]:
+    parts = text.strip().split()
+    if len(parts) < 2:
+        return None, None
+    task_id = parts[1]
+    action = parts[2].lower() if len(parts) > 2 else None
+    return task_id, action
+
+
+def _orchestration_from_chat_result(result: dict[str, Any]) -> dict[str, Any]:
+    raw = result.get("orchestration")
+    if isinstance(raw, dict):
+        return raw
+    return build_orchestration(
+        admitted=int(result.get("admitted") or 0),
+        rejected=int(result.get("rejected") or 0),
+        rejection_reasons=list(result.get("rejection_reasons") or []),
+        intent=str(result.get("intent") or "conversation"),
+    )
+
+
 def _format_status(result: dict[str, Any]) -> str:
     counts = result.get("counts") or {}
     goal = result.get("goal")
@@ -389,6 +419,79 @@ def _handle_slash(
     text: str,
 ) -> PromptOutcome:
     command = text.strip().split()[0].lower()
+    if command == "/dashboard":
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="supervisor.dashboard",
+            params={},
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        projects = result.get("projects") or []
+        lines = ["Dashboard:"]
+        for entry in projects:
+            counts = entry.get("task_counts") or {}
+            count_text = ", ".join(f"{k}={v}" for k, v in counts.items()) or "none"
+            lines.append(
+                f"  {entry.get('project_id')} goal={entry.get('goal_status')} "
+                f"workers={entry.get('active_workers', 0)} tasks[{count_text}]"
+            )
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply="\n".join(lines) if projects else "Dashboard — no projects",
+            intent="status_question",
+        )
+    if command == "/task":
+        task_id, action = _parse_task_slash(text)
+        if not task_id:
+            return _error_outcome("invalid_args", "usage: /task <id> [approve|retry|cancel]")
+        if action in {"approve", "retry", "cancel"}:
+            method = f"project.task.{action}"
+            result, err, _envelope = _send_rpc(
+                paths,
+                project_id=project_id,
+                method=method,
+                params={"task_id": task_id},
+            )
+            if err is not None:
+                return err
+            assert result is not None
+            return PromptOutcome(
+                ok=True,
+                project_id=project_id,
+                user_reply=f"Task {task_id} -> {result.get('state', action)}",
+                intent="status_question",
+            )
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="project.task",
+            params={"args": task_id},
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        flat = flatten_task_detail_json(result)
+        lines = [
+            f"Task {flat.get('id', task_id)} [{flat.get('state')}] {flat.get('title', '')}",
+            f"Goal: {flat.get('goal', '')}",
+        ]
+        if flat.get("failure_class"):
+            lines.append(f"Failure: {flat.get('failure_class')} — {flat.get('failure_summary', '')}")
+        if flat.get("human_review_required"):
+            lines.append("Human review required")
+        policy = flat.get("execution_policy") or {}
+        if policy:
+            lines.append(f"Policy: {policy}")
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply="\n".join(lines),
+            intent="status_question",
+        )
     if command == "/status":
         result, err, _envelope = _send_rpc(
             paths,
@@ -474,6 +577,7 @@ def _chat_send(
             rejected=int(result.get("rejected") or 0),
             accepted_task_ids=list(result.get("accepted_task_ids") or []),
             context_files=list(context_metadata),
+            orchestration=_orchestration_from_chat_result(result),
         ),
         envelope,
     )
@@ -485,6 +589,12 @@ def _emit_outcome(outcome: PromptOutcome, *, mode: str) -> None:
         return
     if outcome.user_reply:
         print(outcome.user_reply)
+    orch = outcome.orchestration or {}
+    next_action = str(orch.get("next_action") or "").strip()
+    if next_action and mode == "text":
+        admitted = int(orch.get("admitted") or outcome.admitted or 0)
+        rejected = int(orch.get("rejected") or outcome.rejected or 0)
+        print(f"Next: {next_action} (admitted={admitted}, rejected={rejected})")
     if not outcome.ok and outcome.error_message:
         print(f"error: {outcome.error_message}", file=sys.stderr)
 
@@ -504,12 +614,57 @@ def _finish_prompt(
     return code
 
 
+def _emit_task_detail_json(payload: dict[str, Any], *, ok: bool = True) -> int:
+    body = dict(payload)
+    body["ok"] = ok
+    print(json.dumps(body, ensure_ascii=False))
+    return 0
+
+
 def _rpc_slash(
     paths: RuntimePaths,
     project_id: str,
     text: str,
 ) -> tuple[ResponseEnvelope, int]:
     command = text.strip().split()[0].lower()
+    if command == "/dashboard":
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="supervisor.dashboard",
+            params={},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/task":
+        task_id, action = _parse_task_slash(text)
+        if not task_id:
+            outcome = _error_outcome("invalid_args", "usage: /task <id> [approve|retry|cancel]")
+            return _outcome_to_rpc(outcome), 1
+        if action in {"approve", "retry", "cancel"}:
+            _, err, envelope = _send_rpc(
+                paths,
+                project_id=project_id,
+                method=f"project.task.{action}",
+                params={"task_id": task_id},
+            )
+            if envelope is not None:
+                return envelope, 0
+            return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="project.task",
+            params={"args": task_id},
+        )
+        if envelope is not None and envelope.ok and envelope.result is not None:
+            flat = flatten_task_detail_json(envelope.result)
+            flat["ok"] = True
+            return _local_rpc_envelope(ok=True, result=flat), 0
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
     if command == "/status":
         _, err, envelope = _send_rpc(
             paths,
@@ -701,6 +856,31 @@ def run_cli_prompt(args: argparse.Namespace) -> int:
             envelope, exit_code = _rpc_slash(paths, project_id, prompt_text)
             _emit_rpc(envelope)
             return exit_code
+        if args.mode == "json":
+            task_id, action = _parse_task_slash(prompt_text)
+            if task_id and action is None:
+                result, err, _envelope = _send_rpc(
+                    paths,
+                    project_id=project_id,
+                    method="project.task",
+                    params={"args": task_id},
+                )
+                if err is not None:
+                    _emit_task_detail_json(
+                        {
+                            "error": {
+                                "code": err.error_code,
+                                "message": err.error_message,
+                            },
+                            "failure_class": "unknown",
+                            "human_review_required": False,
+                        },
+                        ok=False,
+                    )
+                    return 0
+                assert result is not None
+                _emit_task_detail_json(flatten_task_detail_json(result))
+                return 0
         outcome = _handle_slash(paths, project_id, prompt_text)
     else:
         goal_id, goal_err = _resolve_goal_id(

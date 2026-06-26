@@ -21,6 +21,7 @@ from .db import get_task
 from .goals import active_goal_for_project, get_goal, has_live_commander_run
 from .supervisor_events import EventBroker
 from .supervisor_protocol import PROTOCOL_VERSION, RequestEnvelope, ResponseEnvelope
+from .task_control import build_orchestration
 
 THINKING_MESSAGE = "Commander is thinking…"
 
@@ -236,19 +237,28 @@ def handle_chat_send(
     accepted_task_ids = (
         list(result.admission.accepted_task_ids) if result.admission else []
     )
+    rejection_reasons = (
+        list(result.admission.rejection_reasons) if result.admission else []
+    )
+    admitted = len(accepted_task_ids)
+    rejected = len(rejection_reasons)
     return _ok(
         request,
         {
             "received": True,
             "goal_id": result.goal_id,
             "commander_run_id": result.run_id,
-            "admitted": len(accepted_task_ids),
-            "rejected": (
-                len(result.admission.rejection_reasons) if result.admission else 0
-            ),
+            "admitted": admitted,
+            "rejected": rejected,
             "user_reply": result.user_reply or result.message,
             "intent": result.intent or "conversation",
             "accepted_task_ids": accepted_task_ids,
             "context_files": public_metadata_from_context_files(context_files),
+            "orchestration": build_orchestration(
+                admitted=admitted,
+                rejected=rejected,
+                rejection_reasons=rejection_reasons,
+                intent=result.intent or "conversation",
+            ),
         },
     )

@@ -116,8 +116,28 @@ class TaskApproveTests(unittest.TestCase):
 
     def test_approve_emits_task_updated_event(self) -> None:
         """After implementation, approve emits task.updated event."""
+        from local_cli_coordinator.db import create_task
+
+        task_id = create_task(
+            self.conn,
+            title="Human gate",
+            repo=str(self.repo),
+            source_path="",
+            priority="normal",
+            capabilities=["read"],
+            goal="review",
+            acceptance_criteria=["approved"],
+            verification_commands=[],
+            project_id=self.project_id,
+        )
+        self.conn.execute(
+            "update tasks set state = 'awaiting_human' where id = ?",
+            (task_id,),
+        )
+        self.conn.commit()
+
         result = _run_cli_with_home(
-            self.home, "--mode", "rpc", "-p", "/task 1 approve",
+            self.home, "--mode", "rpc", "-p", f"/task {task_id} approve",
             cwd=self.repo,
         )
         self.assertEqual(result.returncode, 0)
