@@ -70,6 +70,9 @@ class FakeSupervisor:
         # Thread-safe request log: list of (method, params) tuples.
         self._request_log: list[tuple[str, dict]] = []
         self._request_event = threading.Event()
+        # Phase 5.4: track execution_policy and context_files per chat.send.
+        self._execution_policies: list[dict] = []
+        self._context_files_received: list[list[dict]] = []
         # Active client connections for disconnect simulation.
         self._clients: list[socket.socket] = []
         self._clients_lock = threading.Lock()
@@ -153,6 +156,20 @@ class FakeSupervisor:
         """Return the current work simulation counter. Thread-safe."""
         with self._lock:
             return self._work_counter
+
+    def drain_execution_policies(self) -> list[dict]:
+        """Return and clear captured execution_policy values. Thread-safe."""
+        with self._lock:
+            result = list(self._execution_policies)
+            self._execution_policies.clear()
+            return result
+
+    def drain_context_files(self) -> list[list[dict]]:
+        """Return and clear captured context_files lists. Thread-safe."""
+        with self._lock:
+            result = list(self._context_files_received)
+            self._context_files_received.clear()
+            return result
 
     def is_work_active(self) -> bool:
         """Return whether work simulation is running. Thread-safe."""
@@ -303,6 +320,13 @@ class FakeSupervisor:
         elif method == "chat.send":
             text = params.get("text", "")
             goal_id = params.get("goal_id", 1)
+            # Phase 5.4: capture execution_policy and context_files.
+            exec_policy = params.get("execution_policy")
+            ctx_files = params.get("context_files", [])
+            with self._lock:
+                if exec_policy is not None:
+                    self._execution_policies.append(exec_policy)
+                self._context_files_received.append(ctx_files)
             if "你好" in text or "任务" in text:
                 coordinator_reply = "你好！有什么可以帮你的吗？"
                 intent = "conversation"
