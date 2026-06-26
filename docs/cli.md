@@ -1,5 +1,10 @@
 # Coordinator CLI Prompt Modes
 
+> **Phase 5.4 merged** — this file now covers `@file` context, `--resume`/`--fork`
+> goal sessions, `--tools`/`--no-tools`/`--exclude-tools` execution policy, and
+> `--mode rpc` envelope output.  See [troubleshooting](troubleshooting.md) for
+> error codes and [migration](migration.md) for schema changes (migrations 012/013).
+
 Phase 5.3 adds Pi-inspired headless entry points on top of the global Supervisor
 `chat.send` path. The Ink TUI remains the default interactive shell.
 
