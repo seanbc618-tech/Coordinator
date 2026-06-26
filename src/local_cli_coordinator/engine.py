@@ -46,6 +46,13 @@ from .gitops import (
     push_branch,
 )
 from .review import run_quality_review, run_spec_review
+from .execution_policy import (
+    ExecutionPolicyError,
+    check_policy_stage,
+    format_policy_prompt_section,
+    policy_is_restrictive,
+    ExecutionPolicy,
+)
 from .verify import run_verification
 from .reporting import NULL_REPORTER, Reporter
 from .memory import LoopMemoryEntry, append_loop_memory, loop_memory_path
@@ -165,6 +172,10 @@ def _write_prompt(task, run_dir: Path, root: Path, repo: RepoConfig) -> Path:
         repo_memory = _read_optional_text(_resolve_memory_path(root, repo.memory_path))
         if repo_memory is not None:
             sections.append(f"## Repo Memory\n\n{repo_memory}\n")
+    policy_json = str(task.get("execution_policy") or "{}")
+    if policy_is_restrictive(policy_json):
+        policy = ExecutionPolicy.from_json(policy_json)
+        sections.append(format_policy_prompt_section(policy) + "\n")
     prompt = run_dir / "prompt.md"
     prompt.write_text("\n".join(sections))
     return prompt
@@ -344,6 +355,23 @@ def _claim_next_ready_task(
     except sqlite3.Error:
         conn.rollback()
         raise
+
+
+def _task_execution_policy(task: dict) -> str:
+    return str(task.get("execution_policy") or "{}")
+
+
+def _policy_allows(
+    policy_json: str,
+    stage: str,
+    *,
+    has_changes: bool = False,
+) -> bool:
+    try:
+        check_policy_stage(policy_json, stage, has_changes=has_changes)
+        return True
+    except ExecutionPolicyError:
+        return False
 
 
 def _write_review_packet_if_needed(
@@ -936,11 +964,37 @@ def _process_task(
         )
         return True
 
+    policy_json = _task_execution_policy(task)
     changed_files = collect_changed_files_since(worktree, base_commit)
+    if changed_files:
+        try:
+            check_policy_stage(policy_json, "edit", has_changes=True)
+        except ExecutionPolicyError as exc:
+            _finish_task(
+                conn,
+                root,
+                task["id"],
+                "failed",
+                str(exc),
+                verifier_result="not run",
+                next_action="respect execution policy or update task restrictions",
+            )
+            return True
     if not changed_files and _is_report_only_task(task):
         commands = [
             line for line in task["verification_commands"].splitlines() if line
         ] or repo.verify_commands
+        if commands and not _policy_allows(policy_json, "test"):
+            _finish_task(
+                conn,
+                root,
+                task["id"],
+                "failed",
+                "execution policy forbids test",
+                verifier_result="not run",
+                next_action="allow test stage or remove verification commands",
+            )
+            return True
         transition_task(conn, task["id"], "verifying", "running report-only verification")
         verification = run_verification(
             commands,
@@ -1005,33 +1059,48 @@ def _process_task(
     patch_path.write_text(diff_patch(worktree, base_commit))
     add_artifact(conn, task["id"], "diff", patch_path)
 
-    transition_task(conn, task["id"], "verifying", "running verification")
     commands = [line for line in task["verification_commands"].splitlines() if line] or repo.verify_commands
-    verification = run_verification(
-        commands,
-        worktree,
-        run_dir,
-        timeout_seconds=config.policy.max_task_runtime_seconds,
-        reporter=reporter,
-        task_id=task["id"],
-    )
-    add_artifact(conn, task["id"], "verifier_log", verification.log_path)
-    if not verification.passed:
-        _finish_task(
-            conn,
-            root,
-            task["id"],
-            "failed",
-            (
-                f"verification timed out after "
-                f"{config.policy.max_task_runtime_seconds} seconds"
-                if verification.timed_out
-                else "verification failed"
-            ),
-            verifier_result="timed out" if verification.timed_out else "failed",
-            next_action="inspect verifier log and retry",
+    verification_passed = True
+    verification_timed_out = False
+    verifier_log_path: Path | None = None
+    if commands and _policy_allows(policy_json, "test"):
+        transition_task(conn, task["id"], "verifying", "running verification")
+        verification = run_verification(
+            commands,
+            worktree,
+            run_dir,
+            timeout_seconds=config.policy.max_task_runtime_seconds,
+            reporter=reporter,
+            task_id=task["id"],
         )
-        return True
+        verifier_log_path = verification.log_path
+        add_artifact(conn, task["id"], "verifier_log", verification.log_path)
+        verification_passed = verification.passed
+        verification_timed_out = verification.timed_out
+        if not verification_passed:
+            _finish_task(
+                conn,
+                root,
+                task["id"],
+                "failed",
+                (
+                    f"verification timed out after "
+                    f"{config.policy.max_task_runtime_seconds} seconds"
+                    if verification_timed_out
+                    else "verification failed"
+                ),
+                verifier_result="timed out" if verification_timed_out else "failed",
+                next_action="inspect verifier log and retry",
+            )
+            return True
+    elif commands:
+        skip_log = run_dir / "verifier-skipped.log"
+        skip_log.write_text(
+            "verification skipped: execution policy forbids test\n",
+            encoding="utf-8",
+        )
+        verifier_log_path = skip_log
+        add_artifact(conn, task["id"], "verifier_log", skip_log)
 
     spec_review_passed = False
     quality_review_passed = False
@@ -1100,7 +1169,7 @@ def _process_task(
             task,
             changed_files,
             patch_path,
-            verification.log_path,
+            verifier_log_path or (run_dir / "verifier-skipped.log"),
             repo,
             worktree,
             run_dir,
@@ -1167,6 +1236,29 @@ def _process_task(
         )
         return True
 
+    if not _policy_allows(policy_json, "commit"):
+        _write_review_packet_if_needed(
+            conn,
+            root,
+            task,
+            "awaiting_human",
+            changed_files=changed_files,
+            verifier_result="passed",
+            spec_review_result="passed" if spec_review_passed else "not run",
+            quality_review_result="passed" if quality_review_passed else "not run",
+            suggested_action="commit manually from preserved worktree",
+        )
+        _finish_task(
+            conn,
+            root,
+            task["id"],
+            "awaiting_human",
+            "execution policy forbids commit",
+            verifier_result="passed",
+            next_action="commit manually from preserved worktree",
+        )
+        return True
+
     uncommitted_files = collect_changed_files(worktree)
     if uncommitted_files:
         transition_task(conn, task["id"], "committing", "creating commit")
@@ -1178,7 +1270,11 @@ def _process_task(
         )
     else:
         transition_task(conn, task["id"], "committing", "using agent-created commit")
-    if repo.allow_push and repo.merge_policy != "no_push":
+    if (
+        repo.allow_push
+        and repo.merge_policy != "no_push"
+        and _policy_allows(policy_json, "push")
+    ):
         transition_task(conn, task["id"], "pushing", "pushing branch")
         try:
             push_branch(
@@ -1199,7 +1295,10 @@ def _process_task(
                 next_action="inspect push failure and retry",
             )
             return True
-        if repo.merge_policy == "auto_merge_default_branch":
+        if (
+            repo.merge_policy == "auto_merge_default_branch"
+            and _policy_allows(policy_json, "merge")
+        ):
             if _pause_for_human_review_before_merge(
                 conn,
                 root,
