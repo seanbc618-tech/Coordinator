@@ -18,9 +18,9 @@ Phase 5.4 delivers three waves on the Phase 5.3 headless CLI + global Supervisor
 | C | `--tools` / `--no-tools` / `--exclude-tools`, engine gates, `--mode rpc` | `execution_policy.py`, migration 013 `execution_policy` |
 
 **Baseline:** Phase 5.3 at `bce4152` lineage on `external/coordinator-global-tui`.  
-**Tip:** `4d9a8b6` (`docs: record Phase 5.4 Gate C PASS sign-off`).
+**Tip:** `51cd8dc` (includes merge checklist, 5.5 draft, Gemini handoff).
 
-### Commits to include (16 ahead of `origin/external/coordinator-global-tui`)
+### Commits to include (18 ahead of `origin/external/coordinator-global-tui`)
 
 | Hash | Summary |
 |------|---------|
@@ -40,8 +40,10 @@ Phase 5.4 delivers three waves on the Phase 5.3 headless CLI + global Supervisor
 | `3f6e1ca` | gate live-event thread join fix |
 | `8307333` | leak regression tests |
 | `4d9a8b6` | Gate C PASS handoff |
+| `af7a082` | merge readiness + 5.5 plan draft |
+| `51cd8dc` | Gemini review handoff |
 
-Earlier Phase 5.3/5.2 commits on this branch are already on `origin/external/coordinator-global-tui`; only the 16 above need push if remote is stale.
+Earlier Phase 5.3/5.2 commits on this branch are already on `origin/external/coordinator-global-tui`; only the 18 above need push if remote is stale.
 
 ---
 
@@ -180,7 +182,7 @@ coordinator --tools read,grep --mode rpc -p "/status"
 | Question | Answer |
 |----------|--------|
 | Gate C PASS? | **Yes** — Codex 2026-06-26 |
-| Unpushed commits? | **16** — push before PR |
+| Unpushed commits? | **18** — push before PR |
 | Dirty tracked files? | **No** |
 | Untracked debug scripts? | **Yes** — clean locally, never push |
 | ui-tui bundle rebuild needed? | Only if `ui-tui/` changed (not in Phase 5.4 Python delta) |
