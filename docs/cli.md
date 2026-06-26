@@ -74,3 +74,82 @@ coordinator "打开 TUI 继续"
 
 Greetings and status questions should not create tasks. Only explicit task
 requests may admit work after Commander policy checks.
+
+## File context
+
+Attach repo-relative files to the prompt with `@` tokens:
+
+```bash
+coordinator @README.md -p "检查文档中的安装步骤"
+coordinator @docs/tui.md @docs/cli.md --print -p "找出矛盾"
+coordinator --mode json @pyproject.toml -p "总结配置"
+```
+
+Rules:
+
+- References are resolved from the current working directory, not the git root.
+- Each file must exist, be a regular file, decode as UTF-8, and be ≤ 128 KiB.
+- Combined limit: 512 KiB and at most 16 files.
+- Duplicate canonical paths are included once.
+- `@@name` escapes the syntax and becomes the literal token `@name`.
+
+JSON mode adds a `context_files` array with `path`, `size`, and `sha256` for
+each attached file.
+
+## Goal sessions
+
+```bash
+# Resume the latest resumable goal (interactive selector in TTY)
+coordinator --resume
+
+# Resume a specific goal by ID
+coordinator --resume 42 -p "继续分析"
+
+# Fork a terminal goal into a new draft
+coordinator --fork 17 -p "只保留文档修复部分"
+```
+
+Rules:
+
+- `--continue`, `--resume`, and `--fork` are mutually exclusive.
+- `--resume` without an ID lists candidates (exit 2 in non-interactive mode).
+- Fork creates a new draft goal; it does not copy tasks or execution history.
+- Cross-project resume/fork is rejected.
+
+## Execution tool controls
+
+Restrict which execution stages Commander may use for this request:
+
+```bash
+# Conversation only — no task proposals admitted
+coordinator --no-tools -p "解释当前状态"
+
+# Allow only specific stages (aliases: grep→search, write→edit)
+coordinator --tools read,grep -p "只读检查风险"
+
+# Exclude specific stages from the server policy
+coordinator --exclude-tools push,merge -p "修复但不要发布"
+```
+
+Vocabulary: `read`, `search`, `test`, `edit`, `commit`, `push`, `merge`.
+
+Precedence:
+
+- `--tools` and `--no-tools` are mutually exclusive.
+- `--tools` and `--exclude-tools` may be combined; exclusion wins.
+- Restrictions never enable stages that server-side repo policy forbids.
+
+JSON mode includes the effective `execution_policy` in the output.
+
+## RPC mode
+
+```bash
+coordinator --mode rpc -p "/status"
+```
+
+RPC mode is headless and prints one JSON-encoded Supervisor protocol
+`ResponseEnvelope`. It is intentionally protocol-level and versioned by
+`protocol_version`. JSON mode remains the smaller stable public CLI schema.
+
+Errors also produce a valid `ResponseEnvelope` with `ok: false` and
+`request_id` prefixed `cli-local-`.

@@ -357,6 +357,72 @@ created them:
 chown -R "$USER" ~/.config/coordinator ~/.local/share/coordinator ~/.local/state/coordinator
 ```
 
+## tool_unknown / tool_conflict
+
+```
+error: unknown tool name 'deploy'
+error: --tools and --no-tools are mutually exclusive
+```
+
+Check the tool vocabulary: `read`, `search`, `test`, `edit`, `commit`, `push`,
+`merge`. Aliases `grep` → `search` and `write` → `edit` are accepted.
+
+`--tools` and `--no-tools` cannot be combined. `--tools` and `--exclude-tools`
+may be combined; exclusion takes precedence.
+
+## tool_policy_rejected
+
+```
+all task proposals rejected by execution policy
+```
+
+The effective execution policy (client flags ∩ server repo policy) forbids all
+stages needed by the proposed task. Common causes:
+
+- `--no-tools` was used (admits zero tasks).
+- `--tools read,search` but the proposal expects `expected_files > 0`.
+- The proposal has `verification_commands` but `test` is not in the allowed set.
+
+Check with `--mode json` to see the `execution_policy` and `rejected` counts.
+
+## execution_policy forbids edit
+
+```
+execution policy forbids edit: worktree has changes
+```
+
+The engine detected worktree changes but the effective policy excludes `edit`.
+This means the Commander proposed a write task under a read-only policy.
+
+If you need to edit, re-run without `--exclude-tools edit` or with
+`--tools` that includes `edit`.
+
+## Context file errors
+
+```
+error: context file not found: docs/missing.md
+error: context file outside repository: /etc/passwd
+error: context file is binary: image.png
+error: context files exceed 512 KiB aggregate limit
+```
+
+Context files must be repo-relative, UTF-8, ≤ 128 KiB each, and the aggregate
+must be ≤ 512 KiB / 16 files. Symlink traversal and `..` escape are blocked.
+
+## RPC mode output
+
+```
+{"protocol_version":1,"request_id":"cli-local-abc123","ok":false,"error":"..."}
+```
+
+RPC mode always emits exactly one `ResponseEnvelope` JSON line. If you see
+multiple lines or parse errors, the CLI encountered an unhandled exception —
+check stderr.
+
+For local validation errors (unknown slash command, missing project), the
+`request_id` is prefixed `cli-local-`. Remote errors from the Supervisor use
+the original `request_id`.
+
 ## Still stuck?
 
 Gather diagnostics:
