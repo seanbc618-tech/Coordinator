@@ -38858,14 +38858,29 @@ function reduceTaskFallback(state, payload) {
     }
   });
 }
+function formatOrchestrationFooter(payload) {
+  const orchestration = payload.orchestration;
+  const admitted = Number(orchestration?.admitted ?? payload.admitted ?? 0);
+  const rejected = Number(orchestration?.rejected ?? payload.rejected ?? 0);
+  const nextAction = String(orchestration?.next_action ?? payload.next_action ?? "").trim();
+  if (!nextAction && admitted === 0 && rejected === 0) {
+    return null;
+  }
+  return `Next: ${nextAction || "monitor status"} (admitted=${admitted}, rejected=${rejected})`;
+}
 function reduceCommanderCompleted(state, payload) {
+  let next = state;
+  const footer = formatOrchestrationFooter(payload);
+  if (footer) {
+    next = addMessage(next, "system", footer);
+  }
   const rejectionReasons = Array.isArray(payload.rejection_reasons) ? payload.rejection_reasons.map(String).filter(Boolean) : [];
   if (rejectionReasons.length === 0) {
-    return state;
+    return next;
   }
   const runId = payload.run_id != null ? String(payload.run_id) : "latest";
   const taskId = `commander-${runId}`;
-  return upsertActivity(state, taskId, {
+  return upsertActivity(next, taskId, {
     title: "Commander diagnostics",
     stage: "commander: diagnostics",
     startedAt: Date.now(),
@@ -39357,6 +39372,14 @@ function formatHelpText() {
       lines.push("/task <id> - Show one task in detail");
       continue;
     }
+    if (cmd.name === "/approve") {
+      lines.push("/approve <task-id> - Unblock awaiting_human task");
+      continue;
+    }
+    if (cmd.name === "/retry") {
+      lines.push("/retry <task-id> - Retry a failed task");
+      continue;
+    }
     lines.push(`${cmd.name} - ${cmd.description}`);
   }
   return lines.join("\n");
@@ -39375,6 +39398,9 @@ var init_slash = __esm({
       { name: "/goal", description: "Set or view the current goal", method: "project.goal" },
       { name: "/tasks", description: "List project tasks", method: "project.tasks" },
       { name: "/task", description: "Show one task in detail", method: "project.task" },
+      { name: "/approve", description: "Approve a human-gated task", method: "project.task.approve" },
+      { name: "/retry", description: "Retry a failed task", method: "project.task.retry" },
+      { name: "/dashboard", description: "Show multi-project dashboard", method: "supervisor.dashboard" },
       { name: "/logs", description: "Show recent logs", method: "project.logs" },
       { name: "/agents", description: "List active agents", method: "project.agents" },
       { name: "/pause", description: "Pause project scheduling", method: "project.pause" },
@@ -39391,6 +39417,9 @@ var init_slash = __esm({
       "/goal",
       "/tasks",
       "/task",
+      "/approve",
+      "/retry",
+      "/dashboard",
       "/logs",
       "/quit"
     ]);
@@ -39703,6 +39732,16 @@ function formatSlashResponse(method, result) {
         `Task ${task.id} [${task.state}] ${task.title}`,
         `Goal: ${task.goal}`
       ];
+      const policy = result.execution_policy;
+      if (policy && Object.keys(policy).length) {
+        lines.push(`Policy: ${JSON.stringify(policy)}`);
+      }
+      if (result.failure_class) {
+        lines.push(`Failure: ${result.failure_class} \u2014 ${String(result.failure_summary ?? "")}`);
+      }
+      if (result.human_review_required) {
+        lines.push("Human review required");
+      }
       const verify = task.verification_commands ?? [];
       if (verify.length) {
         lines.push("Verify:");
@@ -39736,6 +39775,25 @@ function formatSlashResponse(method, result) {
       return `${runText}
 --- supervisor log ---
 ${logText}`;
+    }
+    case "supervisor.dashboard": {
+      const projects = result.projects ?? [];
+      if (!projects.length) {
+        return "Dashboard \u2014 (no projects)";
+      }
+      return [
+        "Dashboard:",
+        ...projects.map((entry) => {
+          const counts = entry.task_counts ?? {};
+          const countText = Object.keys(counts).length ? Object.entries(counts).map(([k, v]) => `${k}=${v}`).join(", ") : "none";
+          return `- ${entry.project_id} goal=${entry.goal_status} workers=${entry.active_workers ?? 0} [${countText}]`;
+        })
+      ].join("\n");
+    }
+    case "project.task.approve":
+    case "project.task.retry":
+    case "project.task.cancel": {
+      return `Task ${result.task_id} -> ${result.state}`;
     }
     case "project.goal": {
       if (typeof result.message === "string") {

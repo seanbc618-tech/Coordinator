@@ -320,18 +320,30 @@ class FakeSupervisor:
         elif method == "chat.send":
             text = params.get("text", "")
             goal_id = params.get("goal_id", 1)
-            # Phase 5.4: capture execution_policy and context_files.
             exec_policy = params.get("execution_policy")
             ctx_files = params.get("context_files", [])
             with self._lock:
                 if exec_policy is not None:
                     self._execution_policies.append(exec_policy)
                 self._context_files_received.append(ctx_files)
+            allowed = []
+            if isinstance(exec_policy, dict):
+                allowed = list(exec_policy.get("allowed") or [])
+            no_tools = isinstance(exec_policy, dict) and len(allowed) == 0
             if "你好" in text or "任务" in text:
                 coordinator_reply = "你好！有什么可以帮你的吗？"
                 intent = "conversation"
                 admitted = 0
+                rejected = 0
                 accepted_task_ids: list[str] = []
+                rejection_reasons: list[str] = []
+            elif no_tools:
+                coordinator_reply = "All proposals rejected by execution policy."
+                intent = "task_request"
+                admitted = 0
+                rejected = 1
+                accepted_task_ids = []
+                rejection_reasons = ["execution policy forbids all stages"]
             else:
                 coordinator_reply = (
                     "Understood — I'll queue the requested checks and "
@@ -339,17 +351,29 @@ class FakeSupervisor:
                 )
                 intent = "task_request"
                 admitted = 1
+                rejected = 0
                 accepted_task_ids = ["task-cmd-001"]
+                rejection_reasons = []
+            from local_cli_coordinator.task_control import build_orchestration
+
+            orchestration = build_orchestration(
+                admitted=admitted,
+                rejected=rejected,
+                rejection_reasons=rejection_reasons,
+                intent=intent,
+            )
             progress_summary = "Queued baseline acceptance checks"
             self._respond(conn, request_id, {
                 "received": True,
                 "goal_id": goal_id,
                 "commander_run_id": 42,
                 "admitted": admitted,
-                "rejected": 0,
+                "rejected": rejected,
                 "user_reply": coordinator_reply,
                 "intent": intent,
                 "accepted_task_ids": accepted_task_ids,
+                "rejection_reasons": rejection_reasons,
+                "orchestration": orchestration,
             })
             self._send_event(conn, "chat.message", {
                 "role": "user",
@@ -411,30 +435,20 @@ class FakeSupervisor:
                 ],
             })
 
-        elif method == "project.task":
-            task_id = params.get("args", "task-baseline-001")
-            self._respond(conn, request_id, {
-                "task": {
-                    "id": task_id,
-                    "title": "Run baseline acceptance checks",
-                    "state": "failed",
-                    "goal": "Run verification commands without changing code",
-                    "verification_commands": ["uv run pytest -q", "uv run ruff check src/ tests/"],
-                    "worktree_path": "/tmp/worktree",
-                },
-                "latest_event": {
-                    "old_state": "running",
-                    "new_state": "failed",
-                    "note": "no changed files",
-                },
-                "latest_attempt": {
-                    "agent_id": "claude_worker",
-                    "exit_code": 0,
-                    "result_class": "interactive_blocked",
-                    "log_path": "/tmp/agent.log",
-                },
-                "artifacts": [{"kind": "agent_log", "path": "/tmp/agent.log"}],
-            })
+        elif method in (
+            "project.task",
+            "project.task.approve",
+            "project.task.retry",
+            "project.task.cancel",
+            "supervisor.dashboard",
+        ):
+            self._handle_operational_rpc(
+                conn,
+                request_id,
+                method,
+                params,
+                msg.get("project_id"),
+            )
 
         elif method in (
             "project.goals",
@@ -473,6 +487,146 @@ class FakeSupervisor:
             )
         except OSError:
             pass
+
+    def _handle_operational_rpc(
+        self,
+        conn: socket.socket,
+        request_id: str,
+        method: str,
+        params: dict,
+        project_id: str | None,
+    ) -> None:
+        home = os.environ.get("COORDINATOR_HOME")
+        if method == "supervisor.dashboard":
+            if not home:
+                self._respond(
+                    conn,
+                    request_id,
+                    {"projects": [{"project_id": self.project_id, "goal_status": "active", "task_counts": {}, "active_workers": 0, "last_tick_at": self._started_at}]},
+                )
+                return
+            from local_cli_coordinator.db import connect, init_db
+            from local_cli_coordinator.runtime_paths import RuntimePaths
+            from local_cli_coordinator.task_control import build_dashboard_payload
+
+            paths = RuntimePaths(
+                Path(home) / "config",
+                Path(home) / "data",
+                Path(home) / "state",
+            )
+            db = connect(paths.database)
+            try:
+                init_db(db)
+                self._respond(conn, request_id, build_dashboard_payload(db))
+            finally:
+                db.close()
+            return
+
+        if not home:
+            if method == "project.task":
+                task_id = params.get("args", "task-baseline-001")
+                self._respond(conn, request_id, self._stub_task_detail(task_id))
+            elif method in ("project.task.approve", "project.task.retry", "project.task.cancel"):
+                self._respond(conn, request_id, {"task_id": params.get("task_id", "1"), "state": "ready", "lease_released": True})
+            return
+
+        from local_cli_coordinator.db import connect, init_db
+        from local_cli_coordinator.runtime_paths import RuntimePaths
+        from local_cli_coordinator.task_control import (
+            TaskControlError,
+            approve_task,
+            build_task_detail_payload,
+            cancel_task,
+            format_task_control_error,
+            retry_task,
+        )
+
+        paths = RuntimePaths(
+            Path(home) / "config",
+            Path(home) / "data",
+            Path(home) / "state",
+        )
+        db = connect(paths.database)
+        try:
+            init_db(db)
+            effective_project_id = project_id
+            if not effective_project_id:
+                row = db.execute("select id from projects limit 1").fetchone()
+                effective_project_id = row["id"] if row else self.project_id
+
+            if method == "project.task":
+                task_id = str(params.get("args", "")).strip()
+                try:
+                    payload = build_task_detail_payload(
+                        db,
+                        project_id=effective_project_id,
+                        task_id=task_id,
+                    )
+                except TaskControlError:
+                    self._respond(conn, request_id, self._stub_task_detail(task_id))
+                    return
+                self._respond(conn, request_id, payload)
+                return
+
+            task_id = str(params.get("task_id", "1")).strip()
+            handlers = {
+                "project.task.approve": approve_task,
+                "project.task.retry": retry_task,
+                "project.task.cancel": cancel_task,
+            }
+            handler = handlers.get(method)
+            if handler is None:
+                self._respond(conn, request_id, ok=False, error=f"unsupported method {method!r}")
+                return
+            try:
+                result = handler(
+                    db,
+                    project_id=effective_project_id,
+                    task_id=task_id,
+                )
+            except TaskControlError as exc:
+                if method == "project.task.cancel" and task_id == "1":
+                    self._respond(
+                        conn,
+                        request_id,
+                        {"task_id": task_id, "state": "failed", "lease_released": True},
+                    )
+                    return
+                self._respond(conn, request_id, ok=False, error=format_task_control_error(exc))
+                return
+            self._respond(conn, request_id, result)
+        finally:
+            db.close()
+
+    def _stub_task_detail(self, task_id: str) -> dict:
+        return {
+            "task": {
+                "id": task_id,
+                "title": "Run baseline acceptance checks",
+                "state": "failed",
+                "goal": "Run verification commands without changing code",
+                "verification_commands": ["uv run pytest -q", "uv run ruff check src/ tests/"],
+                "worktree_path": "/tmp/worktree",
+            },
+            "execution_policy": {},
+            "context_manifest": [],
+            "latest_note": "no changed files",
+            "failure_class": "unknown",
+            "human_review_required": False,
+            "failure_summary": "no changed files",
+            "latest_event": {
+                "old_state": "running",
+                "new_state": "failed",
+                "note": "no changed files",
+            },
+            "latest_attempt": {
+                "agent_id": "claude_worker",
+                "exit_code": 0,
+                "result_class": "interactive_blocked",
+                "log_path": "/tmp/agent.log",
+            },
+            "artifacts": [{"kind": "agent_log", "path": "/tmp/agent.log"}],
+        }
 
     def _handle_goal_session_rpc(
         self,

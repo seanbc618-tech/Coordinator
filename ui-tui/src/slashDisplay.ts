@@ -51,6 +51,16 @@ export function formatSlashResponse(
         `Task ${task.id} [${task.state}] ${task.title}`,
         `Goal: ${task.goal}`,
       ]
+      const policy = result.execution_policy as Record<string, unknown> | undefined
+      if (policy && Object.keys(policy).length) {
+        lines.push(`Policy: ${JSON.stringify(policy)}`)
+      }
+      if (result.failure_class) {
+        lines.push(`Failure: ${result.failure_class} — ${String(result.failure_summary ?? '')}`)
+      }
+      if (result.human_review_required) {
+        lines.push('Human review required')
+      }
       const verify = (task.verification_commands as string[] | undefined) ?? []
       if (verify.length) {
         lines.push('Verify:')
@@ -85,6 +95,29 @@ export function formatSlashResponse(
         : 'Latest Commander run: (none)'
       const logText = tail || '(supervisor log empty)'
       return `${runText}\n--- supervisor log ---\n${logText}`
+    }
+
+    case 'supervisor.dashboard': {
+      const projects = (result.projects as Array<Record<string, unknown>> | undefined) ?? []
+      if (!projects.length) {
+        return 'Dashboard — (no projects)'
+      }
+      return [
+        'Dashboard:',
+        ...projects.map(entry => {
+          const counts = (entry.task_counts as Record<string, number> | undefined) ?? {}
+          const countText = Object.keys(counts).length
+            ? Object.entries(counts).map(([k, v]) => `${k}=${v}`).join(', ')
+            : 'none'
+          return `- ${entry.project_id} goal=${entry.goal_status} workers=${entry.active_workers ?? 0} [${countText}]`
+        }),
+      ].join('\n')
+    }
+
+    case 'project.task.approve':
+    case 'project.task.retry':
+    case 'project.task.cancel': {
+      return `Task ${result.task_id} -> ${result.state}`
     }
 
     case 'project.goal': {

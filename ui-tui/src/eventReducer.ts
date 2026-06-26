@@ -224,17 +224,34 @@ function reduceTaskFallback(state: TuiState, payload: Record<string, unknown>): 
   })
 }
 
+function formatOrchestrationFooter(payload: Record<string, unknown>): string | null {
+  const orchestration = payload.orchestration as Record<string, unknown> | undefined
+  const admitted = Number(orchestration?.admitted ?? payload.admitted ?? 0)
+  const rejected = Number(orchestration?.rejected ?? payload.rejected ?? 0)
+  const nextAction = String(orchestration?.next_action ?? payload.next_action ?? '').trim()
+  if (!nextAction && admitted === 0 && rejected === 0) {
+    return null
+  }
+  return `Next: ${nextAction || 'monitor status'} (admitted=${admitted}, rejected=${rejected})`
+}
+
 function reduceCommanderCompleted(state: TuiState, payload: Record<string, unknown>): TuiState {
+  let next = state
+  const footer = formatOrchestrationFooter(payload)
+  if (footer) {
+    next = addMessage(next, 'system', footer)
+  }
+
   const rejectionReasons = Array.isArray(payload.rejection_reasons)
     ? payload.rejection_reasons.map(String).filter(Boolean)
     : []
   if (rejectionReasons.length === 0) {
-    return state
+    return next
   }
 
   const runId = payload.run_id != null ? String(payload.run_id) : 'latest'
   const taskId = `commander-${runId}`
-  return upsertActivity(state, taskId, {
+  return upsertActivity(next, taskId, {
     title: 'Commander diagnostics',
     stage: 'commander: diagnostics',
     startedAt: Date.now(),

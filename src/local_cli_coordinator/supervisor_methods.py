@@ -36,6 +36,15 @@ from .goals import active_goal_for_project, get_latest_commander_run
 from .projects import ProjectDraft, get_project, inspect_project, register_project
 from .runtime_paths import RuntimePaths
 from .supervisor_commander import handle_chat_send
+from .task_control import (
+    TaskControlError,
+    approve_task,
+    build_dashboard_payload,
+    build_task_detail_payload,
+    cancel_task,
+    format_task_control_error,
+    retry_task,
+)
 from .supervisor_events import EventBroker
 from .supervisor_process import supervisor_log_path
 from .supervisor_protocol import (
@@ -174,6 +183,10 @@ class SupervisorMethods:
             "project.goal.fork": self._handle_project_goal_fork,
             "project.tasks": self._handle_project_tasks,
             "project.task": self._handle_project_task,
+            "project.task.approve": self._handle_project_task_approve,
+            "project.task.retry": self._handle_project_task_retry,
+            "project.task.cancel": self._handle_project_task_cancel,
+            "supervisor.dashboard": self._handle_supervisor_dashboard,
             "project.logs": self._handle_project_logs,
             "project.inspect": self._handle_project_inspect,
             "project.register": self._handle_project_register,
@@ -557,67 +570,66 @@ class SupervisorMethods:
         if not task_id:
             return self._error(request, "task id is required")
 
-        row = project_get_task_detail(conn, project_id=project_id, task_id=task_id)
-        if row is None:
-            return self._error(
-                request,
-                f"task {task_id!r} not found in project {project_id!r}",
+        try:
+            payload = build_task_detail_payload(
+                conn,
+                project_id=project_id,
+                task_id=task_id,
             )
+        except TaskControlError as exc:
+            return self._error(request, format_task_control_error(exc))
+        return self._ok(request, payload)
 
-        latest = task_latest_event(conn, task_id)
-        attempt = task_latest_attempt(conn, task_id)
-        artifacts = task_list_artifacts_for_project(
-            conn, project_id=project_id, task_id=task_id
-        )
-        verification_commands = [
-            line for line in row["verification_commands"].splitlines() if line
-        ]
-        return self._ok(
-            request,
-            {
-                "task": {
-                    "id": row["id"],
-                    "title": row["title"],
-                    "state": row["state"],
-                    "repo": row["repo"],
-                    "priority": row["priority"],
-                    "capabilities": row["capabilities"],
-                    "goal": row["goal"],
-                    "acceptance_criteria": row["acceptance_criteria"],
-                    "verification_commands": verification_commands,
-                    "branch": row["branch"],
-                    "worktree_path": row["worktree_path"],
-                    "source_path": row["source_path"],
-                    "created_at": row["created_at"],
-                    "updated_at": row["updated_at"],
-                },
-                "latest_event": (
-                    {
-                        "old_state": latest["old_state"],
-                        "new_state": latest["new_state"],
-                        "note": latest["note"],
-                        "created_at": latest["created_at"],
-                    }
-                    if latest
-                    else None
-                ),
-                "latest_attempt": (
-                    {
-                        "agent_id": attempt["agent_id"],
-                        "exit_code": attempt["exit_code"],
-                        "result_class": attempt["result_class"],
-                        "result_reason": attempt["result_reason"],
-                        "log_path": attempt["log_path"],
-                        "completed_at": attempt["ended_at"],
-                    }
-                    if attempt
-                    else None
-                ),
-                "artifacts": [
-                    {"kind": art["kind"], "path": art["path"]} for art in artifacts
-                ],
-            },
-        )
+    def _handle_project_task_approve(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        return self._mutate_task(conn, request, approve_task)
+
+    def _handle_project_task_retry(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        return self._mutate_task(conn, request, retry_task)
+
+    def _handle_project_task_cancel(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        return self._mutate_task(conn, request, cancel_task)
+
+    def _mutate_task(
+        self,
+        conn: sqlite3.Connection,
+        request: RequestEnvelope,
+        handler,
+    ) -> ResponseEnvelope:
+        project_id = request.project_id
+        if not project_id:
+            return self._error(request, "project_id is required")
+        if get_project(conn, project_id) is None:
+            return self._error(request, f"project {project_id!r} not registered")
+
+        task_id = request.params.get("task_id")
+        if not isinstance(task_id, str) or not task_id.strip():
+            args = request.params.get("args")
+            if isinstance(args, str) and args.strip():
+                task_id = args.strip()
+            else:
+                return self._error(request, "task_id is required")
+        try:
+            result = handler(
+                conn,
+                project_id=project_id,
+                task_id=task_id.strip(),
+                config=self._config,
+                broker=self._broker,
+            )
+        except TaskControlError as exc:
+            return self._error(request, format_task_control_error(exc))
+        return self._ok(request, result)
+
+    def _handle_supervisor_dashboard(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        return self._ok(request, build_dashboard_payload(conn))
 
     def _handle_project_logs(
         self, conn: sqlite3.Connection, request: RequestEnvelope
