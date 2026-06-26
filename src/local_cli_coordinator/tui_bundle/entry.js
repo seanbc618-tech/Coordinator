@@ -39133,7 +39133,8 @@ function ActivityBlock({ activity, columns }) {
       ] })
     ] });
   }
-  const outputLines = activity.output.slice(-10);
+  const liveTail = !activity.stage.startsWith("done:") && !activity.stage.startsWith("failed:") && activity.stage !== "created";
+  const outputLines = activity.output.slice(liveTail ? -20 : -10);
   return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(Box_default, { flexDirection: "column", paddingX: 1, borderStyle: "round", borderColor: "gray", children: [
     /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(Text, { children: [
       /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(Text, { color: statusColor, children: [
@@ -39371,6 +39372,8 @@ function formatHelpText() {
     }
     if (cmd.name === "/task") {
       lines.push("/task <id> - Show one task in detail");
+      lines.push("/task <id> log - Tail worker log (live + poll)");
+      lines.push("/task <id> cancel - Cancel task (confirm twice)");
       continue;
     }
     if (cmd.name === "/approve") {
@@ -39379,6 +39382,14 @@ function formatHelpText() {
     }
     if (cmd.name === "/retry") {
       lines.push("/retry <task-id> - Retry a failed task");
+      continue;
+    }
+    if (cmd.name === "/cancel") {
+      lines.push("/cancel <task-id> - Cancel a running task (confirm twice)");
+      continue;
+    }
+    if (cmd.name === "/dashboard") {
+      lines.push("/dashboard - Multi-project task counts (no titles)");
       continue;
     }
     lines.push(`${cmd.name} - ${cmd.description}`);
@@ -39401,6 +39412,7 @@ var init_slash = __esm({
       { name: "/task", description: "Show one task in detail", method: "project.task" },
       { name: "/approve", description: "Approve a human-gated task", method: "project.task.approve" },
       { name: "/retry", description: "Retry a failed task", method: "project.task.retry" },
+      { name: "/cancel", description: "Cancel a running task", method: "project.task.cancel", destructive: true },
       { name: "/dashboard", description: "Show multi-project dashboard", method: "supervisor.dashboard" },
       { name: "/logs", description: "Show recent logs", method: "project.logs" },
       { name: "/agents", description: "List active agents", method: "project.agents" },
@@ -39421,6 +39433,7 @@ var init_slash = __esm({
       "/approve",
       "/retry",
       "/dashboard",
+      "/cancel",
       "/logs",
       "/quit"
     ]);
@@ -39643,6 +39656,83 @@ var init_ProjectOnboarding = __esm({
   }
 });
 
+// src/slashRpc.ts
+function parseTaskSlashArgs(args) {
+  const parts = args.trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) {
+    return { taskId: "", action: null };
+  }
+  return {
+    taskId: parts[0],
+    action: parts[1]?.toLowerCase() ?? null
+  };
+}
+function buildSlashRpc(commandName, method, args) {
+  if (commandName === "/task") {
+    const { taskId, action } = parseTaskSlashArgs(args);
+    if (!taskId) {
+      return { ok: false, error: "usage: /task <id> [log|cancel|approve|retry]" };
+    }
+    if (action === "log") {
+      return {
+        ok: true,
+        method: "project.task.log",
+        params: { task_id: taskId },
+        displayMethod: "project.task.log"
+      };
+    }
+    if (action === "cancel") {
+      return {
+        ok: true,
+        method: "project.task.cancel",
+        params: { task_id: taskId },
+        displayMethod: "project.task.cancel"
+      };
+    }
+    if (action === "approve") {
+      return {
+        ok: true,
+        method: "project.task.approve",
+        params: { task_id: taskId },
+        displayMethod: "project.task.approve"
+      };
+    }
+    if (action === "retry") {
+      return {
+        ok: true,
+        method: "project.task.retry",
+        params: { task_id: taskId },
+        displayMethod: "project.task.retry"
+      };
+    }
+    if (action) {
+      return { ok: false, error: `unknown task action: ${action}` };
+    }
+    return {
+      ok: true,
+      method: "project.task",
+      params: { args: taskId },
+      displayMethod: "project.task"
+    };
+  }
+  if (method === "project.task.approve" || method === "project.task.retry" || method === "project.task.cancel") {
+    const taskId = args.trim();
+    if (!taskId) {
+      return { ok: false, error: `usage: ${commandName} <task-id>` };
+    }
+    return { ok: true, method, params: { task_id: taskId }, displayMethod: method };
+  }
+  return { ok: true, method, params: { args }, displayMethod: method };
+}
+function isDestructiveRpc(method) {
+  return method === "project.task.cancel";
+}
+var init_slashRpc = __esm({
+  "src/slashRpc.ts"() {
+    "use strict";
+  }
+});
+
 // src/submitDecision.ts
 function decideSubmit(text, pendingDestructive) {
   const parsed = parse(text);
@@ -39653,26 +39743,34 @@ function decideSubmit(text, pendingDestructive) {
     if (parsed.command.name === "/help") {
       return { action: "local-help", newPending: null };
     }
-    if (parsed.command.destructive) {
-      if (pendingDestructive === parsed.command.name) {
+    const rpc = buildSlashRpc(parsed.command.name, parsed.command.method, parsed.args);
+    if (!rpc.ok) {
+      return { action: "local-error", text: rpc.error, newPending: null };
+    }
+    const destructive = parsed.command.destructive || isDestructiveRpc(rpc.method);
+    const confirmName = destructive && rpc.method === "project.task.cancel" ? `/task ${String(rpc.params.task_id ?? "")} cancel` : parsed.command.name;
+    if (destructive) {
+      if (pendingDestructive === confirmName) {
         return {
           action: "destructive-confirmed",
-          commandName: parsed.command.name,
-          method: parsed.command.method,
-          args: parsed.args,
+          commandName: confirmName,
+          method: rpc.method,
+          params: rpc.params,
+          displayMethod: rpc.displayMethod,
           newPending: null
         };
       }
       return {
         action: "destructive-pending",
-        commandName: parsed.command.name,
-        newPending: parsed.command.name
+        commandName: confirmName,
+        newPending: confirmName
       };
     }
     return {
       action: "send",
-      method: parsed.command.method,
-      args: parsed.args,
+      method: rpc.method,
+      params: rpc.params,
+      displayMethod: rpc.displayMethod,
       newPending: null
     };
   }
@@ -39689,6 +39787,7 @@ var init_submitDecision = __esm({
   "src/submitDecision.ts"() {
     "use strict";
     init_slash();
+    init_slashRpc();
   }
 });
 
@@ -39791,10 +39890,20 @@ ${logText}`;
         })
       ].join("\n");
     }
+    case "project.task.log": {
+      const content = String(result.content ?? "").trim();
+      if (!content) {
+        return `Task ${result.task_id} log: (empty)`;
+      }
+      const tail = content.length > 4e3 ? content.slice(-4e3) : content;
+      return `Task ${result.task_id} log:
+${tail}`;
+    }
     case "project.task.approve":
     case "project.task.retry":
     case "project.task.cancel": {
-      return `Task ${result.task_id} -> ${result.state}`;
+      const terminated = result.worker_terminated === true ? " (worker stopped)" : "";
+      return `Task ${result.task_id} -> ${result.state}${terminated}`;
     }
     case "project.goal": {
       if (typeof result.message === "string") {
@@ -39823,6 +39932,141 @@ ${goal.objective}`;
 var init_slashDisplay = __esm({
   "src/slashDisplay.ts"() {
     "use strict";
+  }
+});
+
+// src/logTailPoller.ts
+function shouldPollTaskLog(activity) {
+  if (activity.stage.startsWith("done:") || activity.stage.startsWith("failed:")) {
+    return false;
+  }
+  if (activity.stage === "created" || activity.stage.startsWith("commander:")) {
+    return false;
+  }
+  return activity.startedAt !== null;
+}
+function appendTaskOutputLines(output, chunk) {
+  if (!chunk) {
+    return output;
+  }
+  const lines = chunk.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+  const merged = [...output];
+  for (const line of lines) {
+    if (line === "" && merged.length === 0) {
+      continue;
+    }
+    merged.push(line);
+  }
+  while (merged.length > 0 && merged[merged.length - 1] === "") {
+    merged.pop();
+  }
+  return merged.slice(-MAX_OUTPUT_LINES);
+}
+var INITIAL_INTERVAL_MS, MAX_INTERVAL_MS, LogTailPoller;
+var init_logTailPoller = __esm({
+  "src/logTailPoller.ts"() {
+    "use strict";
+    init_domain();
+    INITIAL_INTERVAL_MS = 500;
+    MAX_INTERVAL_MS = 2e3;
+    LogTailPoller = class {
+      client;
+      states = /* @__PURE__ */ new Map();
+      onAppend;
+      stopped = false;
+      constructor(client, onAppend) {
+        this.client = client;
+        this.onAppend = onAppend;
+      }
+      sync(activities2) {
+        if (this.stopped) {
+          return;
+        }
+        const liveIds = /* @__PURE__ */ new Set();
+        for (const [taskId, activity] of activities2) {
+          if (!shouldPollTaskLog(activity)) {
+            this.stopTask(taskId);
+            continue;
+          }
+          liveIds.add(taskId);
+          if (!this.states.has(taskId)) {
+            this.states.set(taskId, {
+              offset: 0,
+              intervalMs: INITIAL_INTERVAL_MS,
+              timer: null
+            });
+            this.schedule(taskId);
+          }
+        }
+        for (const taskId of this.states.keys()) {
+          if (!liveIds.has(taskId)) {
+            this.stopTask(taskId);
+          }
+        }
+      }
+      stop() {
+        this.stopped = true;
+        for (const taskId of [...this.states.keys()]) {
+          this.stopTask(taskId);
+        }
+      }
+      stopTask(taskId) {
+        const state = this.states.get(taskId);
+        if (!state) {
+          return;
+        }
+        if (state.timer) {
+          clearTimeout(state.timer);
+        }
+        this.states.delete(taskId);
+      }
+      schedule(taskId) {
+        const state = this.states.get(taskId);
+        if (!state || this.stopped) {
+          return;
+        }
+        state.timer = setTimeout(() => {
+          void this.pollOnce(taskId);
+        }, state.intervalMs);
+      }
+      async pollOnce(taskId) {
+        const state = this.states.get(taskId);
+        if (!state || this.stopped) {
+          return;
+        }
+        state.timer = null;
+        try {
+          const resp = await this.client.request("project.task.log", {
+            task_id: taskId,
+            offset: state.offset,
+            max_bytes: 65536
+          });
+          if (!resp.ok || !resp.result) {
+            state.intervalMs = Math.min(state.intervalMs * 2, MAX_INTERVAL_MS);
+            this.schedule(taskId);
+            return;
+          }
+          const result = resp.result;
+          const content = String(result.content ?? "");
+          const nextOffset = Number(result.next_offset ?? state.offset);
+          if (content) {
+            this.onAppend(taskId, content);
+            state.offset = nextOffset;
+            state.intervalMs = INITIAL_INTERVAL_MS;
+          } else {
+            state.intervalMs = Math.min(state.intervalMs + 250, MAX_INTERVAL_MS);
+          }
+          if (!result.eof) {
+            state.offset = nextOffset;
+          }
+        } catch {
+          state.intervalMs = Math.min(state.intervalMs * 2, MAX_INTERVAL_MS);
+        }
+        if (this.states.has(taskId) && !this.stopped) {
+          this.schedule(taskId);
+        }
+      }
+    };
   }
 });
 
@@ -39864,6 +40108,8 @@ function App2({ socketPath, projectId, canonicalPath }) {
     lastCursor.set(empty.lastCursor);
   }, []);
   const pendingDestructiveRef = (0, import_react32.useRef)(null);
+  const dashboardShownRef = (0, import_react32.useRef)(false);
+  const logPollerRef = (0, import_react32.useRef)(null);
   (0, import_react32.useEffect)(() => {
     registerDetachHandlers({
       closeClient: () => client.close()
@@ -39932,6 +40178,69 @@ function App2({ socketPath, projectId, canonicalPath }) {
     });
   }, [client, conn, onboardingPhase]);
   (0, import_react32.useEffect)(() => {
+    if (onboardingPhase !== "ready" || conn !== "connected" || dashboardShownRef.current) {
+      return;
+    }
+    dashboardShownRef.current = true;
+    void client.request("supervisor.dashboard", {}).then((resp) => {
+      if (!resp.ok || !resp.result) {
+        return;
+      }
+      const projects = resp.result.projects ?? [];
+      if (projects.length <= 1) {
+        return;
+      }
+      const text = formatSlashResponse(
+        "supervisor.dashboard",
+        resp.result
+      );
+      setTuiState((prev) => ({
+        ...prev,
+        transcript: [
+          ...prev.transcript,
+          {
+            id: `dash-${Date.now()}`,
+            kind: "message",
+            role: "system",
+            text: `Multi-project overview:
+${text}`
+          }
+        ]
+      }));
+    }).catch(() => {
+    });
+  }, [client, conn, onboardingPhase]);
+  (0, import_react32.useEffect)(() => {
+    if (onboardingPhase !== "ready" || conn !== "connected") {
+      logPollerRef.current?.stop();
+      logPollerRef.current = null;
+      return;
+    }
+    const poller = new LogTailPoller(client, (taskId, chunk) => {
+      setTuiState((prev) => {
+        const activity = prev.activities.get(taskId);
+        if (!activity) {
+          return prev;
+        }
+        const output = appendTaskOutputLines(activity.output, chunk);
+        const activities2 = new Map(prev.activities);
+        activities2.set(taskId, { ...activity, output, expanded: true });
+        return { ...prev, activities: activities2 };
+      });
+    });
+    logPollerRef.current = poller;
+    poller.sync(tuiState.activities);
+    return () => {
+      poller.stop();
+      if (logPollerRef.current === poller) {
+        logPollerRef.current = null;
+      }
+    };
+  }, [client, conn, onboardingPhase]);
+  (0, import_react32.useEffect)(() => {
+    logPollerRef.current?.sync(tuiState.activities);
+  }, [tuiState.activities]);
+  (0, import_react32.useEffect)(() => {
     transcript.set(tuiState.transcript);
     activities.set(tuiState.activities);
     lastCursor.set(tuiState.lastCursor);
@@ -39981,7 +40290,7 @@ function App2({ socketPath, projectId, canonicalPath }) {
             { id: `conf-${Date.now()}`, kind: "message", role: "system", text: `${decision.commandName} confirmed.` }
           ]
         }));
-        void client.request(decision.method, { args: decision.args }).catch(() => {
+        void client.request(decision.method, decision.params).catch(() => {
         });
         return;
       case "destructive-pending":
@@ -40022,8 +40331,8 @@ function App2({ socketPath, projectId, canonicalPath }) {
         }));
         return;
       case "send":
-        void client.request(decision.method, { args: decision.args }).then((resp) => {
-          const text2 = resp.ok ? formatSlashResponse(decision.method, resp.result) : resp.error ?? "request failed";
+        void client.request(decision.method, decision.params).then((resp) => {
+          const text2 = resp.ok ? formatSlashResponse(decision.displayMethod, resp.result) : resp.error ?? "request failed";
           setTuiState((prev) => ({
             ...prev,
             transcript: [
@@ -40079,6 +40388,7 @@ var init_app = __esm({
     init_submitDecision();
     init_slash();
     init_slashDisplay();
+    init_logTailPoller();
     init_detach();
     import_jsx_runtime9 = __toESM(require_jsx_runtime(), 1);
   }

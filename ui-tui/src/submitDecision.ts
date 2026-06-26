@@ -6,14 +6,28 @@
  */
 
 import { parse } from './slash.js'
+import { buildSlashRpc, isDestructiveRpc } from './slashRpc.js'
 
 export type SubmitDecision =
   | { action: 'quit'; newPending: null }
-  | { action: 'destructive-confirmed'; commandName: string; method: string; args: string; newPending: null }
+  | {
+    action: 'destructive-confirmed'
+    commandName: string
+    method: string
+    params: Record<string, unknown>
+    displayMethod: string
+    newPending: null
+  }
   | { action: 'destructive-pending'; commandName: string; newPending: string }
   | { action: 'local-help'; newPending: null }
   | { action: 'local-error'; text: string; newPending: null }
-  | { action: 'send'; method: string; args: string; newPending: null }
+  | {
+    action: 'send'
+    method: string
+    params: Record<string, unknown>
+    displayMethod: string
+    newPending: null
+  }
   | { action: 'chat'; text: string; newPending: null }
 
 /**
@@ -35,28 +49,39 @@ export function decideSubmit(text: string, pendingDestructive: string | null): S
       return { action: 'local-help', newPending: null }
     }
 
-    if (parsed.command.destructive) {
-      if (pendingDestructive === parsed.command.name) {
+    const rpc = buildSlashRpc(parsed.command.name, parsed.command.method, parsed.args)
+    if (!rpc.ok) {
+      return { action: 'local-error', text: rpc.error, newPending: null }
+    }
+
+    const destructive = parsed.command.destructive || isDestructiveRpc(rpc.method)
+    const confirmName = destructive && rpc.method === 'project.task.cancel'
+      ? `/task ${String(rpc.params.task_id ?? '')} cancel`
+      : parsed.command.name
+
+    if (destructive) {
+      if (pendingDestructive === confirmName) {
         return {
           action: 'destructive-confirmed',
-          commandName: parsed.command.name,
-          method: parsed.command.method,
-          args: parsed.args,
+          commandName: confirmName,
+          method: rpc.method,
+          params: rpc.params,
+          displayMethod: rpc.displayMethod,
           newPending: null,
         }
       }
       return {
         action: 'destructive-pending',
-        commandName: parsed.command.name,
-        newPending: parsed.command.name,
+        commandName: confirmName,
+        newPending: confirmName,
       }
     }
 
-    // Non-destructive command — send immediately, clear any pending.
     return {
       action: 'send',
-      method: parsed.command.method,
-      args: parsed.args,
+      method: rpc.method,
+      params: rpc.params,
+      displayMethod: rpc.displayMethod,
       newPending: null,
     }
   }

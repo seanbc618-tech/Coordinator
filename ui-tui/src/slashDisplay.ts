@@ -114,10 +114,20 @@ export function formatSlashResponse(
       ].join('\n')
     }
 
+    case 'project.task.log': {
+      const content = String(result.content ?? '').trim()
+      if (!content) {
+        return `Task ${result.task_id} log: (empty)`
+      }
+      const tail = content.length > 4000 ? content.slice(-4000) : content
+      return `Task ${result.task_id} log:\n${tail}`
+    }
+
     case 'project.task.approve':
     case 'project.task.retry':
     case 'project.task.cancel': {
-      return `Task ${result.task_id} -> ${result.state}`
+      const terminated = result.worker_terminated === true ? ' (worker stopped)' : ''
+      return `Task ${result.task_id} -> ${result.state}${terminated}`
     }
 
     case 'project.goal': {

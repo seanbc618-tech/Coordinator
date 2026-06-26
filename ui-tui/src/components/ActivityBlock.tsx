@@ -131,8 +131,10 @@ export function ActivityBlock({ activity, columns }: ActivityBlockProps) {
     )
   }
 
-  // Expanded view
-  const outputLines = activity.output.slice(-10)
+  const liveTail = !activity.stage.startsWith('done:')
+    && !activity.stage.startsWith('failed:')
+    && activity.stage !== 'created'
+  const outputLines = activity.output.slice(liveTail ? -20 : -10)
   return (
     <Box flexDirection="column" paddingX={1} borderStyle="round" borderColor="gray">
       <Text>

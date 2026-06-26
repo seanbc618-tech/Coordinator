@@ -16,6 +16,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/task', description: 'Show one task in detail', method: 'project.task' },
   { name: '/approve', description: 'Approve a human-gated task', method: 'project.task.approve' },
   { name: '/retry', description: 'Retry a failed task', method: 'project.task.retry' },
+  { name: '/cancel', description: 'Cancel a running task', method: 'project.task.cancel', destructive: true },
   { name: '/dashboard', description: 'Show multi-project dashboard', method: 'supervisor.dashboard' },
   { name: '/logs', description: 'Show recent logs', method: 'project.logs' },
   { name: '/agents', description: 'List active agents', method: 'project.agents' },
@@ -75,6 +76,7 @@ const HELP_COMMAND_NAMES = new Set([
   '/approve',
   '/retry',
   '/dashboard',
+  '/cancel',
   '/logs',
   '/quit',
 ])
@@ -92,6 +94,8 @@ export function formatHelpText(): string {
     }
     if (cmd.name === '/task') {
       lines.push('/task <id> - Show one task in detail')
+      lines.push('/task <id> log - Tail worker log (live + poll)')
+      lines.push('/task <id> cancel - Cancel task (confirm twice)')
       continue
     }
     if (cmd.name === '/approve') {
@@ -100,6 +104,14 @@ export function formatHelpText(): string {
     }
     if (cmd.name === '/retry') {
       lines.push('/retry <task-id> - Retry a failed task')
+      continue
+    }
+    if (cmd.name === '/cancel') {
+      lines.push('/cancel <task-id> - Cancel a running task (confirm twice)')
+      continue
+    }
+    if (cmd.name === '/dashboard') {
+      lines.push('/dashboard - Multi-project task counts (no titles)')
       continue
     }
     lines.push(`${cmd.name} - ${cmd.description}`)
