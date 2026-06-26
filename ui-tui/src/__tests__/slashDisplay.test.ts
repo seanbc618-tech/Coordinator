@@ -46,6 +46,15 @@ describe('formatSlashResponse', () => {
     expect(text).toContain('agent.log')
   })
 
+  it('formats project.task.log tail', () => {
+    const text = formatSlashResponse('project.task.log', {
+      task_id: 'task-1',
+      content: 'worker line 1\nworker line 2\n',
+    })
+    expect(text).toContain('task-1 log')
+    expect(text).toContain('worker line 1')
+  })
+
   it('formats project.goal confirm message', () => {
     const text = formatSlashResponse('project.goal', {
       message: 'goal 3 activated',

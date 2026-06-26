@@ -45,7 +45,21 @@ Leading `/` dispatches deterministic RPCs without Commander:
 ```bash
 coordinator --print -p "/status"
 coordinator --print -p "/tasks"
+coordinator --print -p "/dashboard"
+coordinator --print -p "/task <task-id>"
+coordinator --print -p "/task <task-id> log"
+coordinator --print -p "/task <task-id> cancel"
+coordinator --print -p "/approve <task-id>"
+coordinator --print -p "/retry <task-id>"
 ```
+
+Task control notes:
+
+- `cancel` stops the worker process (SIGTERM → grace → SIGKILL), releases the
+  lease, and marks the task `failed`. Worktrees are **preserved** by default.
+- `log` tails registered attempt/verifier/agent artifacts (64 KiB cap, rate
+  limited). The TUI also receives live `task.log.append` push events while
+  workers run.
 
 Unknown slash commands return a local error and never call `chat.send`.
 
@@ -65,6 +79,20 @@ coordinator config
 Shows agents, repo allowlist, policy caps, and XDG/runtime paths. Read-only in
 Phase 5.3.
 
+## Safe admin commands (dry-run first)
+
+Destructive repo/task operations require a confirm token from dry-run:
+
+```bash
+coordinator repo cleanup-worktrees
+coordinator repo cleanup-worktrees --apply --confirm <token>
+
+coordinator task rollback <task-id>
+coordinator task rollback <task-id> --apply --confirm <token>
+
+coordinator supervisor drain
+```
+
 ## Examples (polymarket)
 
 ```bash
@@ -72,10 +100,16 @@ cd /Users/xiafan/polymarket-crypto-threshold
 coordinator supervisor restart
 coordinator --print -p "你好"
 coordinator --mode json --print -p "现在有什么任务？"
+coordinator --print -p "/dashboard"
+coordinator --print -p "/task <task-id> log"
 coordinator --continue --print -p "生成一个只读验收任务"
 coordinator config
 coordinator "打开 TUI 继续"
 ```
+
+After upgrading Coordinator, restart the global Supervisor when no tasks are
+`running` so new RPCs such as `supervisor.dashboard` are available to the live
+process.
 
 Greetings and status questions should not create tasks. Only explicit task
 requests may admit work after Commander policy checks.

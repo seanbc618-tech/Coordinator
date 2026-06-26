@@ -13,8 +13,27 @@ describe('decideSubmit', () => {
     expect(decideSubmit('/task task-abc', null)).toEqual({
       action: 'send',
       method: 'project.task',
-      args: 'task-abc',
+      params: { args: 'task-abc' },
+      displayMethod: 'project.task',
       newPending: null,
+    })
+  })
+
+  it('returns send for /task log', () => {
+    expect(decideSubmit('/task task-abc log', null)).toEqual({
+      action: 'send',
+      method: 'project.task.log',
+      params: { task_id: 'task-abc' },
+      displayMethod: 'project.task.log',
+      newPending: null,
+    })
+  })
+
+  it('requires confirmation for /task cancel', () => {
+    expect(decideSubmit('/task task-abc cancel', null)).toEqual({
+      action: 'destructive-pending',
+      commandName: '/task task-abc cancel',
+      newPending: '/task task-abc cancel',
     })
   })
 

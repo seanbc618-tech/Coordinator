@@ -22,6 +22,7 @@ import { ProjectOnboarding, type ProjectInspectDraft } from './components/Projec
 import { decideSubmit } from './submitDecision.js'
 import { formatHelpText } from './slash.js'
 import { formatSlashResponse } from './slashDisplay.js'
+import { appendTaskOutputLines, LogTailPoller } from './logTailPoller.js'
 import { performDetach, registerDetachHandlers } from './detach.js'
 import type { TuiState } from './domain.js'
 import type { EventEnvelope } from './protocol.js'
@@ -72,6 +73,8 @@ export function App({ socketPath, projectId, canonicalPath }: AppProps) {
   // Tracks which destructive command is awaiting confirmation.
   // null = no pending; string = command name awaiting re-entry.
   const pendingDestructiveRef = useRef<string | null>(null)
+  const dashboardShownRef = useRef(false)
+  const logPollerRef = useRef<LogTailPoller | null>(null)
 
   useEffect(() => {
     registerDetachHandlers({
@@ -159,6 +162,73 @@ export function App({ socketPath, projectId, canonicalPath }: AppProps) {
     })
   }, [client, conn, onboardingPhase])
 
+  useEffect(() => {
+    if (onboardingPhase !== 'ready' || conn !== 'connected' || dashboardShownRef.current) {
+      return
+    }
+    dashboardShownRef.current = true
+
+    void client.request('supervisor.dashboard', {}).then(resp => {
+      if (!resp.ok || !resp.result) {
+        return
+      }
+      const projects = (resp.result as { projects?: unknown[] }).projects ?? []
+      if (projects.length <= 1) {
+        return
+      }
+      const text = formatSlashResponse(
+        'supervisor.dashboard',
+        resp.result as Record<string, unknown>,
+      )
+      setTuiState(prev => ({
+        ...prev,
+        transcript: [
+          ...prev.transcript,
+          {
+            id: `dash-${Date.now()}`,
+            kind: 'message',
+            role: 'system',
+            text: `Multi-project overview:\n${text}`,
+          },
+        ],
+      }))
+    }).catch(() => {})
+  }, [client, conn, onboardingPhase])
+
+  useEffect(() => {
+    if (onboardingPhase !== 'ready' || conn !== 'connected') {
+      logPollerRef.current?.stop()
+      logPollerRef.current = null
+      return
+    }
+
+    const poller = new LogTailPoller(client, (taskId, chunk) => {
+      setTuiState(prev => {
+        const activity = prev.activities.get(taskId)
+        if (!activity) {
+          return prev
+        }
+        const output = appendTaskOutputLines(activity.output, chunk)
+        const activities = new Map(prev.activities)
+        activities.set(taskId, { ...activity, output, expanded: true })
+        return { ...prev, activities }
+      })
+    })
+    logPollerRef.current = poller
+    poller.sync(tuiState.activities)
+
+    return () => {
+      poller.stop()
+      if (logPollerRef.current === poller) {
+        logPollerRef.current = null
+      }
+    }
+  }, [client, conn, onboardingPhase])
+
+  useEffect(() => {
+    logPollerRef.current?.sync(tuiState.activities)
+  }, [tuiState.activities])
+
   // P1 fix: single source of truth — sync tuiState → atoms here only.
   useEffect(() => {
     transcriptAtom.set(tuiState.transcript)
@@ -215,7 +285,7 @@ export function App({ socketPath, projectId, canonicalPath }: AppProps) {
             { id: `conf-${Date.now()}`, kind: 'message', role: 'system', text: `${decision.commandName} confirmed.` },
           ],
         }))
-        void client.request(decision.method, { args: decision.args }).catch(() => {})
+        void client.request(decision.method, decision.params).catch(() => {})
         return
 
       case 'destructive-pending':
@@ -259,9 +329,9 @@ export function App({ socketPath, projectId, canonicalPath }: AppProps) {
         return
 
       case 'send':
-        void client.request(decision.method, { args: decision.args }).then(resp => {
+        void client.request(decision.method, decision.params).then(resp => {
           const text = resp.ok
-            ? formatSlashResponse(decision.method, resp.result as Record<string, unknown>)
+            ? formatSlashResponse(decision.displayMethod, resp.result as Record<string, unknown>)
             : (resp.error ?? 'request failed')
           setTuiState(prev => ({
             ...prev,
