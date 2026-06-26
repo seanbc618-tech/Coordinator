@@ -725,16 +725,26 @@ class GateLiveEventTests(Phase2GateHarness):
             first = supervisor_server_module._recv_line(client)
             self.assertTrue(first, "missing subscribe response")
 
-            threading.Thread(target=lambda: _tick_and_drain(sup), daemon=True).start()
-
+            tick_thread = threading.Thread(
+                target=lambda: _tick_and_drain(sup),
+                daemon=False,
+            )
+            tick_thread.start()
             try:
-                second = supervisor_server_module._recv_line(client)
-            except TimeoutError:
-                self.fail("socket client did not receive a live event after subscribe")
+                try:
+                    second = supervisor_server_module._recv_line(client)
+                except TimeoutError:
+                    self.fail("socket client did not receive a live event after subscribe")
 
-            envelope = decode_envelope(second.decode("utf-8").strip())
-            self.assertEqual(getattr(envelope, "type", None), "event")
-            self.assertEqual(getattr(envelope, "event_type", None), "tick_scheduled")
+                envelope = decode_envelope(second.decode("utf-8").strip())
+                self.assertEqual(getattr(envelope, "type", None), "event")
+                self.assertEqual(getattr(envelope, "event_type", None), "tick_scheduled")
+            finally:
+                tick_thread.join(timeout=30.0)
+                self.assertFalse(
+                    tick_thread.is_alive(),
+                    "background tick thread did not finish before resource audit",
+                )
         finally:
             client.close()
             server.request_shutdown()

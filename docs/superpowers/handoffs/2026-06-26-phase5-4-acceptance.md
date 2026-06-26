@@ -15,7 +15,7 @@ Branch: `external/coordinator-global-tui`
 | `e621fbe` | Claude | Task 10 E2E tests: `tests/test_phase5_4_e2e.py` |
 | `feed21c` | Claude | Task 10 docs: `docs/cli.md`, `docs/troubleshooting.md` |
 | `687949d` | Claude | Task 10 acceptance handoff (initial) |
-| `252cf0f` | Grok | Task 11: integration fixture fix + gate record |
+| `9dc5f3e` | Grok | Task 11: integration fixture fix + gate record |
 
 ## Test Counts
 
@@ -125,4 +125,5 @@ Smoke requires `COORDINATOR_HOME` in the `FakeSupervisor` host process so
 - [x] Wheel packaging (`WheelPackagingTest`, `test_wheel_migrations`)
 - [x] Clean-wheel smoke (six CLI commands above)
 - [x] Documentation updated (`docs/cli.md`, `docs/troubleshooting.md`)
-- [ ] Codex Gate C / final independent sign-off
+- [x] Full-suite ResourceWarning leak fixed (`test_phase2_gate` live-event thread join)
+- [ ] Codex Gate C / final independent sign-off (re-run after repair)
