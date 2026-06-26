@@ -20,6 +20,7 @@ from .db import (
 from .goals import active_goal_for_project
 from .projects import get_project
 from .supervisor_events import EventBroker
+from .worker_registry import GLOBAL_WORKER_REGISTRY
 
 
 class TaskControlError(Exception):
@@ -328,6 +329,7 @@ def cancel_task(
             "task_not_found",
             f"task {task_id!r} not found in project {project_id!r}",
         )
+    worker_terminated = GLOBAL_WORKER_REGISTRY.terminate(task_id)
     release_task_lease(conn, task_id)
     if row["state"] not in {"done", "failed", "blocked", "rejected"}:
         transition_task(conn, task_id, "failed", "cancelled by operator")
@@ -342,7 +344,12 @@ def cancel_task(
         new_state=new_state,
         note="cancelled by operator",
     )
-    return {"task_id": task_id, "state": new_state, "lease_released": True}
+    return {
+        "task_id": task_id,
+        "state": new_state,
+        "lease_released": True,
+        "worker_terminated": worker_terminated,
+    }
 
 
 def build_dashboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:

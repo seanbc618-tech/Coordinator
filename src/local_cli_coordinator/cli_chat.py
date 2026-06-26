@@ -447,7 +447,7 @@ def _handle_slash(
     if command == "/task":
         task_id, action = _parse_task_slash(text)
         if not task_id:
-            return _error_outcome("invalid_args", "usage: /task <id> [approve|retry|cancel]")
+            return _error_outcome("invalid_args", "usage: /task <id> [approve|retry|cancel|log]")
         if action in {"approve", "retry", "cancel"}:
             method = f"project.task.{action}"
             result, err, _envelope = _send_rpc(
@@ -463,6 +463,31 @@ def _handle_slash(
                 ok=True,
                 project_id=project_id,
                 user_reply=f"Task {task_id} -> {result.get('state', action)}",
+                intent="status_question",
+            )
+        if action == "log":
+            result, err, _envelope = _send_rpc(
+                paths,
+                project_id=project_id,
+                method="project.task.log",
+                params={"task_id": task_id},
+            )
+            if err is not None:
+                return err
+            assert result is not None
+            content = str(result.get("content") or "")
+            if not content:
+                return PromptOutcome(
+                    ok=True,
+                    project_id=project_id,
+                    user_reply=f"Task {task_id} log: (empty)",
+                    intent="status_question",
+                )
+            tail = content[-4000:] if len(content) > 4000 else content
+            return PromptOutcome(
+                ok=True,
+                project_id=project_id,
+                user_reply=f"Task {task_id} log:\n{tail}",
                 intent="status_question",
             )
         result, err, _envelope = _send_rpc(
@@ -640,13 +665,14 @@ def _rpc_slash(
     if command == "/task":
         task_id, action = _parse_task_slash(text)
         if not task_id:
-            outcome = _error_outcome("invalid_args", "usage: /task <id> [approve|retry|cancel]")
+            outcome = _error_outcome("invalid_args", "usage: /task <id> [approve|retry|cancel|log]")
             return _outcome_to_rpc(outcome), 1
-        if action in {"approve", "retry", "cancel"}:
+        if action in {"approve", "retry", "cancel", "log"}:
+            method = "project.task.log" if action == "log" else f"project.task.{action}"
             _, err, envelope = _send_rpc(
                 paths,
                 project_id=project_id,
-                method=f"project.task.{action}",
+                method=method,
                 params={"task_id": task_id},
             )
             if envelope is not None:

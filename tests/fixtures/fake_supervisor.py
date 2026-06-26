@@ -440,6 +440,7 @@ class FakeSupervisor:
             "project.task.approve",
             "project.task.retry",
             "project.task.cancel",
+            "project.task.log",
             "supervisor.dashboard",
         ):
             self._handle_operational_rpc(
@@ -527,11 +528,25 @@ class FakeSupervisor:
                 task_id = params.get("args", "task-baseline-001")
                 self._respond(conn, request_id, self._stub_task_detail(task_id))
             elif method in ("project.task.approve", "project.task.retry", "project.task.cancel"):
-                self._respond(conn, request_id, {"task_id": params.get("task_id", "1"), "state": "ready", "lease_released": True})
+                self._respond(
+                    conn,
+                    request_id,
+                    {
+                        "task_id": params.get("task_id", "1"),
+                        "state": "ready",
+                        "lease_released": True,
+                        "worker_terminated": False,
+                    },
+                )
             return
 
         from local_cli_coordinator.db import connect, init_db
         from local_cli_coordinator.runtime_paths import RuntimePaths
+        from local_cli_coordinator.log_tail import (
+            LogTailError,
+            format_log_tail_error,
+            read_task_log_tail,
+        )
         from local_cli_coordinator.task_control import (
             TaskControlError,
             approve_task,
@@ -568,6 +583,38 @@ class FakeSupervisor:
                 self._respond(conn, request_id, payload)
                 return
 
+            if method == "project.task.log":
+                task_id = str(params.get("task_id", "1")).strip()
+                try:
+                    payload = read_task_log_tail(
+                        db,
+                        project_id=effective_project_id,
+                        task_id=task_id,
+                        kind=str(params.get("kind") or "attempt"),
+                        offset=int(params.get("offset") or 0),
+                        max_bytes=int(params.get("max_bytes") or 65536),
+                    )
+                except LogTailError as exc:
+                    if task_id == "1":
+                        self._respond(
+                            conn,
+                            request_id,
+                            {
+                                "task_id": task_id,
+                                "kind": "attempt",
+                                "offset": 0,
+                                "next_offset": 0,
+                                "content": "",
+                                "eof": True,
+                                "truncated": False,
+                            },
+                        )
+                        return
+                    self._respond(conn, request_id, ok=False, error=format_log_tail_error(exc))
+                    return
+                self._respond(conn, request_id, payload)
+                return
+
             task_id = str(params.get("task_id", "1")).strip()
             handlers = {
                 "project.task.approve": approve_task,
@@ -589,7 +636,12 @@ class FakeSupervisor:
                     self._respond(
                         conn,
                         request_id,
-                        {"task_id": task_id, "state": "failed", "lease_released": True},
+                        {
+                            "task_id": task_id,
+                            "state": "failed",
+                            "lease_released": True,
+                            "worker_terminated": False,
+                        },
                     )
                     return
                 self._respond(conn, request_id, ok=False, error=format_task_control_error(exc))

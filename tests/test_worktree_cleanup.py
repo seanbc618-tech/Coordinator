@@ -51,12 +51,35 @@ def _init_db_with_task(root: Path, task_id: str, state: str) -> None:
     conn.close()
 
 
+def _confirm_token(stdout: str) -> str:
+    for line in stdout.splitlines():
+        if line.startswith("confirm_token:"):
+            return line.split(":", 1)[1].strip()
+    raise AssertionError(f"confirm token not found in:\n{stdout}")
+
+
+def _apply_cleanup(root: Path, *extra: str):
+    dry = run_cli("--root", str(root), "repo", "cleanup-worktrees", *extra)
+    token = _confirm_token(dry.stdout)
+    return run_cli(
+        "--root",
+        str(root),
+        "repo",
+        "cleanup-worktrees",
+        "--apply",
+        "--confirm",
+        token,
+        *extra,
+    )
+
+
 class WorktreeCleanupTests(unittest.TestCase):
     def test_cleanup_worktrees_no_config_returns_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             result = run_cli("--root", str(tmp), "repo", "cleanup-worktrees")
         self.assertEqual(result.returncode, 1)
-        self.assertIn("error", result.stderr.lower())
+        combined = f"{result.stdout}\n{result.stderr}".lower()
+        self.assertIn("error", combined)
 
     def test_cleanup_skips_active_task_worktree(self) -> None:
         """Active (ready/running) task worktrees must not be removed."""
@@ -75,10 +98,13 @@ class WorktreeCleanupTests(unittest.TestCase):
                 branch_name="coord/task-active1",
             )
 
-            result = run_cli("--root", str(root), "repo", "cleanup-worktrees")
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("skip (task ready)", result.stdout)
-            self.assertIn("removed: 0", result.stdout)
+            dry = run_cli("--root", str(root), "repo", "cleanup-worktrees")
+            self.assertEqual(dry.returncode, 0, dry.stderr)
+            self.assertIn("items: (none)", dry.stdout)
+
+            applied = _apply_cleanup(root)
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+            self.assertIn("removed: 0", applied.stdout)
 
     def test_cleanup_removes_completed_clean_worktree(self) -> None:
         """Completed task with clean worktree should be removed."""
@@ -97,7 +123,10 @@ class WorktreeCleanupTests(unittest.TestCase):
                 branch_name="coord/task-done1",
             )
 
-            result = run_cli("--root", str(root), "repo", "cleanup-worktrees")
+            dry = run_cli("--root", str(root), "repo", "cleanup-worktrees")
+            self.assertIn("task-done1", dry.stdout)
+
+            result = _apply_cleanup(root)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("removed: 1", result.stdout)
 
@@ -119,9 +148,11 @@ class WorktreeCleanupTests(unittest.TestCase):
             )
             (wt_path / "uncommitted.txt").write_text("dirty\n")
 
-            result = run_cli("--root", str(root), "repo", "cleanup-worktrees")
+            dry = run_cli("--root", str(root), "repo", "cleanup-worktrees")
+            self.assertIn("items: (none)", dry.stdout)
+
+            result = _apply_cleanup(root)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("skip (uncommitted changes)", result.stdout)
             self.assertIn("removed: 0", result.stdout)
 
     def test_cleanup_skips_failed_task_worktree_even_with_force(self) -> None:
@@ -140,11 +171,13 @@ class WorktreeCleanupTests(unittest.TestCase):
                 branch_name="coord/task-failed1",
             )
 
-            result = run_cli(
+            dry = run_cli(
                 "--root", str(root), "repo", "cleanup-worktrees", "--force"
             )
+            self.assertIn("items: (none)", dry.stdout)
+
+            result = _apply_cleanup(root, "--force")
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("skip (task failed)", result.stdout)
             self.assertIn("removed: 0", result.stdout)
 
     def test_cleanup_force_removes_completed_dirty_worktree(self) -> None:
@@ -165,11 +198,24 @@ class WorktreeCleanupTests(unittest.TestCase):
             )
             (wt_path / "uncommitted.txt").write_text("dirty\n")
 
-            result = run_cli(
+            dry = run_cli(
                 "--root", str(root), "repo", "cleanup-worktrees", "--force"
             )
+            self.assertIn("task-dirty2", dry.stdout)
+
+            result = _apply_cleanup(root, "--force")
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("removed: 1", result.stdout)
+
+    def test_cleanup_apply_without_confirm_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            init_git_repo(repo)
+            _write_config(root, repo)
+            result = run_cli("--root", str(root), "repo", "cleanup-worktrees", "--apply")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("confirm", result.stdout.lower())
 
     def test_cleanup_reports_counts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -178,11 +224,9 @@ class WorktreeCleanupTests(unittest.TestCase):
             init_git_repo(repo)
             _write_config(root, repo)
 
-            result = run_cli("--root", str(root), "repo", "cleanup-worktrees")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("removed:", result.stdout)
-        self.assertIn("skipped:", result.stdout)
-        self.assertIn("errors:", result.stdout)
+            dry = run_cli("--root", str(root), "repo", "cleanup-worktrees")
+            self.assertEqual(dry.returncode, 0, dry.stderr)
+            self.assertIn("confirm_token:", dry.stdout)
 
 
 if __name__ == "__main__":

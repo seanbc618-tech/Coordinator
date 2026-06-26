@@ -22,7 +22,7 @@ from .db import (
     task_counts,
     transition_task,
 )
-from .gitops import list_worktrees, remove_worktree, worktree_has_uncommitted_changes
+
 from .discovery import (
     CommandDiscoveryResult,
     discover_from_command,
@@ -555,82 +555,51 @@ def _cmd_logs(args: argparse.Namespace) -> int:
     return 0
 
 
-_CLEANUP_ELIGIBLE_TASK_STATES = frozenset({"done"})
-
-
-def _extract_task_id_from_path(wt_path: Path) -> str | None:
-    """Extract task ID from a coordinator-managed worktree path.
-
-    Worktree paths are structured as: <root>/worktrees/<repo_id>/<task_id>
-    """
-    return wt_path.name if wt_path.name.startswith("task-") else None
-
-
 def _cmd_cleanup_worktrees(args: argparse.Namespace) -> int:
-    root = Path(args.root)
-    config, config_error = try_load_config(root)
-    if config_error is not None:
-        print(f"error: {config_error}", file=sys.stderr)
-        return 1
+    from .cli_admin_ops import run_cleanup_worktrees
 
-    force = getattr(args, "force", False)
-    conn = _open_db(root, args.db)
-    removed = 0
-    skipped = 0
-    errors = 0
+    apply = getattr(args, "apply", False)
+    dry_run = getattr(args, "dry_run", False) or not apply
+    code, output = run_cleanup_worktrees(
+        Path(args.root),
+        args.db,
+        dry_run=dry_run,
+        apply=apply,
+        confirm=getattr(args, "confirm", None),
+        force=getattr(args, "force", False),
+        project_id=getattr(args, "project", None),
+    )
+    print(output)
+    return code
 
-    try:
-        for repo_id, repo_config in config.repos.items():
-            repo_path = repo_config.path
-            if not repo_path.exists():
-                continue
-            worktrees_root = (root / "worktrees" / repo_id).resolve()
-            all_worktrees = list_worktrees(repo_path)
-            for wt in all_worktrees:
-                wt_path = Path(wt.get("worktree", "")).resolve()
-                # Skip the main worktree
-                if wt.get("branch", "") == "":
-                    continue
-                # Only manage worktrees under our worktrees root
-                if not (worktrees_root in wt_path.parents):
-                    continue
 
-                task_id = _extract_task_id_from_path(wt_path)
-                if task_id is None:
-                    print(f"skip (no task ID): {wt_path}")
-                    skipped += 1
-                    continue
+def _cmd_task_rollback(args: argparse.Namespace) -> int:
+    from .cli_admin_ops import run_task_rollback
 
-                try:
-                    task = get_task(conn, task_id)
-                except KeyError:
-                    print(f"skip (task not found): {wt_path}")
-                    skipped += 1
-                    continue
+    apply = getattr(args, "apply", False)
+    dry_run = getattr(args, "dry_run", False) or not apply
+    code, output = run_task_rollback(
+        Path(args.root),
+        args.db,
+        args.task_id,
+        dry_run=dry_run,
+        apply=apply,
+        confirm=getattr(args, "confirm", None),
+    )
+    print(output)
+    return code
 
-                if task["state"] not in _CLEANUP_ELIGIBLE_TASK_STATES:
-                    print(f"skip (task {task['state']}): {wt_path}")
-                    skipped += 1
-                    continue
 
-                has_changes = worktree_has_uncommitted_changes(wt_path)
-                if has_changes and not force:
-                    print(f"skip (uncommitted changes): {wt_path}")
-                    skipped += 1
-                    continue
+def _cmd_supervisor_drain(args: argparse.Namespace) -> int:
+    from .cli_admin_ops import run_supervisor_drain
 
-                try:
-                    remove_worktree(repo_path, wt_path, force=force)
-                    print(f"removed: {wt_path}")
-                    removed += 1
-                except RuntimeError as exc:
-                    print(f"error removing {wt_path}: {exc}", file=sys.stderr)
-                    errors += 1
-    finally:
-        conn.close()
-
-    print(f"\nremoved: {removed}, skipped: {skipped}, errors: {errors}")
-    return 1 if errors else 0
+    code, output = run_supervisor_drain(
+        Path(args.root),
+        args.db,
+        dry_run=True,
+    )
+    print(output)
+    return code
 
 
 def _cmd_discover(args: argparse.Namespace) -> int:
@@ -1220,6 +1189,11 @@ def build_parser() -> argparse.ArgumentParser:
     task_subparsers.add_parser("block").add_argument("task_id")
     task_subparsers.add_parser("events").add_argument("task_id")
     task_subparsers.add_parser("artifacts").add_argument("task_id")
+    task_rollback = task_subparsers.add_parser("rollback")
+    task_rollback.add_argument("task_id")
+    task_rollback.add_argument("--dry-run", action="store_true")
+    task_rollback.add_argument("--apply", action="store_true")
+    task_rollback.add_argument("--confirm")
 
     agent = subparsers.add_parser("agent")
     agent_subparsers = agent.add_subparsers(dest="agent_command")
@@ -1231,7 +1205,11 @@ def build_parser() -> argparse.ArgumentParser:
     repo_subparsers.required = True
     repo_subparsers.add_parser("list")
     cleanup = repo_subparsers.add_parser("cleanup-worktrees")
+    cleanup.add_argument("--dry-run", action="store_true")
+    cleanup.add_argument("--apply", action="store_true")
+    cleanup.add_argument("--confirm")
     cleanup.add_argument("--force", action="store_true")
+    cleanup.add_argument("--project")
 
     # Goal command with nargs="*"
     goal = subparsers.add_parser("goal")
@@ -1253,6 +1231,8 @@ def build_parser() -> argparse.ArgumentParser:
     supervisor_subparsers.add_parser("status")
     supervisor_subparsers.add_parser("stop")
     supervisor_subparsers.add_parser("restart")
+    supervisor_drain = supervisor_subparsers.add_parser("drain")
+    supervisor_drain.add_argument("--dry-run", action="store_true")
 
     # Project commands
     project = subparsers.add_parser("project")
@@ -1319,6 +1299,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_task_events(args)
     if args.command == "task" and args.task_command == "artifacts":
         return _cmd_task_artifacts(args)
+    if args.command == "task" and args.task_command == "rollback":
+        return _cmd_task_rollback(args)
     if args.command == "daemon":
         return _cmd_daemon(args)
     if args.command == "goal":
@@ -1341,6 +1323,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_supervisor_stop(args)
     if args.command == "supervisor" and args.supervisor_command == "restart":
         return _cmd_supervisor_restart(args)
+    if args.command == "supervisor" and args.supervisor_command == "drain":
+        return _cmd_supervisor_drain(args)
     if args.command == "project" and args.project_command == "inspect":
         return _cmd_project_inspect(args)
     if args.command == "project" and args.project_command == "add":
