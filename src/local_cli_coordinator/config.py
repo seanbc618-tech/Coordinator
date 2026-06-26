@@ -42,6 +42,7 @@ class RepoConfig:
     verify_commands: list[str]
     memory_path: Path | None = None
     review_policy: str = "full_review"
+    autonomy_enabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,18 @@ class DaemonPolicyConfig:
     loop_interval_seconds: int = 300
     idle_sleep_seconds: int = 60
     run_discovery_before_tasks: bool = True
+
+
+@dataclass(frozen=True)
+class AutonomyConfig:
+    enabled: bool = False
+    max_iterations_per_tick: int = 1
+    max_evaluations_per_iteration: int = 3
+    max_admissions_per_iteration: int = 1
+    max_generated_backlog_per_iteration: int = 3
+    wait_when_running: bool = True
+    require_evaluation_before_followup: bool = True
+    pause_after_consecutive_failures: int = 3
 
 
 @dataclass(frozen=True)
@@ -93,6 +106,7 @@ class CoordinatorConfig:
     discovery_sources: dict[str, DiscoverySourceConfig] = field(default_factory=dict)
     connectors: dict[str, ConnectorConfig] = field(default_factory=dict)
     daemon_policy: DaemonPolicyConfig = field(default_factory=DaemonPolicyConfig)
+    autonomy: AutonomyConfig = field(default_factory=AutonomyConfig)
 
 
 def iter_agents_by_role(
@@ -299,6 +313,7 @@ def load_config_from_dir(config_dir: Path) -> CoordinatorConfig:
                 repo_id,
                 str(raw.get("review_policy", "full_review")),
             ),
+            autonomy_enabled=bool(raw.get("autonomy_enabled", False)),
         )
         for repo_id, raw in repos_raw.items()
     }
@@ -326,6 +341,28 @@ def load_config_from_dir(config_dir: Path) -> CoordinatorConfig:
         run_discovery_before_tasks=bool(daemon_raw.get("run_discovery_before_tasks", True)),
     )
 
+    autonomy_raw = policy_doc.get("autonomy", {})
+    autonomy = AutonomyConfig(
+        enabled=bool(autonomy_raw.get("enabled", False)),
+        max_iterations_per_tick=int(autonomy_raw.get("max_iterations_per_tick", 1)),
+        max_evaluations_per_iteration=int(
+            autonomy_raw.get("max_evaluations_per_iteration", 3)
+        ),
+        max_admissions_per_iteration=int(
+            autonomy_raw.get("max_admissions_per_iteration", 1)
+        ),
+        max_generated_backlog_per_iteration=int(
+            autonomy_raw.get("max_generated_backlog_per_iteration", 3)
+        ),
+        wait_when_running=bool(autonomy_raw.get("wait_when_running", True)),
+        require_evaluation_before_followup=bool(
+            autonomy_raw.get("require_evaluation_before_followup", True)
+        ),
+        pause_after_consecutive_failures=int(
+            autonomy_raw.get("pause_after_consecutive_failures", 3)
+        ),
+    )
+
     return CoordinatorConfig(
         agents=agents,
         repos=repos,
@@ -333,6 +370,7 @@ def load_config_from_dir(config_dir: Path) -> CoordinatorConfig:
         discovery_sources=discovery_sources,
         connectors=connectors,
         daemon_policy=daemon_policy,
+        autonomy=autonomy,
     )
 
 
