@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,7 @@ from .context_files import (
     public_metadata_from_context_files,
 )
 from .config import CoordinatorConfig, select_agent_by_role
+from .execution_policy import ExecutionPolicy, derive_server_policy
 from .db import get_task
 from .goals import active_goal_for_project, get_goal, has_live_commander_run
 from .supervisor_events import EventBroker
@@ -199,6 +201,23 @@ def handle_chat_send(
         {"role": "system", "text": THINKING_MESSAGE, "goal_id": goal_id},
     )
 
+    repo_config = None
+    repo_ids = json.loads(goal["repo_ids"])
+    for repo_id in repo_ids:
+        if repo_id in config.repos:
+            repo_config = config.repos[repo_id]
+            break
+    if repo_config is None and config.repos:
+        repo_config = next(iter(config.repos.values()))
+
+    execution_policy_payload: dict[str, object] = {}
+    raw_policy = request.params.get("execution_policy")
+    if isinstance(raw_policy, dict) and repo_config is not None:
+        claimed = ExecutionPolicy.from_json(raw_policy)
+        server = derive_server_policy(repo_config)
+        effective = ExecutionPolicy.compute_effective(server, claimed)
+        execution_policy_payload = effective.to_json_dict()
+
     result = send_project_chat_message(
         conn,
         config,
@@ -207,6 +226,7 @@ def handle_chat_send(
         text,
         project_id=project_id,
         context_files=context_files,
+        execution_policy=execution_policy_payload,
     )
     publish_commander_chat_events(broker, conn, project_id, result, config=config)
 

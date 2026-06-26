@@ -85,6 +85,7 @@ def create_task(
     acceptance_criteria: list[str],
     verification_commands: list[str],
     project_id: str = "legacy-default",
+    execution_policy: str = "{}",
     commit: bool = True,
 ) -> str:
     task_id = f"task-{uuid.uuid4().hex[:12]}"
@@ -92,8 +93,9 @@ def create_task(
         """
         insert into tasks(
             id, title, repo, state, priority, capabilities, source_path,
-            goal, acceptance_criteria, verification_commands, project_id
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            goal, acceptance_criteria, verification_commands, project_id,
+            execution_policy
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             task_id,
@@ -107,6 +109,7 @@ def create_task(
             "\n".join(acceptance_criteria),
             "\n".join(verification_commands),
             project_id,
+            execution_policy,
         ),
     )
     conn.execute(

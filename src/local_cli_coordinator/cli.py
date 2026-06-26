@@ -1065,6 +1065,9 @@ _PROMPT_FLAGS = frozenset({
     "--fork",
     "--no-tui",
     "--mode",
+    "--tools",
+    "--no-tools",
+    "--exclude-tools",
 })
 
 
@@ -1100,19 +1103,30 @@ def build_prompt_parser() -> argparse.ArgumentParser:
     parser.add_argument("-p", "--prompt", dest="prompt_flag", default=None)
     parser.add_argument("prompt_words", nargs="*", default=[])
     parser.add_argument("--print", dest="print_mode", action="store_true")
-    parser.add_argument("--mode", choices=("text", "json"), default="text")
+    parser.add_argument("--mode", choices=("text", "json", "rpc"), default="text")
     session = parser.add_mutually_exclusive_group()
     session.add_argument("--continue", dest="continue_goal", action="store_true")
     session.add_argument("--resume", nargs="?", const="", default=None, metavar="GOAL_ID")
     session.add_argument("--fork", type=int, default=None, metavar="GOAL_ID")
+    tool_group = parser.add_mutually_exclusive_group()
+    tool_group.add_argument("--tools", default=None, metavar="TOOLS")
+    tool_group.add_argument("--no-tools", dest="no_tools", action="store_true")
+    parser.add_argument("--exclude-tools", dest="exclude_tools", default=None, metavar="TOOLS")
     parser.add_argument("--no-tui", dest="no_tui", action="store_true")
     return parser
 
 
 def normalize_prompt_args(args: argparse.Namespace) -> None:
     """Derive ``prompt_text`` and apply headless mode flags."""
-    if args.print_mode or args.mode == "json":
+    from .execution_policy import parse_tool_csv
+
+    if args.print_mode or args.mode in {"json", "rpc"}:
         args.no_tui = True
+    try:
+        args.tools = parse_tool_csv(getattr(args, "tools", None))
+        args.exclude_tools = parse_tool_csv(getattr(args, "exclude_tools", None))
+    except ValueError as exc:
+        build_prompt_parser().error(str(exc))
     context_tokens: list[str] = []
     prompt_parts: list[str] = []
     for word in args.prompt_words:

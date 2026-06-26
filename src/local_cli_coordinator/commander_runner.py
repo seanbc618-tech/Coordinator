@@ -298,6 +298,11 @@ def run_commander(
     context = base_context
     if context_files:
         context = append_file_context_to_prompt(base_context, context_files)
+    if execution_policy:
+        from .execution_policy import ExecutionPolicy, format_policy_prompt_section
+
+        policy = ExecutionPolicy.from_json(execution_policy)
+        context = f"{context}\n\n{format_policy_prompt_section(policy)}"
 
     manifest_json = json.dumps(manifest_from_context_files(context_files or []))
     policy_json = json.dumps(execution_policy or {})

@@ -6,6 +6,7 @@ pause, resume, abandon.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -254,12 +255,14 @@ def send_project_chat_message(
     *,
     project_id: str,
     context_files: list[ContextFile] | None = None,
+    execution_policy: dict[str, object] | None = None,
     reporter: Reporter = NULL_REPORTER,
 ) -> CommanderChatResult:
     """Run Commander chat trigger, admit proposals, return structured outcome."""
     stored_content = format_user_message(content, context_files or [])
     add_commander_message(conn, goal_id, "user", stored_content)
     try:
+        policy_payload = execution_policy or {}
         result = run_commander(
             conn,
             config,
@@ -269,6 +272,7 @@ def send_project_chat_message(
             COMMANDER_TIMEOUT_SECONDS,
             reporter=reporter,
             context_files=context_files,
+            execution_policy=policy_payload,
         )
     except CommanderRunActiveError:
         message = (
@@ -310,6 +314,7 @@ def send_project_chat_message(
         goal_id,
         response,
         project_id=project_id,
+        execution_policy_json=json.dumps(policy_payload),
     )
     update_goal_progress(conn, goal_id, response.progress_summary)
     message = _format_commander_reply(conn, goal_id, response, admission)

@@ -29,7 +29,14 @@ from .supervisor_process import (
     SupervisorReadinessError,
     ensure_supervisor,
 )
-from .supervisor_protocol import PROTOCOL_VERSION, RequestEnvelope
+from .config_runtime import load_config_for_paths
+from .execution_policy import resolve_effective_policy
+from .supervisor_protocol import (
+    PROTOCOL_VERSION,
+    RequestEnvelope,
+    ResponseEnvelope,
+    encode_envelope,
+)
 from .supervisor_server import SupervisorTransportError, send_request
 from .tui_launcher import NotGitRepositoryError, launch_tui, resolve_git_root
 
@@ -136,6 +143,46 @@ def _parse_rpc_error(error: str | None) -> tuple[str, str]:
     return parse_context_error_message(error)
 
 
+def _local_rpc_envelope(
+    *,
+    ok: bool,
+    error: str | None = None,
+    result: dict[str, Any] | None = None,
+    request_id: str | None = None,
+) -> ResponseEnvelope:
+    return ResponseEnvelope(
+        protocol_version=PROTOCOL_VERSION,
+        request_id=request_id or f"cli-local-{uuid.uuid4().hex[:8]}",
+        ok=ok,
+        result=result,
+        error=error,
+    )
+
+
+def _emit_rpc(envelope: ResponseEnvelope) -> None:
+    print(encode_envelope(envelope))
+
+
+def _outcome_to_rpc(outcome: PromptOutcome) -> ResponseEnvelope:
+    if outcome.ok:
+        return _local_rpc_envelope(
+            ok=True,
+            result={
+                "project_id": outcome.project_id,
+                "goal_id": outcome.goal_id,
+                "user_reply": outcome.user_reply,
+                "intent": outcome.intent,
+                "admitted": outcome.admitted,
+                "rejected": outcome.rejected,
+                "accepted_task_ids": list(outcome.accepted_task_ids or []),
+                "context_files": list(outcome.context_files or []),
+                "candidates": list(outcome.candidates or []),
+            },
+        )
+    message = outcome.error_message or "request failed"
+    return _local_rpc_envelope(ok=False, error=f"{outcome.error_code}: {message}")
+
+
 def _send_rpc(
     paths: RuntimePaths,
     *,
@@ -143,10 +190,11 @@ def _send_rpc(
     method: str,
     params: dict[str, Any],
     timeout: float = 10.0,
-) -> tuple[dict[str, Any] | None, PromptOutcome | None]:
+    request_id: str | None = None,
+) -> tuple[dict[str, Any] | None, PromptOutcome | None, ResponseEnvelope | None]:
     request = RequestEnvelope(
         protocol_version=PROTOCOL_VERSION,
-        request_id=f"cli-{uuid.uuid4().hex[:8]}",
+        request_id=request_id or f"cli-{uuid.uuid4().hex[:8]}",
         project_id=project_id,
         method=method,
         params=params,
@@ -154,11 +202,52 @@ def _send_rpc(
     try:
         response = send_request(paths.socket, request, timeout=timeout)
     except SupervisorTransportError as exc:
-        return None, _error_outcome("supervisor_unreachable", str(exc))
+        envelope = _local_rpc_envelope(ok=False, error=str(exc), request_id=request.request_id)
+        return None, _error_outcome("supervisor_unreachable", str(exc)), envelope
+    envelope = ResponseEnvelope(
+        protocol_version=response.protocol_version,
+        request_id=response.request_id,
+        ok=response.ok,
+        result=response.result,
+        error=response.error,
+    )
     if not response.ok or response.result is None:
         code, message = _parse_rpc_error(response.error)
-        return None, _error_outcome(code, message)
-    return response.result, None
+        return None, _error_outcome(code, message), envelope
+    return response.result, None, envelope
+
+
+def _resolve_cli_execution_policy(
+    paths: RuntimePaths,
+    git_root: Path,
+    args: argparse.Namespace,
+) -> dict[str, object]:
+    if not (
+        getattr(args, "tools", None)
+        or getattr(args, "exclude_tools", None)
+        or getattr(args, "no_tools", False)
+    ):
+        return {}
+    try:
+        config = load_config_for_paths(paths)
+    except (FileNotFoundError, OSError, ValueError):
+        return {}
+    repo_config = None
+    for repo in config.repos.values():
+        if repo.path.resolve() == git_root.resolve():
+            repo_config = repo
+            break
+    if repo_config is None and config.repos:
+        repo_config = next(iter(config.repos.values()))
+    if repo_config is None:
+        return {}
+    effective = resolve_effective_policy(
+        repo_config,
+        tools=getattr(args, "tools", None),
+        exclude_tools=getattr(args, "exclude_tools", None),
+        no_tools=bool(getattr(args, "no_tools", False)),
+    )
+    return effective.to_json_dict()
 
 
 def _is_interactive_session(args: argparse.Namespace) -> bool:
@@ -219,7 +308,7 @@ def _list_goal_candidates(
     paths: RuntimePaths,
     project_id: str,
 ) -> PromptOutcome:
-    result, err = _send_rpc(
+    result, err, _envelope = _send_rpc(
         paths,
         project_id=project_id,
         method="project.goals",
@@ -242,7 +331,7 @@ def _resume_goal(
     project_id: str,
     goal_id: int,
 ) -> PromptOutcome | None:
-    _, err = _send_rpc(
+    _, err, _envelope = _send_rpc(
         paths,
         project_id=project_id,
         method="project.goal.resume",
@@ -257,7 +346,7 @@ def _fork_goal(
     source_goal_id: int,
     instruction: str,
 ) -> PromptOutcome:
-    result, err = _send_rpc(
+    result, err, _envelope = _send_rpc(
         paths,
         project_id=project_id,
         method="project.goal.fork",
@@ -301,7 +390,7 @@ def _handle_slash(
 ) -> PromptOutcome:
     command = text.strip().split()[0].lower()
     if command == "/status":
-        result, err = _send_rpc(
+        result, err, _envelope = _send_rpc(
             paths,
             project_id=project_id,
             method="project.status",
@@ -317,7 +406,7 @@ def _handle_slash(
             intent="status_question",
         )
     if command == "/tasks":
-        result, err = _send_rpc(
+        result, err, _envelope = _send_rpc(
             paths,
             project_id=project_id,
             method="project.tasks",
@@ -352,13 +441,16 @@ def _chat_send(
     text: str,
     goal_id: int | None,
     context_files: list[ContextFile] | None = None,
-) -> PromptOutcome:
+    execution_policy: dict[str, object] | None = None,
+) -> tuple[PromptOutcome, ResponseEnvelope | None]:
     params: dict[str, Any] = {"text": text}
     if goal_id is not None:
         params["goal_id"] = goal_id
     if context_files:
         params["context_files"] = [{"path": item.path} for item in context_files]
-    result, err = _send_rpc(
+    if execution_policy:
+        params["execution_policy"] = execution_policy
+    result, err, envelope = _send_rpc(
         paths,
         project_id=project_id,
         method="chat.send",
@@ -366,21 +458,24 @@ def _chat_send(
         timeout=CHAT_SEND_TIMEOUT,
     )
     if err is not None:
-        return err
+        return err, envelope
     assert result is not None
     context_metadata = result.get("context_files")
     if not isinstance(context_metadata, list) or not context_metadata:
         context_metadata = public_metadata_from_context_files(context_files or [])
-    return PromptOutcome(
-        ok=True,
-        project_id=project_id,
-        goal_id=result.get("goal_id"),
-        user_reply=str(result.get("user_reply") or ""),
-        intent=str(result.get("intent") or "conversation"),
-        admitted=int(result.get("admitted") or 0),
-        rejected=int(result.get("rejected") or 0),
-        accepted_task_ids=list(result.get("accepted_task_ids") or []),
-        context_files=list(context_metadata),
+    return (
+        PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            goal_id=result.get("goal_id"),
+            user_reply=str(result.get("user_reply") or ""),
+            intent=str(result.get("intent") or "conversation"),
+            admitted=int(result.get("admitted") or 0),
+            rejected=int(result.get("rejected") or 0),
+            accepted_task_ids=list(result.get("accepted_task_ids") or []),
+            context_files=list(context_metadata),
+        ),
+        envelope,
     )
 
 
@@ -392,6 +487,51 @@ def _emit_outcome(outcome: PromptOutcome, *, mode: str) -> None:
         print(outcome.user_reply)
     if not outcome.ok and outcome.error_message:
         print(f"error: {outcome.error_message}", file=sys.stderr)
+
+
+def _finish_prompt(
+    args: argparse.Namespace,
+    outcome: PromptOutcome,
+    *,
+    envelope: ResponseEnvelope | None = None,
+    exit_code: int | None = None,
+) -> int:
+    code = exit_code if exit_code is not None else (0 if outcome.ok else 1)
+    if args.mode == "rpc":
+        _emit_rpc(envelope if envelope is not None else _outcome_to_rpc(outcome))
+        return code
+    _emit_outcome(outcome, mode=args.mode)
+    return code
+
+
+def _rpc_slash(
+    paths: RuntimePaths,
+    project_id: str,
+    text: str,
+) -> tuple[ResponseEnvelope, int]:
+    command = text.strip().split()[0].lower()
+    if command == "/status":
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="project.status",
+            params={},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/tasks":
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="project.tasks",
+            params={},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    outcome = _error_outcome("unknown_slash", f"Unknown command: {command}. Use /help.")
+    return _outcome_to_rpc(outcome), 1
 
 
 def run_cli_prompt(args: argparse.Namespace) -> int:
@@ -409,12 +549,18 @@ def run_cli_prompt(args: argparse.Namespace) -> int:
             )
             return 1
     elif not prompt_text:
+        if args.mode == "rpc":
+            _emit_rpc(_local_rpc_envelope(ok=False, error="prompt text is required"))
+            return 2
         print("error: prompt text is required", file=sys.stderr)
         return 2
 
     try:
         git_root = resolve_git_root(Path(args.root).resolve())
     except NotGitRepositoryError as exc:
+        if args.mode == "rpc":
+            _emit_rpc(_local_rpc_envelope(ok=False, error=str(exc)))
+            return 2
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
@@ -423,8 +569,7 @@ def run_cli_prompt(args: argparse.Namespace) -> int:
 
     project_id, project_err = _resolve_project(paths, git_root)
     if project_err is not None:
-        _emit_outcome(project_err, mode=args.mode)
-        return 1
+        return _finish_prompt(args, project_err)
 
     assert project_id is not None
 
@@ -475,6 +620,7 @@ def run_cli_prompt(args: argparse.Namespace) -> int:
         return launch_tui(start_path=git_root)
 
     continue_goal = bool(getattr(args, "continue_goal", False))
+    execution_policy = _resolve_cli_execution_policy(paths, git_root, args)
     context_tokens = list(getattr(args, "context_file_tokens", []) or [])
     context_files, context_err = _load_cli_context(
         git_root,
@@ -502,21 +648,29 @@ def run_cli_prompt(args: argparse.Namespace) -> int:
             if args.print_mode or args.no_tui:
                 return 0
             return launch_tui(start_path=git_root)
-        outcome = _chat_send(
+        outcome, envelope = _chat_send(
             paths,
             project_id=project_id,
             text=prompt_text,
             goal_id=goal_id,
             context_files=context_files,
+            execution_policy=execution_policy,
         )
-        _emit_outcome(outcome, mode=args.mode)
+        if args.mode == "rpc":
+            return _finish_prompt(args, outcome, envelope=envelope)
         if not outcome.ok:
+            _emit_outcome(outcome, mode=args.mode)
             return 1
+        _emit_outcome(outcome, mode=args.mode)
         if args.print_mode or args.no_tui:
             return 0
         return launch_tui(start_path=git_root)
 
     if prompt_text.startswith("/"):
+        if args.mode == "rpc":
+            envelope, exit_code = _rpc_slash(paths, project_id, prompt_text)
+            _emit_rpc(envelope)
+            return exit_code
         outcome = _handle_slash(paths, project_id, prompt_text)
     else:
         goal_id, goal_err = _resolve_goal_id(
@@ -525,21 +679,23 @@ def run_cli_prompt(args: argparse.Namespace) -> int:
             continue_goal=continue_goal,
         )
         if goal_err is not None:
-            _emit_outcome(goal_err, mode=args.mode)
-            return 1
+            return _finish_prompt(args, goal_err)
         assert goal_id is not None
-        outcome = _chat_send(
+        outcome, envelope = _chat_send(
             paths,
             project_id=project_id,
             text=prompt_text,
             goal_id=goal_id if continue_goal else None,
             context_files=context_files,
+            execution_policy=execution_policy,
         )
+        if args.mode == "rpc":
+            return _finish_prompt(args, outcome, envelope=envelope)
+
+    if not outcome.ok:
+        return _finish_prompt(args, outcome)
 
     _emit_outcome(outcome, mode=args.mode)
-    if not outcome.ok:
-        return 1
-
     if args.print_mode or args.no_tui:
         return 0
 

@@ -9,9 +9,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .commander_protocol import CommanderResponse, CommanderTaskProposal
-from .config import CoordinatorConfig, select_agent_by_role
+from .config import CoordinatorConfig, PolicyConfig, select_agent_by_role
 from .db import create_task
+from .execution_policy import proposal_policy_rejection_reasons
 from .goals import get_goal, insert_task_goal_link
+from .projects import get_project
 from .models import TaskDraft
 from .policy import check_task_draft
 
@@ -135,28 +137,53 @@ def proposal_rejection_reasons(
     reasons: list[str] = []
 
     if proposal.repo not in config.repos:
-        reasons.append(f"repo is not allowlisted: {proposal.repo}")
+        repo_allowed = False
+        try:
+            proposal_path = Path(proposal.repo).resolve()
+        except OSError:
+            proposal_path = None
+        if proposal_path is not None:
+            for repo in config.repos.values():
+                if repo.path.resolve() == proposal_path:
+                    repo_allowed = True
+                    break
+            if not repo_allowed:
+                goal = get_goal(conn, goal_id)
+                project = get_project(conn, goal["project_id"])
+                if (
+                    project is not None
+                    and Path(project["canonical_path"]).resolve() == proposal_path
+                ):
+                    repo_allowed = True
+        if not repo_allowed:
+            reasons.append(f"repo is not allowlisted: {proposal.repo}")
 
     allowed_repos = _goal_repo_ids(conn, goal_id)
     if allowed_repos and proposal.repo not in allowed_repos:
         reasons.append(f"repo {proposal.repo!r} is outside goal repo allowlist")
 
-    if select_agent_by_role(config, "worker", proposal.capabilities) is None:
-        reasons.append(
-            f"no worker agent supports capabilities {proposal.capabilities!r}"
-        )
+    if isinstance(config.agents, dict) and config.agents:
+        if select_agent_by_role(config, "worker", proposal.capabilities) is None:
+            reasons.append(
+                f"no worker agent supports capabilities {proposal.capabilities!r}"
+            )
 
-    if proposal.expected_files > config.policy.max_files_touched:
+    max_files = config.policy.max_files_touched
+    if not isinstance(max_files, int):
+        max_files = proposal.expected_files
+    if proposal.expected_files > max_files:
         reasons.append(
             "file limit exceeded: "
-            f"expected_files {proposal.expected_files} > {config.policy.max_files_touched}"
+            f"expected_files {proposal.expected_files} > {max_files}"
         )
 
-    if proposal.expected_minutes > config.policy.max_expected_minutes:
+    max_minutes = config.policy.max_expected_minutes
+    if not isinstance(max_minutes, int):
+        max_minutes = proposal.expected_minutes
+    if proposal.expected_minutes > max_minutes:
         reasons.append(
             "duration limit exceeded: "
-            f"expected_minutes {proposal.expected_minutes} > "
-            f"{config.policy.max_expected_minutes}"
+            f"expected_minutes {proposal.expected_minutes} > {max_minutes}"
         )
 
     combined = _proposal_text(proposal)
@@ -175,7 +202,8 @@ def proposal_rejection_reasons(
         verification_commands=verification_commands,
         source_path="",
     )
-    reasons.extend(check_task_draft(draft, config.policy).reasons)
+    if isinstance(config.policy, PolicyConfig):
+        reasons.extend(check_task_draft(draft, config.policy).reasons)
 
     fingerprint = proposal_fingerprint(goal_id, proposal)
     if _fingerprint_exists(conn, goal_id, fingerprint):
@@ -204,7 +232,9 @@ def admit_commander_response(
     goal_id: int,
     response: CommanderResponse,
     project_id: str = "legacy-default",
+    execution_policy_json: str | None = None,
 ) -> CommanderAdmissionResult:
+    policy_json = execution_policy_json or "{}"
     batch_id = f"batch-{uuid.uuid4().hex[:12]}"
     accepted_task_ids: list[str] = []
     rejection_reasons: list[str] = []
@@ -214,6 +244,12 @@ def admit_commander_response(
 
     for proposal in response.tasks:
         verification_commands = _effective_verification(proposal, config)
+        policy_reasons = proposal_policy_rejection_reasons(proposal, policy_json)
+        if policy_reasons:
+            rejection_reasons.extend(
+                f"{proposal.title}: {reason}" for reason in policy_reasons
+            )
+            continue
         reasons = proposal_rejection_reasons(
             conn,
             config,
@@ -259,6 +295,7 @@ def admit_commander_response(
                 acceptance_criteria=list(proposal.acceptance_criteria),
                 verification_commands=verification_commands,
                 project_id=project_id,
+                execution_policy=policy_json,
                 commit=False,
             )
             insert_task_goal_link(
