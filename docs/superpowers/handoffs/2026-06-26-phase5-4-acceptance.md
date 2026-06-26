@@ -14,17 +14,70 @@ Branch: `external/coordinator-global-tui`
 | `ff4de36` | Grok | Task 9: enforce task execution stages and RPC mode |
 | `e621fbe` | Claude | Task 10 E2E tests: `tests/test_phase5_4_e2e.py` |
 | `feed21c` | Claude | Task 10 docs: `docs/cli.md`, `docs/troubleshooting.md` |
+| `687949d` | Claude | Task 10 acceptance handoff (initial) |
+| `252cf0f` | Grok | Task 11: integration fixture fix + gate record |
 
 ## Test Counts
 
 | Suite | Tests | Status |
 |-------|-------|--------|
-| `test_cli_file_context.py` | 22 | ✅ all pass |
-| `test_goal_sessions.py` | 50 | ✅ all pass |
+| `test_cli_file_context.py` | 25 | ✅ all pass |
+| `test_goal_sessions.py` | 51 | ✅ all pass |
 | `test_execution_policy.py` | 42 | ✅ all pass |
 | `test_phase5_4_e2e.py` | 13 | ✅ all pass |
-| `test_cli_prompt.py` | 20 | ✅ all pass (regression) |
-| Full suite | 932 | ✅ all pass (4 pre-existing fixture errors) |
+| `test_cli_prompt.py` | 21 | ✅ all pass (regression) |
+| **Phase 5.4 focused total** | **152** | ✅ all pass |
+| Full suite (`ResourceWarning=error`) | 945 | ✅ all pass |
+
+## Task 11 Integration Gates (2026-06-26)
+
+### TypeScript (`ui-tui`)
+
+```text
+npm run typecheck --prefix ui-tui  → PASS
+npm run lint --prefix ui-tui      → PASS
+npm test --prefix ui-tui -- --run → 14 files, 138 passed
+```
+
+### Python
+
+```bash
+git diff --check
+# clean
+
+PYTHONWARNINGS=error::ResourceWarning PYTHONPATH=src \
+  python3 -m unittest discover -s tests -q
+# Ran 945 tests — OK
+
+PYTHONPATH=src python3 -m unittest \
+  tests.test_cli_file_context tests.test_goal_sessions \
+  tests.test_execution_policy tests.test_phase5_4_e2e tests.test_cli_prompt -v
+# Ran 152 tests — OK
+
+PYTHONPATH=src python3 -m unittest \
+  tests.test_tui_bundle.WheelPackagingTest tests.test_wheel_migrations -v
+# Ran 3 tests — OK
+```
+
+### Integration fix
+
+`tests/fixtures/fake_commander.py` no longer emits `execution_policy` on Commander
+task proposals (not part of schema v2). Without this fix,
+`test_global_tui_e2e` failed with `tasks[0] has unknown fields: execution_policy`.
+
+### Clean-wheel smoke (`/tmp/c54smoke`, installed wheel + `FakeSupervisor`)
+
+| Command | Exit | Notes |
+|---------|------|-------|
+| `coordinator @README.md --mode json -p "summarize"` | 0 | JSON includes `context_files` + SHA-256 |
+| `coordinator --resume --mode json` | 2 | Lists paused candidate (expected non-TTY exit 2) |
+| `coordinator --fork 1 -p "docs only"` | 0 | Creates draft goal 2 |
+| `coordinator --no-tools --print -p "explain status"` | 0 | Headless chat OK |
+| `coordinator --tools read,grep --mode rpc -p "/status"` | 0 | Valid `ResponseEnvelope` |
+| `coordinator --exclude-tools push,merge --print -p "make one small fix"` | 0 | Headless chat OK |
+
+Smoke requires `COORDINATOR_HOME` in the `FakeSupervisor` host process so
+`project.goals` / `project.goal.fork` RPC handlers can open the registry DB.
 
 ## Feature Coverage
 
@@ -64,9 +117,12 @@ Branch: `external/coordinator-global-tui`
 
 ## Gate Checklist
 
-- [x] Path traversal and redaction attacks (test_cli_file_context.py)
-- [x] Resume/fork state and project isolation (test_goal_sessions.py)
-- [x] Policy persistence and engine stage enforcement (test_execution_policy.py)
-- [x] JSON/RPC headless output (test_phase5_4_e2e.py, test_cli_prompt.py)
-- [x] Full regression green (932 passed)
-- [x] Documentation updated (cli.md, troubleshooting.md)
+- [x] Path traversal and redaction attacks (`test_cli_file_context.py`)
+- [x] Resume/fork state and project isolation (`test_goal_sessions.py`)
+- [x] Policy persistence and engine stage enforcement (`test_execution_policy.py`)
+- [x] JSON/RPC headless output (`test_phase5_4_e2e.py`, `test_cli_prompt.py`)
+- [x] Full regression green (945 passed)
+- [x] Wheel packaging (`WheelPackagingTest`, `test_wheel_migrations`)
+- [x] Clean-wheel smoke (six CLI commands above)
+- [x] Documentation updated (`docs/cli.md`, `docs/troubleshooting.md`)
+- [ ] Codex Gate C / final independent sign-off

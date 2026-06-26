@@ -34,7 +34,6 @@ output = {
             "expected_minutes": 5,
             "parent_task_id": None,
             "rationale": "fake task for testing",
-            "execution_policy": {},
         }
     ],
     "stop_reason": "plan_complete",
