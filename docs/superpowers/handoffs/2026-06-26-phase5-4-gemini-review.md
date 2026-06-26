@@ -11,21 +11,25 @@ Return **two independent verdicts** (merge readiness + 5.5 plan draft):
 
 ```text
 === MERGE READINESS ===
-VERDICT: PASS | CONDITIONAL PASS | FAIL
-P0:
-P1:
-P2:
+VERDICT: CONDITIONAL PASS
+P0: None
+P1: (broken CLI contract) Silent drop of user prompt during interactive resume (Wave B regression). `--resume -p "prompt"` without an ID drops the prompt when user interactively selects a goal.
+P2: (broken RPC contract) CLI syntax/argparse validation errors bypass `--mode rpc` JSON format, outputting directly to stderr.
+P2: (doc drift) "merge-readiness" document claims "16 commits" but the actual unmerged count is different.
 Reproduction commands:
-Blocking merge: yes | no
+coordinator --resume -p "I just wrote this long instruction and it will vanish"
+coordinator --mode rpc --tools non_existent_tool -p "hello"
+Blocking merge: yes
 
 === PHASE 5.5 PLAN DRAFT ===
-VERDICT: PASS | CONDITIONAL PASS | FAIL
-P0:
-P1:
-P2:
-Reproduction commands:
-Blocking 5.5 kickoff: yes | no
-```
+VERDICT: CONDITIONAL PASS
+P0: None
+P1: Task 7 `project.task.cancel` has an engine race condition: releasing the lease while the worker is actively running in a background thread or process can cause a corrupted artifact state if the worker continues writing to disk or updates the database. The background process needs to be cleanly killed or signaled.
+P1: Task 4 `project.task.log` tail RPC allows polling every 500ms. With 10 tasks running across clients, this generates many RPC calls per second, which scales poorly. Supervisor should use an event push (`task.log.append`) for active logs rather than relying entirely on client polling, or rate limit the RPC.
+P2: Scope is extremely large for one phase (5 Waves). The 5.5a/5.5b split recommendation should be formalized into separate phase plans.
+Reproduction commands: N/A (Plan Review)
+Blocking 5.5 kickoff: yes
+
 
 **Completed proxy review:** `docs/superpowers/handoffs/2026-06-26-phase5-4-gemini-review-result.md`
 
