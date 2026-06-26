@@ -7,6 +7,18 @@ from local_cli_coordinator.config import load_config
 
 
 class ConfigTests(unittest.TestCase):
+    def test_shipped_codex_commands_ignore_user_config(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        agents = (root / "config" / "agents.toml").read_text()
+        codex_commands = [
+            line for line in agents.splitlines()
+            if line.startswith("command = \"codex exec")
+        ]
+        self.assertEqual(len(codex_commands), 2)
+        for command in codex_commands:
+            self.assertIn("--ignore-user-config", command)
+            self.assertIn("--model gpt-5.5", command)
+
     def test_loads_agents_repos_and_policy(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -44,4 +56,5 @@ class ConfigTests(unittest.TestCase):
 
             self.assertEqual(config.agents["codex"].max_concurrency, 2)
             self.assertEqual(config.repos["demo"].merge_policy, "push_branch_only")
+            self.assertEqual(config.repos["demo"].review_policy, "full_review")
             self.assertEqual(config.policy.max_files_touched, 3)

@@ -1,8 +1,12 @@
-[repos.example]
-path = "/tmp/coordinator-example-repo"
+[repos.polymarket_crypto_threshold]
+path = "/Users/xiafan/polymarket-crypto-threshold"
 default_branch = "main"
 remote = "origin"
 branch_prefix = "coord/"
 allow_push = false
 merge_policy = "no_push"
-verify_commands = ["python -m unittest"]
+verify_commands = [
+    "uv run pytest -q",
+    "uv run ruff check src/ tests/",
+]
+review_policy = "branch_only"

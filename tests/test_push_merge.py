@@ -81,6 +81,7 @@ def push_config(repo_path: Path) -> CoordinatorConfig:
                 verify_commands=[
                     f"{sys.executable} -c \"from pathlib import Path; assert Path('feature.txt').read_text() == 'done'\""
                 ],
+                review_policy="tests_only",
             )
         },
         policy=base_policy(),
@@ -142,6 +143,7 @@ class PushMergeTests(unittest.TestCase):
             remote = init_bare_remote(root, repo)
             conn = connect(root / "coordinator.db")
             init_db(conn)
+            self.addCleanup(conn.close)
             task_id = create_task(
                 conn,
                 title="Push feature file",
@@ -170,6 +172,7 @@ class PushMergeTests(unittest.TestCase):
             remote = init_bare_remote(root, repo)
             conn = connect(root / "coordinator.db")
             init_db(conn)
+            self.addCleanup(conn.close)
             task_id = create_task(
                 conn,
                 title="Local only feature file",
@@ -194,6 +197,7 @@ class PushMergeTests(unittest.TestCase):
                         allow_push=False,
                         merge_policy="auto_merge_default_branch",
                         verify_commands=config.repos["demo"].verify_commands,
+                        review_policy="tests_only",
                     )
                 },
                 policy=config.policy,
@@ -221,6 +225,7 @@ class PushMergeTests(unittest.TestCase):
             init_git_repo(repo)
             conn = connect(root / "coordinator.db")
             init_db(conn)
+            self.addCleanup(conn.close)
             task_id = create_task(
                 conn,
                 title="Push without remote",
@@ -259,6 +264,7 @@ class PushMergeTests(unittest.TestCase):
             )
             conn = connect(root / "coordinator.db")
             init_db(conn)
+            self.addCleanup(conn.close)
             task_id = create_task(
                 conn,
                 title="Merge divergent branch",
@@ -292,6 +298,7 @@ class PushMergeTests(unittest.TestCase):
                         verify_commands=[
                             f"{sys.executable} -c \"from pathlib import Path; assert Path('feature.txt').read_text() == 'task\\\\n'\""
                         ],
+                        review_policy="tests_only",
                     )
                 },
                 policy=config.policy,

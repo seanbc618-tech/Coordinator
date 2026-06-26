@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "local-cli-coordinator"
 version = "0.1.0"
@@ -6,3 +10,9 @@ description = "Local CLI agent coordinator"
 
 [project.scripts]
 coordinator = "local_cli_coordinator.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+local_cli_coordinator = ["tui_bundle/*", "migrations/*.sql"]

@@ -1,11 +1,28 @@
 import sqlite3
 import uuid
+from datetime import datetime, timedelta, timezone
+from importlib import resources
+from importlib.abc import Traversable
 from pathlib import Path
+from typing import Iterator
 
+from .config import CoordinatorConfig, iter_agents_by_role
 from .models import TASK_STATES
 
 ROOT = Path(__file__).resolve().parents[2]
 MIGRATIONS_DIR = ROOT / "migrations"
+
+
+def iter_migration_scripts(
+    migrations_root: Traversable | Path | None = None,
+) -> Iterator[tuple[str, str]]:
+    """Yield (version_name, sql_text) sorted by migration filename."""
+    root = migrations_root or (resources.files("local_cli_coordinator") / "migrations")
+    names = sorted(
+        entry.name for entry in root.iterdir() if entry.name.endswith(".sql")
+    )
+    for name in names:
+        yield name, (root / name).read_text(encoding="utf-8")
 
 
 def _sql_string(value: str) -> str:
@@ -17,10 +34,18 @@ def connect(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute("pragma foreign_keys = on")
+    conn.execute("pragma busy_timeout = 5000")
     return conn
 
 
-def init_db(conn: sqlite3.Connection, migrations_dir: Path = MIGRATIONS_DIR) -> None:
+def init_db(
+    conn: sqlite3.Connection,
+    migrations_root: Traversable | Path | None = None,
+    *,
+    migrations_dir: Traversable | Path | None = None,
+) -> None:
+    """Apply pending SQL migrations. Default: packaged ``migrations/*.sql``."""
+    root = migrations_root if migrations_root is not None else migrations_dir
     conn.execute(
         "create table if not exists schema_migrations "
         "(version text primary key, applied_at text not null default current_timestamp)"
@@ -30,14 +55,14 @@ def init_db(conn: sqlite3.Connection, migrations_dir: Path = MIGRATIONS_DIR) -> 
         row["version"]
         for row in conn.execute("select version from schema_migrations").fetchall()
     }
-    for migration in sorted(migrations_dir.glob("*.sql")):
-        if migration.name in applied:
+    for name, sql in iter_migration_scripts(root):
+        if name in applied:
             continue
         script = (
             "begin;\n"
-            f"{migration.read_text()}\n"
+            f"{sql}\n"
             "insert into schema_migrations(version) values "
-            f"({_sql_string(migration.name)});\n"
+            f"({_sql_string(name)});\n"
             "commit;"
         )
         try:
@@ -59,14 +84,18 @@ def create_task(
     goal: str,
     acceptance_criteria: list[str],
     verification_commands: list[str],
+    project_id: str = "legacy-default",
+    execution_policy: str = "{}",
+    commit: bool = True,
 ) -> str:
     task_id = f"task-{uuid.uuid4().hex[:12]}"
     conn.execute(
         """
         insert into tasks(
             id, title, repo, state, priority, capabilities, source_path,
-            goal, acceptance_criteria, verification_commands
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            goal, acceptance_criteria, verification_commands, project_id,
+            execution_policy
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             task_id,
@@ -79,13 +108,17 @@ def create_task(
             goal,
             "\n".join(acceptance_criteria),
             "\n".join(verification_commands),
+            project_id,
+            execution_policy,
         ),
     )
     conn.execute(
-        "insert into events(task_id, old_state, new_state, note) values (?, ?, ?, ?)",
-        (task_id, "inbox", "ready", "task imported"),
+        "insert into events(task_id, old_state, new_state, note, project_id) "
+        "values (?, ?, ?, ?, ?)",
+        (task_id, "inbox", "ready", "task imported", project_id),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return task_id
 
 
@@ -143,8 +176,609 @@ def set_task_branch_and_worktree(
 
 
 def add_artifact(conn: sqlite3.Connection, task_id: str, kind: str, path: Path) -> None:
+    # Look up project_id from the parent task
+    task = conn.execute(
+        "select project_id from tasks where id = ?", (task_id,)
+    ).fetchone()
+    project_id = task["project_id"] if task else "legacy-default"
     conn.execute(
-        "insert into artifacts(task_id, kind, path) values (?, ?, ?)",
-        (task_id, kind, str(path)),
+        "insert into artifacts(task_id, kind, path, project_id) values (?, ?, ?, ?)",
+        (task_id, kind, str(path), project_id),
     )
     conn.commit()
+
+
+def artifact_kinds(conn: sqlite3.Connection, task_id: str) -> set[str]:
+    rows = conn.execute(
+        "select kind from artifacts where task_id = ?",
+        (task_id,),
+    ).fetchall()
+    return {row["kind"] for row in rows}
+
+
+def list_task_events(conn: sqlite3.Connection, task_id: str) -> list[sqlite3.Row]:
+    """Return ordered state transitions for a task."""
+    return conn.execute(
+        "select old_state, new_state, note, created_at from events "
+        "where task_id = ? order by id",
+        (task_id,),
+    ).fetchall()
+
+
+def list_task_artifacts(conn: sqlite3.Connection, task_id: str) -> list[sqlite3.Row]:
+    """Return artifacts with kind and path for a task."""
+    return conn.execute(
+        "select kind, path from artifacts where task_id = ? order by id",
+        (task_id,),
+    ).fetchall()
+
+
+def start_daemon_run(conn: sqlite3.Connection) -> int:
+    cursor = conn.execute("insert into daemon_runs default values")
+    conn.commit()
+    return cursor.lastrowid
+
+
+def finish_daemon_run(
+    conn: sqlite3.Connection,
+    run_id: int,
+    *,
+    tasks_processed: int,
+    failures: int,
+    stop_reason: str | None = None,
+) -> None:
+    conn.execute(
+        """
+        update daemon_runs
+        set ended_at = current_timestamp,
+            tasks_processed = ?,
+            failures = ?,
+            stop_reason = ?
+        where id = ?
+        """,
+        (tasks_processed, failures, stop_reason, run_id),
+    )
+    conn.commit()
+
+
+def circuit_breaker_reason(conn: sqlite3.Connection, policy) -> str | None:
+    daily_tasks = conn.execute(
+        """
+        select coalesce(sum(tasks_processed), 0) as total
+        from daemon_runs
+        where date(started_at) = date('now')
+        """,
+    ).fetchone()["total"]
+    if daily_tasks >= policy.max_tasks_per_day:
+        return f"daily task limit reached ({daily_tasks}/{policy.max_tasks_per_day})"
+
+    consecutive_failures = 0
+    rows = conn.execute(
+        """
+        select failures
+        from daemon_runs
+        where ended_at is not null
+          and tasks_processed > 0
+        order by id desc
+        """
+    ).fetchall()
+    for row in rows:
+        if row["failures"] <= 0:
+            break
+        consecutive_failures += 1
+    if consecutive_failures >= policy.max_consecutive_failures:
+        return (
+            "consecutive failure limit reached "
+            f"({consecutive_failures}/{policy.max_consecutive_failures})"
+        )
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Task leasing
+# ---------------------------------------------------------------------------
+
+DEFAULT_LEASE_DURATION_SECONDS = 1800  # 30 minutes
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _lease_expires_at(duration_seconds: int = DEFAULT_LEASE_DURATION_SECONDS) -> str:
+    return (_utcnow() + timedelta(seconds=duration_seconds)).isoformat()
+
+
+def _is_lease_expired(expires_at: str) -> bool:
+    try:
+        return _utcnow() > datetime.fromisoformat(expires_at)
+    except (ValueError, TypeError):
+        return True
+
+
+def _try_acquire_task_lease(
+    conn: sqlite3.Connection,
+    task_id: str,
+    agent_id: str,
+    duration_seconds: int = DEFAULT_LEASE_DURATION_SECONDS,
+) -> bool:
+    now = _utcnow().isoformat()
+    expires_at = _lease_expires_at(duration_seconds)
+    conn.execute(
+        """
+        update task_leases
+        set released_at = current_timestamp
+        where task_id = ?
+          and released_at is null
+          and expires_at <= ?
+        """,
+        (task_id, now),
+    )
+    active = conn.execute(
+        """
+        select id from task_leases
+        where task_id = ?
+          and released_at is null
+          and expires_at > ?
+        """,
+        (task_id, now),
+    ).fetchone()
+    if active is not None:
+        return False
+    conn.execute(
+        "insert into task_leases(task_id, agent_id, expires_at) values (?, ?, ?)",
+        (task_id, agent_id, expires_at),
+    )
+    return True
+
+
+def acquire_task_lease(
+    conn: sqlite3.Connection,
+    task_id: str,
+    agent_id: str,
+    duration_seconds: int = DEFAULT_LEASE_DURATION_SECONDS,
+) -> bool:
+    """Atomically claim a task lease.
+
+    Returns True if the lease was acquired, False if the task is already
+    leased by another active lease.
+    """
+    conn.execute("begin immediate")
+    try:
+        acquired = _try_acquire_task_lease(conn, task_id, agent_id, duration_seconds)
+        conn.commit()
+        return acquired
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        return False
+    except sqlite3.Error:
+        conn.rollback()
+        raise
+
+
+def release_task_lease(conn: sqlite3.Connection, task_id: str) -> None:
+    """Release all active leases for a task."""
+    conn.execute(
+        """
+        update task_leases set released_at = current_timestamp
+        where task_id = ? and released_at is null
+        """,
+        (task_id,),
+    )
+    conn.commit()
+
+
+def active_lease_count(conn: sqlite3.Connection, agent_id: str | None = None) -> int:
+    """Count active (non-expired, non-released) leases."""
+    if agent_id is not None:
+        row = conn.execute(
+            """
+            select count(*) as cnt from task_leases
+            where released_at is null and agent_id = ?
+              and expires_at > ?
+            """,
+            (agent_id, _utcnow().isoformat()),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            """
+            select count(*) as cnt from task_leases
+            where released_at is null and expires_at > ?
+            """,
+            (_utcnow().isoformat(),),
+        ).fetchone()
+    return row["cnt"]
+
+
+# ---------------------------------------------------------------------------
+# Attempt result tracking
+# ---------------------------------------------------------------------------
+
+
+def start_attempt(
+    conn: sqlite3.Connection,
+    task_id: str,
+    agent_id: str,
+    command: str,
+    *,
+    fallback_from_attempt_id: int | None = None,
+) -> int:
+    """Create a new attempt record and return its ID.
+
+    Raises ValueError if fallback_from_attempt_id belongs to a different task.
+    """
+    if fallback_from_attempt_id is not None:
+        parent = conn.execute(
+            "select task_id from attempts where id = ?",
+            (fallback_from_attempt_id,),
+        ).fetchone()
+        if parent is None:
+            raise ValueError(f"unknown attempt: {fallback_from_attempt_id}")
+        if parent["task_id"] != task_id:
+            raise ValueError(
+                f"fallback parent {fallback_from_attempt_id} belongs to "
+                f"{parent['task_id']}, not {task_id}"
+            )
+    cursor = conn.execute(
+        """
+        insert into attempts(task_id, agent_id, command, fallback_from_attempt_id)
+        values (?, ?, ?, ?)
+        """,
+        (task_id, agent_id, command, fallback_from_attempt_id),
+    )
+    conn.commit()
+    return cursor.lastrowid
+
+
+def finish_attempt(
+    conn: sqlite3.Connection,
+    attempt_id: int,
+    *,
+    exit_code: int,
+    result_class: str = "",
+    result_reason: str = "",
+    log_path: str = "",
+    timed_out: bool = False,
+) -> None:
+    """Record attempt completion with classification."""
+    conn.execute(
+        """
+        update attempts
+        set ended_at = current_timestamp,
+            exit_code = ?,
+            result_class = ?,
+            result_reason = ?,
+            log_path = ?
+        where id = ?
+        """,
+        (exit_code, result_class, result_reason, log_path, attempt_id),
+    )
+    conn.commit()
+
+
+def list_attempts(
+    conn: sqlite3.Connection, task_id: str
+) -> list[sqlite3.Row]:
+    """Return attempts for a task ordered by ID."""
+    return conn.execute(
+        "select * from attempts where task_id = ? order by id",
+        (task_id,),
+    ).fetchall()
+
+
+def fallback_count_for_task(conn: sqlite3.Connection, task_id: str) -> int:
+    """Count how many fallback attempts have been made for a task.
+
+    A fallback attempt is one that has a fallback_from_attempt_id set.
+    """
+    row = conn.execute(
+        """
+        select count(*) as cnt from attempts
+        where task_id = ? and fallback_from_attempt_id is not null
+        """,
+        (task_id,),
+    ).fetchone()
+    return row["cnt"]
+
+
+def claim_next_ready_task(
+    conn: sqlite3.Connection,
+    agent_id: str,
+    max_agent_concurrency: int = 1,
+    max_global_concurrency: int = 4,
+    duration_seconds: int = DEFAULT_LEASE_DURATION_SECONDS,
+) -> sqlite3.Row | None:
+    """Claim the next ready task with an atomic lease.
+
+    Returns the claimed task row, or None if no task is available or
+    concurrency limits are reached.
+    """
+    conn.execute("begin immediate")
+    try:
+        agent_active = active_lease_count(conn, agent_id)
+        if agent_active >= max_agent_concurrency:
+            conn.commit()
+            return None
+        global_active = active_lease_count(conn)
+        if global_active >= max_global_concurrency:
+            conn.commit()
+            return None
+
+        candidates = conn.execute(
+            "select * from tasks where state = 'ready' order by created_at, id"
+        ).fetchall()
+
+        for task in candidates:
+            try:
+                if _try_acquire_task_lease(conn, task["id"], agent_id, duration_seconds):
+                    conn.commit()
+                    return task
+            except sqlite3.IntegrityError:
+                continue
+
+        conn.commit()
+        return None
+    except sqlite3.Error:
+        conn.rollback()
+        raise
+
+
+def _task_capabilities(task: sqlite3.Row) -> list[str]:
+    return [part for part in task["capabilities"].split(",") if part]
+
+
+def _task_has_active_lease(conn: sqlite3.Connection, task_id: str) -> bool:
+    row = conn.execute(
+        """
+        select id from task_leases
+        where task_id = ?
+          and released_at is null
+          and expires_at > ?
+        """,
+        (task_id, _utcnow().isoformat()),
+    ).fetchone()
+    return row is not None
+
+
+def _agents_for_task(
+    config: CoordinatorConfig,
+    capabilities: list[str],
+    *,
+    preferred_agent_id: str | None = None,
+) -> list:
+    if preferred_agent_id is not None:
+        agent = config.agents.get(preferred_agent_id)
+        if agent is None:
+            return []
+        if not set(capabilities).issubset(set(agent.capabilities)):
+            return []
+        return [agent]
+    return list(iter_agents_by_role(config, "worker", capabilities))
+
+
+def claim_project_ready_task(
+    conn: sqlite3.Connection,
+    project_id: str,
+    config: CoordinatorConfig,
+    *,
+    preferred_agent_id: str | None = None,
+    duration_seconds: int = DEFAULT_LEASE_DURATION_SECONDS,
+) -> tuple[sqlite3.Row | None, str | None]:
+    """Atomically claim a ready project task with a matching, available agent.
+
+    Within one BEGIN IMMEDIATE transaction this walks unleased ready tasks,
+    selects an agent with spare capacity and matching capabilities, and
+    creates the lease. Returns (task, agent_id) or (None, None).
+    """
+    conn.execute("begin immediate")
+    try:
+        candidates = conn.execute(
+            "select * from tasks where project_id = ? and state = ? "
+            "order by created_at, id",
+            (project_id, "ready"),
+        ).fetchall()
+
+        for task in candidates:
+            capabilities = _task_capabilities(task)
+            if not capabilities:
+                continue
+            if _task_has_active_lease(conn, task["id"]):
+                continue
+            for agent in _agents_for_task(
+                config,
+                capabilities,
+                preferred_agent_id=preferred_agent_id,
+            ):
+                if active_lease_count(conn, agent.id) >= agent.max_concurrency:
+                    continue
+                try:
+                    if _try_acquire_task_lease(
+                        conn, task["id"], agent.id, duration_seconds
+                    ):
+                        conn.commit()
+                        return task, agent.id
+                except sqlite3.IntegrityError:
+                    continue
+
+        conn.commit()
+        return None, None
+    except sqlite3.Error:
+        conn.rollback()
+        raise
+
+
+def project_has_claimable_task(
+    conn: sqlite3.Connection,
+    project_id: str,
+    config: CoordinatorConfig,
+    *,
+    preferred_agent_id: str | None = None,
+) -> bool:
+    """Return True if a ready task can be claimed for the project."""
+    candidates = conn.execute(
+        "select * from tasks where project_id = ? and state = ? "
+        "order by created_at, id",
+        (project_id, "ready"),
+    ).fetchall()
+
+    for task in candidates:
+        capabilities = _task_capabilities(task)
+        if not capabilities:
+            continue
+        if _task_has_active_lease(conn, task["id"]):
+            continue
+        for agent in _agents_for_task(
+            config,
+            capabilities,
+            preferred_agent_id=preferred_agent_id,
+        ):
+            if active_lease_count(conn, agent.id) < agent.max_concurrency:
+                return True
+    return False
+
+
+def peek_project_claim(
+    conn: sqlite3.Connection,
+    project_id: str,
+    config: CoordinatorConfig,
+    *,
+    preferred_agent_id: str | None = None,
+) -> tuple[sqlite3.Row | None, str | None]:
+    """Return the first task/agent pair that would be claimed (non-mutating)."""
+    candidates = conn.execute(
+        "select * from tasks where project_id = ? and state = ? "
+        "order by created_at, id",
+        (project_id, "ready"),
+    ).fetchall()
+
+    for task in candidates:
+        capabilities = _task_capabilities(task)
+        if not capabilities:
+            continue
+        if _task_has_active_lease(conn, task["id"]):
+            continue
+        for agent in _agents_for_task(
+            config,
+            capabilities,
+            preferred_agent_id=preferred_agent_id,
+        ):
+            if active_lease_count(conn, agent.id) < agent.max_concurrency:
+                return task, agent.id
+    return None, None
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# Project-scoped query APIs
+# ---------------------------------------------------------------------------
+
+
+def project_task_counts(
+    conn: sqlite3.Connection, *, project_id: str
+) -> dict[str, int]:
+    rows = conn.execute(
+        "select state, count(*) as cnt from tasks where project_id = ? group by state",
+        (project_id,),
+    ).fetchall()
+    return {row["state"]: row["cnt"] for row in rows}
+
+
+def project_list_tasks(
+    conn: sqlite3.Connection, *, project_id: str
+) -> list[sqlite3.Row]:
+    return conn.execute(
+        "select * from tasks where project_id = ? order by created_at, id",
+        (project_id,),
+    ).fetchall()
+
+
+def project_get_task_detail(
+    conn: sqlite3.Connection,
+    *,
+    project_id: str,
+    task_id: str,
+) -> sqlite3.Row | None:
+    return conn.execute(
+        "select * from tasks where project_id = ? and id = ?",
+        (project_id, task_id),
+    ).fetchone()
+
+
+def task_latest_event(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> sqlite3.Row | None:
+    return conn.execute(
+        "select * from events where task_id = ? order by id desc limit 1",
+        (task_id,),
+    ).fetchone()
+
+
+def task_latest_attempt(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> sqlite3.Row | None:
+    return conn.execute(
+        "select * from attempts where task_id = ? order by id desc limit 1",
+        (task_id,),
+    ).fetchone()
+
+
+def task_list_artifacts_for_project(
+    conn: sqlite3.Connection,
+    *,
+    project_id: str,
+    task_id: str,
+) -> list[sqlite3.Row]:
+    return conn.execute(
+        "select kind, path from artifacts where project_id = ? and task_id = ? order by id",
+        (project_id, task_id),
+    ).fetchall()
+
+
+def project_next_ready_task(
+    conn: sqlite3.Connection, *, project_id: str
+) -> sqlite3.Row | None:
+    return conn.execute(
+        "select * from tasks where project_id = ? and state = ? "
+        "order by created_at, id limit 1",
+        (project_id, "ready"),
+    ).fetchone()
+
+
+def project_list_events(
+    conn: sqlite3.Connection, *, project_id: str
+) -> list[sqlite3.Row]:
+    return conn.execute(
+        "select * from events where project_id = ? order by id",
+        (project_id,),
+    ).fetchall()
+
+
+def project_list_artifacts(
+    conn: sqlite3.Connection, *, project_id: str
+) -> list[sqlite3.Row]:
+    return conn.execute(
+        "select * from artifacts where project_id = ? order by id",
+        (project_id,),
+    ).fetchall()
+
+
+def project_list_daemon_runs(
+    conn: sqlite3.Connection, *, project_id: str
+) -> list[sqlite3.Row]:
+    return conn.execute(
+        "select * from daemon_runs where project_id = ? order by id",
+        (project_id,),
+    ).fetchall()
+
+
+def project_list_leases(
+    conn: sqlite3.Connection, *, project_id: str
+) -> list[sqlite3.Row]:
+    return conn.execute(
+        "select * from task_leases where project_id = ? order by id",
+        (project_id,),
+    ).fetchall()

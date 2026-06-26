@@ -5,3 +5,19 @@ coordinator.db
 runs/
 worktrees/
 tmp/
+state/
+tasks/accepted/*.md
+tasks/blocked/*.md
+tasks/generated/*.md
+tasks/review/*.md
+
+# Python packaging / local build artifacts
+build/
+dist/
+*.egg-info/
+testzip/
+
+# TUI build artifacts
+ui-tui/dist/
+ui-tui/node_modules/
+*.tgz

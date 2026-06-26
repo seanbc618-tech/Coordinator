@@ -1,0 +1,5 @@
+[sources.inbox]
+type = "inbox"
+
+[sources.inbox.repos]
+polymarket_crypto_threshold = true

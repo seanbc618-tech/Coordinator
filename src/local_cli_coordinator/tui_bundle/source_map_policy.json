@@ -1,0 +1,4 @@
+{
+  "ship_source_maps": true,
+  "bundle_source_map": "entry.js.map"
+}

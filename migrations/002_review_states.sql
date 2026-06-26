@@ -1,0 +1,1 @@
+-- Review gate states are validated in application code.
