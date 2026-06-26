@@ -1096,8 +1096,37 @@ def is_prompt_argv(argv: list[str]) -> bool:
     return not argv[index].startswith("-")
 
 
-def build_prompt_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="coordinator")
+def _argv_requests_mode(argv: list[str], mode: str) -> bool:
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token == "--mode":
+            if index + 1 < len(argv) and argv[index + 1] == mode:
+                return True
+            index += 2
+            continue
+        if token.startswith("--mode=") and token.split("=", 1)[1] == mode:
+            return True
+        index += 1
+    return False
+
+
+class PromptArgumentParser(argparse.ArgumentParser):
+    def __init__(self, *args, rpc_mode: bool = False, **kwargs):
+        self._rpc_mode = rpc_mode
+        super().__init__(*args, **kwargs)
+
+    def error(self, message: str) -> None:
+        if self._rpc_mode:
+            from .cli_chat import _emit_rpc, _local_rpc_envelope
+
+            _emit_rpc(_local_rpc_envelope(ok=False, error=message))
+            raise SystemExit(2)
+        super().error(message)
+
+
+def build_prompt_parser(*, rpc_mode: bool = False) -> PromptArgumentParser:
+    parser = PromptArgumentParser(prog="coordinator", rpc_mode=rpc_mode)
     parser.add_argument("--root", default=".")
     parser.add_argument("--db", default="coordinator.db")
     parser.add_argument("-p", "--prompt", dest="prompt_flag", default=None)
@@ -1246,8 +1275,13 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     cli_argv = list(argv) if argv is not None else sys.argv[1:]
     if is_prompt_argv(cli_argv):
-        prompt_parser = build_prompt_parser()
-        args = prompt_parser.parse_args(cli_argv)
+        rpc_mode = _argv_requests_mode(cli_argv, "rpc")
+        prompt_parser = build_prompt_parser(rpc_mode=rpc_mode)
+        try:
+            args = prompt_parser.parse_args(cli_argv)
+        except SystemExit as exc:
+            code = exc.code
+            return int(code) if isinstance(code, int) else 1
         try:
             normalize_prompt_args(args)
         except PromptNormalizeError as exc:

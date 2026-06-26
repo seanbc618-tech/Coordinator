@@ -890,6 +890,27 @@ class RpcModeEnvelopeTests(unittest.TestCase):
         self.assertFalse(envelope["ok"])
         self.assertIn("unknown tool", (envelope.get("error") or "").lower())
 
+    def test_rpc_argparse_conflict_returns_envelope(self) -> None:
+        """Argparse validation errors in RPC mode emit ResponseEnvelope."""
+        result = _run_cli_with_home(
+            self.home,
+            "--root", str(self.repo),
+            "--mode", "rpc",
+            "--tools", "read",
+            "--no-tools",
+            "-p", "hello",
+            cwd=self.repo,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.stderr.strip(), "")
+        lines = [
+            line for line in result.stdout.strip().splitlines() if line.strip()
+        ]
+        self.assertEqual(len(lines), 1)
+        envelope = json.loads(lines[0])
+        self.assertFalse(envelope["ok"])
+        self.assertIn("not allowed", (envelope.get("error") or "").lower())
+
     def test_rpc_mode_implies_no_tui(self) -> None:
         """--mode rpc implies --no-tui (headless)."""
         args = self._parse_prompt(["--mode", "rpc", "-p", "test"])

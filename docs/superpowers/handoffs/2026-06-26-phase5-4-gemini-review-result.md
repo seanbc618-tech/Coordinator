@@ -1,27 +1,35 @@
 # Gemini Adversarial Review Result (Grok proxy run)
 
 Date: 2026-06-26  
-Branch: `external/coordinator-global-tui` @ `0d3bc1a`  
+Branch: `external/coordinator-global-tui` (post-fix tip)  
 PR: https://github.com/seanbc618-tech/Coordinator/pull/1  
-Reviewer: Grok (proxy per `2026-06-26-phase5-4-gemini-review.md`)
+Reviewers: Gemini (adversarial) · Grok (proxy + fixes)
 
 ---
 
 ## === MERGE READINESS ===
 
+### Gemini findings (initial)
+
+```text
+VERDICT: CONDITIONAL PASS
+P1: Interactive --resume -p drops prompt after TTY goal selection
+P2: RPC mode argparse/tool errors write to stderr instead of ResponseEnvelope
+P2: merge-readiness doc commit count drift (16 vs 18)
+Blocking merge: yes
+```
+
+### Post-fix verdict (Grok)
+
 ```text
 VERDICT: PASS
 P0: None
-P1: None
+P1: Fixed in 3a87ede (interactive resume prompt forward)
+P2: Fixed in 3a87ede + PromptArgumentParser (RPC envelope for all prompt-path errors)
 P2:
-  - Downgrade path undocumented: older Coordinator binary on DB with migrations
-    012/013 applied will ignore new columns (SQLite-safe) but cannot use
-    execution_policy/context_manifest features — add one line to migration.md.
-  - Other test_phase2_gate cases still start serve_forever in daemon threads;
-    live-event tick thread is fixed (3f6e1ca); remaining patterns are pre-existing
-    and did not fail Gate C after fix.
-  - Local workspace may contain uncommitted test_phase5_5_*.py red tests; must NOT
-    ship on this PR (breaks discover to 986 tests / 20 failures).
+  - merge-readiness tip/count updated
+  - Downgrade narrative added to migration.md (3a87ede)
+  - test_phase5_5_* reverted from merge branch (b538dea)
 Blocking merge: no
 ```
 
@@ -33,7 +41,7 @@ Blocking merge: no
 | `git status` / staged | Tracked tree clean at review time; only local `docs/cli.md` + scratch |
 | Migrations 012/013 byte-identical pairs | Present under `migrations/` and `src/.../migrations/` |
 | Focused count 156 | **Verified** — 25+51+42+17+21 |
-| Full suite 949 (`ResourceWarning=error`) | **OK** (with `test_phase5_5_*` excluded from tree) |
+| Full suite 951 (`ResourceWarning=error`) | **OK** (post P1/P2 fixes; no `test_phase5_5_*` on branch) |
 | Leak regression | Covered in `test_phase5_4_e2e.LeakRegressionTests` (4 tests) |
 | Cross-project isolation | Covered by `test_cli_file_context`, `test_goal_sessions`, `test_execution_policy` adversarial cases |
 
@@ -81,7 +89,7 @@ P2:
   - supervisor.dashboard must forbid task titles in aggregate payload (counts only).
   - Overlap with existing `coordinator repo cleanup-worktrees` — Wave E should
     extend, not duplicate, with shared dry-run token format.
-Blocking 5.5 kickoff: no (proceed with 5.5a scope lock)
+Blocking 5.5 kickoff: no (proceed with **5.5a**; cancel race + log push in **5.5b** spec)
 ```
 
 ### Attack Task 2 — scenario expectations (for design spec)

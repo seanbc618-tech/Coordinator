@@ -29,7 +29,20 @@ P1: Task 4 `project.task.log` tail RPC allows polling every 500ms. With 10 tasks
 P2: Scope is extremely large for one phase (5 Waves). The 5.5a/5.5b split recommendation should be formalized into separate phase plans.
 Reproduction commands: N/A (Plan Review)
 Blocking 5.5 kickoff: yes
+```
 
+### Resolution (Grok, post-review)
+
+| Finding | Fix | Commit |
+|---------|-----|--------|
+| P1 interactive `--resume -p` prompt drop | Forward `prompt_text` after TTY selection in `cli_chat.py` | `3a87ede` |
+| P2 RPC tool parse stderr | `PromptNormalizeError` → `ResponseEnvelope` in `main()` | `3a87ede` |
+| P2 RPC argparse stderr | `PromptArgumentParser.error()` emits envelope when `--mode rpc` | *(this commit)* |
+| P2 merge-readiness commit count | Tip + push line updated in merge-readiness handoff | *(this commit)* |
+
+**Post-fix merge verdict:** PASS — `951/951` full suite (`ResourceWarning=error`).
+
+**5.5 kickoff:** proceed with **5.5a** only; cancel race + log push deferred to **5.5b** per `2026-06-26-phase5-5-planning-kickoff.md`.
 
 **Completed proxy review:** `docs/superpowers/handoffs/2026-06-26-phase5-4-gemini-review-result.md`
 

@@ -16,6 +16,14 @@ Implement before 5.5b:
 
 **Deferred to 5.5b:** Wave B live log tail, Wave C cancel, Wave E rollback/cleanup.
 
+### Gemini blockers → spec requirements (5.5b)
+
+| Finding | Required in 5.5b design spec |
+|---------|------------------------------|
+| `project.task.cancel` lease race | Worker must be **signaled/killed** before lease release; no DB/artifact writes after cancel |
+| `project.task.log` 500ms polling | Prefer `task.log.append` push subscription; otherwise **rate-limit** tail RPC per client |
+| Five waves in one phase | Split formalized: **5.5a** = this kickoff; **5.5b** = separate plan doc before implementation |
+
 ## Design spec (Grok — before Claude red tests land on branch)
 
 Create: `docs/superpowers/specs/2026-06-26-phase5-5-operational-ux-design.md`

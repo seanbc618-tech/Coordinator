@@ -18,9 +18,9 @@ Phase 5.4 delivers three waves on the Phase 5.3 headless CLI + global Supervisor
 | C | `--tools` / `--no-tools` / `--exclude-tools`, engine gates, `--mode rpc` | `execution_policy.py`, migration 013 `execution_policy` |
 
 **Baseline:** Phase 5.3 at `bce4152` lineage on `external/coordinator-global-tui`.  
-**Tip:** `51cd8dc` (includes merge checklist, 5.5 draft, Gemini handoff).
+**Tip:** tracks `external/coordinator-global-tui` (Gemini review + P1/P2 fixes applied).
 
-### Commits to include (18 ahead of `origin/external/coordinator-global-tui`)
+### Phase 5.4 wave commits (072ca26 … Gate C)
 
 | Hash | Summary |
 |------|---------|
@@ -43,7 +43,18 @@ Phase 5.4 delivers three waves on the Phase 5.3 headless CLI + global Supervisor
 | `af7a082` | merge readiness + 5.5 plan draft |
 | `51cd8dc` | Gemini review handoff |
 
-Earlier Phase 5.3/5.2 commits on this branch are already on `origin/external/coordinator-global-tui`; only the 18 above need push if remote is stale.
+### Post–Gate C / review commits (also on PR branch)
+
+| Hash | Summary |
+|------|---------|
+| `0d3bc1a` | merge readiness commit count update |
+| `9080e80` | 5.5 planning kickoff + cli.md merge banner |
+| `3a87ede` | **P1** interactive resume prompt + RPC tool envelope |
+| `b538dea` | revert 5.5 red tests (keep off merge PR) |
+| `1e6a3ee` | Gemini adversarial review output |
+| *(tip)* | RPC argparse envelope + doc reconciliation |
+
+Earlier Phase 5.3/5.2 commits on this branch are already on `origin/main` lineage via the integration branch.
 
 ---
 
@@ -56,7 +67,7 @@ Earlier Phase 5.3/5.2 commits on this branch are already on `origin/external/coo
 | **Source** | `external/coordinator-global-tui` |
 | **Target** | `main` (or team default integration branch) |
 | **Title** | `feat: Phase 5.4 context, sessions, tool controls, and RPC mode` |
-| **Push** | **Yes** — `git push origin external/coordinator-global-tui` (16 commits) |
+| **Push** | `git push origin external/coordinator-global-tui` after each review-fix commit |
 | **PR body** | Link `docs/superpowers/handoffs/2026-06-26-phase5-4-acceptance.md` + Gate C PASS block |
 
 ### Do **not** merge or push from these (local only / stale worktrees)
