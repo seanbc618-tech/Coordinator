@@ -3,8 +3,9 @@
 These tests capture the contract for the full autonomous loop flow:
 backlog → evaluation → iteration → RPC surfaces.
 
-Owner: Claude Code (Phase 6 Task 0)
-Expected before implementation: RPC methods and modules are missing.
+Owner: Claude Code (Phase 6 Task 0, Phase 6B Task 0)
+Expected before implementation: generation RPC tests fail until Commander backlog
+generation is wired into ``_maybe_generate_backlog()``.
 """
 
 from __future__ import annotations
@@ -48,12 +49,19 @@ def _run_cli_with_home(
 def _write_config(config_dir: Path, repo_path: Path) -> None:
     """Write minimal TOML config with autonomy enabled."""
     config_dir.mkdir(parents=True, exist_ok=True)
-    (config_dir / "agents.toml").write_text(textwrap.dedent("""
+    fake_commander = Path(__file__).resolve().parent / "fixtures" / "fake_commander.py"
+    (config_dir / "agents.toml").write_text(textwrap.dedent(f"""
         [agents.worker]
         command = "true"
         capabilities = ["code"]
         max_concurrency = 1
         role = "worker"
+
+        [agents.commander]
+        command = "{_PYTHON} {fake_commander}"
+        capabilities = ["code", "tests", "docs", "research"]
+        max_concurrency = 1
+        role = "commander"
     """).strip())
     (config_dir / "repos.toml").write_text(textwrap.dedent(f"""
         [repos.test-repo]
@@ -81,6 +89,7 @@ def _write_config(config_dir: Path, repo_path: Path) -> None:
         max_evaluations_per_iteration = 3
         max_admissions_per_iteration = 1
         max_generated_backlog_per_iteration = 3
+        commander_generation_timeout_seconds = 45
         wait_when_running = true
         require_evaluation_before_followup = true
         pause_after_consecutive_failures = 3
@@ -88,6 +97,11 @@ def _write_config(config_dir: Path, repo_path: Path) -> None:
         [daemon_policy]
         poll_interval_seconds = 5
     """).strip())
+
+
+def _rpc_envelope(stdout: str) -> dict:
+    lines = [line for line in stdout.strip().splitlines() if line.strip()]
+    return json.loads(lines[0])
 
 
 class LoopStatusRPCTests(unittest.TestCase):
@@ -316,3 +330,51 @@ class LoopStepRPCTests(unittest.TestCase):
             (self.project_id,),
         ).fetchone()[0]
         self.assertEqual(count, 1)
+
+    def test_loop_step_generates_backlog_and_reports_generate(self) -> None:
+        """/loop step generates backlog and reports a generate decision."""
+        result = _run_cli_with_home(
+            self.home, "--mode", "rpc", "-p", "/loop step",
+            cwd=self.repo,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        envelope = _rpc_envelope(result.stdout)
+        self.assertTrue(envelope["ok"])
+        self.assertEqual(envelope["result"]["decision"], "generate")
+        self.assertIn(
+            "generated 1 backlog draft(s)",
+            envelope["result"]["reason"],
+        )
+
+        status = _run_cli_with_home(
+            self.home, "--print", "-p", "/loop",
+            cwd=self.repo,
+        )
+        self.assertEqual(status.returncode, 0, status.stderr)
+        self.assertIn("generate", status.stdout.lower())
+        self.assertIn("generated 1 backlog draft(s)", status.stdout)
+
+    def test_backlog_rpc_shows_commander_generated_item(self) -> None:
+        """/backlog lists Commander-generated backlog rows."""
+        step = _run_cli_with_home(
+            self.home, "--mode", "rpc", "-p", "/loop step",
+            cwd=self.repo,
+        )
+        self.assertEqual(step.returncode, 0, step.stderr)
+        step_envelope = _rpc_envelope(step.stdout)
+        self.assertEqual(step_envelope["result"]["decision"], "generate")
+
+        result = _run_cli_with_home(
+            self.home, "--mode", "rpc", "-p", "/backlog",
+            cwd=self.repo,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        envelope = _rpc_envelope(result.stdout)
+        self.assertTrue(envelope["ok"])
+        items = envelope["result"]["items"]
+        self.assertGreaterEqual(len(items), 1)
+        commander_items = [
+            item for item in items if item.get("source") == "commander"
+        ]
+        self.assertEqual(len(commander_items), 1)
+        self.assertEqual(commander_items[0]["title"], "fake-task-1")
