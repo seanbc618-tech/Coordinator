@@ -8,17 +8,14 @@ HEAD: `4033cf3` (`fix: check missing config only before supervisor spawn`)
 
 **Technical Gate D/E: PASS**
 
-**Formal release sign-off: BLOCKED by stale Task 6 review artifact**
+**Formal release sign-off: PASS**
 
 The implementation at `4033cf3` passes Codex's independent verification, including the
 focused Phase 6B suite, full Python suite with `ResourceWarning` as an error, TUI
 typecheck/lint/tests, source distribution/wheel build, and clean-wheel smoke.
 
-However, `docs/superpowers/handoffs/2026-06-27-phase6b-gemini-review.md` still records
-Task 6 as `VERDICT: FAIL` against an older state where Grok Tasks 1-4 were not
-implemented. That document is now inconsistent with the repository and must be replaced
-or amended by the adversarial reviewer before this phase should be treated as a complete
-process sign-off.
+Follow-up on 2026-06-28: the Task 6 adversarial review artifact was updated to
+`VERDICT: PASS` for current Phase 6B behavior. The previous process blocker is closed.
 
 ## Fresh Verification
 
@@ -60,18 +57,12 @@ Loop status [proj-9a9c8907ea8e]
 - Tests/builds left no tracked diff. Local untracked `review*.py` files pre-existed and
   were not touched.
 
-## Blocking Follow-Up
+## Task 6 Review Closure
 
-Ask the Task 6 adversarial reviewer to re-review current HEAD `4033cf3` and update:
+`docs/superpowers/handoffs/2026-06-27-phase6b-gemini-review.md` now records:
 
-`docs/superpowers/handoffs/2026-06-27-phase6b-gemini-review.md`
-
-Minimum required replacement verdict:
-
-- Verify Commander generation cannot call direct task admission paths.
-- Verify one loop iteration cannot both generate and admit the same backlog item.
-- Verify duplicate generation is idempotent.
-- Verify active Commander runs and retry windows do not block or spin the loop.
-- Verify missing-config startup diagnostics remain immediate only when spawning a new
-  Supervisor, while attach to an existing compatible Supervisor still works without local
-  config files.
+- `VERDICT: PASS`
+- `P0: None`
+- `P1: None`
+- `P2: None`
+- `Blocking merge: no`
