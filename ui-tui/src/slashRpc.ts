@@ -75,6 +75,64 @@ export function buildSlashRpc(
     }
   }
 
+  if (commandName === '/loop') {
+    const sub = args.trim().split(/\s+/)[0]?.toLowerCase() ?? ''
+    if (sub === 'step') {
+      return {
+        ok: true,
+        method: 'project.loop.step',
+        params: { force: true },
+        displayMethod: 'project.loop.step',
+      }
+    }
+    if (sub === 'start') {
+      return {
+        ok: true,
+        method: 'project.loop.start',
+        params: {},
+        displayMethod: 'project.loop.start',
+      }
+    }
+    if (sub === 'stop') {
+      return {
+        ok: true,
+        method: 'project.loop.stop',
+        params: { reason: 'operator stop' },
+        displayMethod: 'project.loop.stop',
+      }
+    }
+    if (sub === 'pause') {
+      return {
+        ok: true,
+        method: 'project.loop.pause',
+        params: {},
+        displayMethod: 'project.loop.pause',
+      }
+    }
+    if (sub === 'resume') {
+      return {
+        ok: true,
+        method: 'project.loop.resume',
+        params: {},
+        displayMethod: 'project.loop.resume',
+      }
+    }
+    if (sub === 'run') {
+      return {
+        ok: true,
+        method: 'project.loop.run.status',
+        params: {},
+        displayMethod: 'project.loop.run.status',
+      }
+    }
+    return {
+      ok: true,
+      method: 'project.loop.status',
+      params: {},
+      displayMethod: 'project.loop.status',
+    }
+  }
+
   if (
     method === 'project.task.approve'
     || method === 'project.task.retry'

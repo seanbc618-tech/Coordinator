@@ -417,6 +417,7 @@ def _format_loop_status(result: dict[str, Any]) -> str:
     goal = result.get("goal")
     last = result.get("last_iteration")
     backlog = result.get("backlog_counts") or {}
+    run = result.get("run")
     lines = [
         f"Loop status [{result.get('project_id')}]",
         f"  autonomy: {'on' if result.get('autonomy_enabled') else 'off'}",
@@ -428,6 +429,15 @@ def _format_loop_status(result: dict[str, Any]) -> str:
         lines.append(f"  goal: {goal.get('title')} ({goal.get('status')})")
     else:
         lines.append("  goal: none")
+    if run:
+        lines.append(
+            "  run: "
+            f"{run.get('status')} {run.get('id')}, "
+            f"iterations={run.get('iteration_count', 0)}, "
+            f"idle={run.get('idle_iteration_count', 0)}"
+        )
+    else:
+        lines.append("  run: none")
     if last:
         lines.append(
             f"  last: {last.get('decision')} — {last.get('reason')}"
@@ -435,11 +445,34 @@ def _format_loop_status(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _parse_loop_slash(text: str) -> tuple[str, str | None]:
+def _format_run_status(result: dict[str, Any]) -> str:
+    run = result.get("run")
+    if not run:
+        return f"Run status [{result.get('project_id')}]\n  run: none"
+    return (
+        f"Run status [{result.get('project_id')}]\n"
+        f"  run: {run.get('status')} {run.get('id')}, "
+        f"iterations={run.get('iteration_count', 0)}, "
+        f"idle={run.get('idle_iteration_count', 0)}"
+    )
+
+
+def _parse_loop_slash(text: str) -> tuple[str, dict[str, Any]]:
     parts = text.strip().split()
-    if len(parts) >= 2 and parts[1].lower() == "step":
-        return "project.loop.step", None
-    return "project.loop.status", None
+    sub = parts[1].lower() if len(parts) >= 2 else ""
+    if sub == "step":
+        return "project.loop.step", {"force": True}
+    if sub == "start":
+        return "project.loop.start", {}
+    if sub == "stop":
+        return "project.loop.stop", {"reason": "operator stop"}
+    if sub == "pause":
+        return "project.loop.pause", {}
+    if sub == "resume":
+        return "project.loop.resume", {}
+    if sub == "run":
+        return "project.loop.run.status", {}
+    return "project.loop.status", {}
 
 
 def _handle_slash(
@@ -459,7 +492,15 @@ def _handle_slash(
             return err
         assert result is not None
         projects = result.get("projects") or []
+        runs = result.get("autonomous_runs") or {}
         lines = ["Dashboard:"]
+        if runs:
+            lines.append(
+                "  autonomous_runs: "
+                f"running={runs.get('running', 0)} "
+                f"paused={runs.get('paused', 0)} "
+                f"stopped={runs.get('stopped', 0)}"
+            )
         for entry in projects:
             counts = entry.get("task_counts") or {}
             count_text = ", ".join(f"{k}={v}" for k, v in counts.items()) or "none"
@@ -589,12 +630,12 @@ def _handle_slash(
             intent="status_question",
         )
     if command == "/loop":
-        method, _ = _parse_loop_slash(text)
+        method, params = _parse_loop_slash(text)
         result, err, _envelope = _send_rpc(
             paths,
             project_id=project_id,
             method=method,
-            params={"force": True} if method == "project.loop.step" else {},
+            params=params,
         )
         if err is not None:
             return err
@@ -603,6 +644,15 @@ def _handle_slash(
             reply = (
                 f"Loop step: {result.get('decision')} — {result.get('reason')}"
             )
+        elif method == "project.loop.run.status":
+            reply = _format_run_status(result)
+        elif method in {
+            "project.loop.start",
+            "project.loop.stop",
+            "project.loop.pause",
+            "project.loop.resume",
+        }:
+            reply = _format_run_status(result)
         else:
             reply = _format_loop_status(result)
         return PromptOutcome(
@@ -817,12 +867,12 @@ def _rpc_slash(
             return envelope, 0 if envelope.ok else 1
         return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
     if command == "/loop":
-        method, _ = _parse_loop_slash(text)
+        method, params = _parse_loop_slash(text)
         _, err, envelope = _send_rpc(
             paths,
             project_id=project_id,
             method=method,
-            params={"force": True} if method == "project.loop.step" else {},
+            params=params,
         )
         if envelope is not None:
             return envelope, 0 if envelope.ok else 1

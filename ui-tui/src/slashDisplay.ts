@@ -97,13 +97,51 @@ export function formatSlashResponse(
       return `${runText}\n--- supervisor log ---\n${logText}`
     }
 
+    case 'project.loop.status':
+    case 'project.loop.run.status': {
+      const run = result.run as Record<string, unknown> | null | undefined
+      if (!run) {
+        return `Loop [${result.project_id}] — run: none`
+      }
+      return (
+        `Loop [${result.project_id}] — run: ${run.status} ${run.id}, `
+        + `iterations=${run.iteration_count ?? 0}, idle=${run.idle_iteration_count ?? 0}`
+      )
+    }
+
+    case 'project.loop.step': {
+      return `Loop step — ${result.decision}: ${result.reason}`
+    }
+
+    case 'project.loop.start':
+    case 'project.loop.stop':
+    case 'project.loop.pause':
+    case 'project.loop.resume': {
+      const run = result.run as Record<string, unknown> | null | undefined
+      if (!run) {
+        return `Loop run [${result.project_id}] — run: none`
+      }
+      return (
+        `Loop run [${result.project_id}] — ${run.status} ${run.id}, `
+        + `iterations=${run.iteration_count ?? 0}, idle=${run.idle_iteration_count ?? 0}`
+      )
+    }
+
     case 'supervisor.dashboard': {
       const projects = (result.projects as Array<Record<string, unknown>> | undefined) ?? []
+      const runs = result.autonomous_runs as Record<string, number> | undefined
       if (!projects.length) {
         return 'Dashboard — (no projects)'
       }
+      const lines = ['Dashboard:']
+      if (runs) {
+        lines.push(
+          `autonomous_runs: running=${runs.running ?? 0} `
+          + `paused=${runs.paused ?? 0} stopped=${runs.stopped ?? 0}`,
+        )
+      }
       return [
-        'Dashboard:',
+        ...lines,
         ...projects.map(entry => {
           const counts = (entry.task_counts as Record<string, number> | undefined) ?? {}
           const countText = Object.keys(counts).length

@@ -385,7 +385,25 @@ def build_dashboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:
                 "last_tick_at": row["updated_at"],
             }
         )
-    return {"projects": projects}
+    run_counts = {
+        "running": 0,
+        "paused": 0,
+        "stopped": 0,
+    }
+    for status, key in (
+        ("running", "running"),
+        ("paused", "paused"),
+        ("stopped", "stopped"),
+    ):
+        run_counts[key] = conn.execute(
+            """
+            select count(*) as cnt
+            from autonomous_run_sessions
+            where status = ?
+            """,
+            (status,),
+        ).fetchone()["cnt"]
+    return {"projects": projects, "autonomous_runs": run_counts}
 
 
 def format_task_control_error(exc: TaskControlError) -> str:

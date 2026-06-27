@@ -120,6 +120,36 @@ class DashboardRPCTests(unittest.TestCase):
         if projects:
             self.assertIn("task_counts", projects[0])
 
+    def test_dashboard_includes_autonomous_run_counts(self) -> None:
+        """Dashboard includes aggregate autonomous run counts only."""
+        from local_cli_coordinator.autonomous_runs import AutonomousRunOptions, start_run_session
+        from local_cli_coordinator.goals import create_goal, transition_goal
+
+        goal_id = create_goal(
+            self.conn, "Dashboard goal", "test", project_id=self.project_id
+        )
+        transition_goal(self.conn, goal_id, "active")
+        start_run_session(
+            self.conn,
+            project_id=self.project_id,
+            goal_id=goal_id,
+            options=AutonomousRunOptions(),
+        )
+        self.conn.commit()
+        result = _run_cli_with_home(
+            self.home, "--mode", "rpc", "-p", "/dashboard",
+            cwd=self.repo,
+        )
+        self.assertEqual(result.returncode, 0)
+        envelope = json.loads(result.stdout.strip().splitlines()[0])
+        self.assertTrue(envelope["ok"])
+        runs = envelope["result"].get("autonomous_runs")
+        self.assertIsNotNone(runs)
+        self.assertEqual(runs.get("running"), 1)
+        self.assertEqual(runs.get("paused"), 0)
+        payload_text = json.dumps(envelope["result"])
+        self.assertNotIn("Dashboard goal", payload_text)
+
     def test_dashboard_bounded_at_32_projects(self) -> None:
         """Dashboard returns at most 32 projects."""
         result = _run_cli_with_home(

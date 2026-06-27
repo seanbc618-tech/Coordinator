@@ -18,6 +18,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/retry', description: 'Retry a failed task', method: 'project.task.retry' },
   { name: '/cancel', description: 'Cancel a running task', method: 'project.task.cancel', destructive: true },
   { name: '/dashboard', description: 'Show multi-project dashboard', method: 'supervisor.dashboard' },
+  { name: '/loop', description: 'Autonomous loop status and run controls', method: 'project.loop.status' },
   { name: '/logs', description: 'Show recent logs', method: 'project.logs' },
   { name: '/agents', description: 'List active agents', method: 'project.agents' },
   { name: '/pause', description: 'Pause project scheduling', method: 'project.pause' },
@@ -76,6 +77,7 @@ const HELP_COMMAND_NAMES = new Set([
   '/approve',
   '/retry',
   '/dashboard',
+  '/loop',
   '/cancel',
   '/logs',
   '/quit',
@@ -112,6 +114,16 @@ export function formatHelpText(): string {
     }
     if (cmd.name === '/dashboard') {
       lines.push('/dashboard - Multi-project task counts (no titles)')
+      continue
+    }
+    if (cmd.name === '/loop') {
+      lines.push('/loop - Loop status')
+      lines.push('/loop step - Run one bounded iteration')
+      lines.push('/loop start - Start unattended autonomous run')
+      lines.push('/loop stop - Stop active autonomous run')
+      lines.push('/loop pause - Pause active autonomous run')
+      lines.push('/loop resume - Resume paused autonomous run')
+      lines.push('/loop run - Show active run status')
       continue
     }
     lines.push(`${cmd.name} - ${cmd.description}`)
