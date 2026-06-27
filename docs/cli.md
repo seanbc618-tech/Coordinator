@@ -219,25 +219,37 @@ coordinator --print -p "/dashboard"
 Returns per-project: goal status, task counts by state, active workers.
 No `project_id` required; aggregate counts only (no cross-project title leakage).
 
-## Autonomous loop (Phase 6)
+## Autonomous loop (Phase 6 / 6B)
 
 ```bash
 coordinator --print -p "/loop"
+coordinator --print -p "/loop step"
 coordinator --print -p "/backlog"
 coordinator --print -p "/evals"
-coordinator --print -p "/loop step"
 ```
 
-- `/loop` — active goal, last iteration decision, backlog counts, caps.
+- `/loop` — active goal, last iteration decision, backlog counts, generation caps.
+- `/loop step` — run one bounded autonomous iteration (requires autonomy enabled).
 - `/backlog` — latest backlog items with status and linked task ids.
 - `/evals` — latest task evaluations (verdict, summary, next_action).
-- `/loop step` — run one bounded autonomous iteration (requires autonomy enabled).
+
+When an active goal has no ready backlog, `/loop step` may ask Commander for
+small proposals. Those proposals become backlog items first — they are **not**
+admitted as worker tasks in the same iteration. A later tick promotes ready
+backlog into tasks.
+
+Example `/loop` output after generation:
+
+```text
+Loop status [proj-example]
+  last: generate — generated 1 backlog draft(s)
+```
 
 Autonomy is **off by default**. Enable per-repo in `repos.toml`:
 
 ```toml
 [[repos]]
-path = "/path/to/repo"
+path = "/Users/xiafan/polymarket-crypto-threshold"
 autonomy_enabled = true
 ```
 
@@ -249,6 +261,8 @@ enabled = true
 max_iterations_per_tick = 1
 max_evaluations_per_iteration = 3
 max_admissions_per_iteration = 1
+max_generated_backlog_per_iteration = 3
+commander_generation_timeout_seconds = 45
 ```
 
 See [autonomous-loop](autonomous-loop.md) for full configuration and failure modes.
