@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +46,7 @@ class LoopDecision:
     evaluated_count: int = 0
     admitted_task_ids: tuple[str, ...] = ()
     generated_backlog_ids: tuple[str, ...] = ()
+    iteration_id: str | None = None
 
 
 def _autonomy_settings(config: CoordinatorConfig) -> Any:
@@ -121,6 +122,22 @@ def _persist_iteration(
     )
 
 
+def _finalize_iteration(
+    conn: sqlite3.Connection,
+    decision: LoopDecision,
+    *,
+    generated_count: int = 0,
+    caps: dict[str, Any] | None = None,
+) -> LoopDecision:
+    iteration_id = _persist_iteration(
+        conn,
+        decision,
+        generated_count=generated_count,
+        caps=caps,
+    )
+    return replace(decision, iteration_id=iteration_id)
+
+
 def run_autonomous_iteration(
     conn: sqlite3.Connection,
     *,
@@ -147,8 +164,7 @@ def run_autonomous_iteration(
             decision="wait",
             reason="project is stopped",
         )
-        _persist_iteration(conn, decision, caps=caps)
-        return decision
+        return _finalize_iteration(conn, decision, caps=caps)
 
     if project_id in paused:
         decision = LoopDecision(
@@ -157,8 +173,7 @@ def run_autonomous_iteration(
             decision="wait",
             reason="project is paused",
         )
-        _persist_iteration(conn, decision, caps=caps)
-        return decision
+        return _finalize_iteration(conn, decision, caps=caps)
 
     goal = active_goal_row(conn, project_id=project_id)
     if goal is None:
@@ -168,8 +183,7 @@ def run_autonomous_iteration(
             decision="wait",
             reason="no active goal",
         )
-        _persist_iteration(conn, decision, caps=caps)
-        return decision
+        return _finalize_iteration(conn, decision, caps=caps)
 
     goal_id = int(goal["id"])
     if str(goal["status"]) == "paused":
@@ -179,8 +193,7 @@ def run_autonomous_iteration(
             decision="wait",
             reason="goal is paused",
         )
-        _persist_iteration(conn, decision, caps=caps)
-        return decision
+        return _finalize_iteration(conn, decision, caps=caps)
 
     if _wait_when_running(config) and project_has_running_task(
         conn, project_id=project_id
@@ -191,8 +204,7 @@ def run_autonomous_iteration(
             decision="wait",
             reason="project has a running task",
         )
-        _persist_iteration(conn, decision, caps=caps)
-        return decision
+        return _finalize_iteration(conn, decision, caps=caps)
 
     evaluated_count = 0
     human_review_required = False
@@ -229,8 +241,7 @@ def run_autonomous_iteration(
             reason="evaluation requires human review",
             evaluated_count=evaluated_count,
         )
-        _persist_iteration(conn, decision, caps=caps)
-        return decision
+        return _finalize_iteration(conn, decision, caps=caps)
 
     failure_streak = _consecutive_failure_evaluations(
         conn,
@@ -247,8 +258,7 @@ def run_autonomous_iteration(
             reason="repeated failures exceeded threshold",
             evaluated_count=evaluated_count,
         )
-        _persist_iteration(conn, decision, caps=caps)
-        return decision
+        return _finalize_iteration(conn, decision, caps=caps)
 
     admitted_task_ids: list[str] = []
     if max_admissions > 0 and _ready_backlog_count(
@@ -275,8 +285,7 @@ def run_autonomous_iteration(
             evaluated_count=evaluated_count,
             admitted_task_ids=tuple(admitted_task_ids),
         )
-        _persist_iteration(conn, decision, caps=caps)
-        return decision
+        return _finalize_iteration(conn, decision, caps=caps)
 
     if evaluated_count > 0:
         decision = LoopDecision(
@@ -286,8 +295,7 @@ def run_autonomous_iteration(
             reason=f"evaluated {evaluated_count} terminal task(s)",
             evaluated_count=evaluated_count,
         )
-        _persist_iteration(conn, decision, caps=caps)
-        return decision
+        return _finalize_iteration(conn, decision, caps=caps)
 
     idle_reason: str | None = None
     ready_count = _ready_backlog_count(conn, project_id=project_id, goal_id=goal_id)
@@ -313,8 +321,12 @@ def run_autonomous_iteration(
                 reason=f"generated {len(generated_ids)} backlog draft(s)",
                 generated_backlog_ids=tuple(generated_ids),
             )
-            _persist_iteration(conn, decision, generated_count=len(generated_ids), caps=caps)
-            return decision
+            return _finalize_iteration(
+                conn,
+                decision,
+                generated_count=len(generated_ids),
+                caps=caps,
+            )
 
     decision = LoopDecision(
         project_id=project_id,
@@ -322,8 +334,7 @@ def run_autonomous_iteration(
         decision="wait",
         reason=idle_reason or "no backlog ready and no terminal work to evaluate",
     )
-    _persist_iteration(conn, decision, caps=caps)
-    return decision
+    return _finalize_iteration(conn, decision, caps=caps)
 
 
 def _repo_autonomy_enabled(

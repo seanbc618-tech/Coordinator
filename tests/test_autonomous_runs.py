@@ -243,5 +243,87 @@ class AutonomousRunSessionTests(unittest.TestCase):
         self.assertEqual(final.stop_reason, "idle limit reached")
 
 
+class AutonomousRunRuntimeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.home = self.tmp / "home"
+        self.home.mkdir()
+        self.repo = self.tmp / "repo"
+        self.repo.mkdir()
+        init_git_repo(self.repo)
+        self.paths = RuntimePaths(
+            self.home / "config", self.home / "data", self.home / "state"
+        )
+        self.paths.create()
+        self.conn = connect(self.paths.database)
+        init_db(self.conn)
+        draft = inspect_project(self.repo)
+        register_project(self.conn, draft, confirmed=True)
+        self.conn.commit()
+        self.project_id = self.conn.execute(
+            "select id from projects limit 1"
+        ).fetchone()["id"]
+        self.goal_id = create_goal(
+            self.conn, "Runtime goal", "test", project_id=self.project_id
+        )
+        transition_goal(self.conn, self.goal_id, "active")
+        self.conn.commit()
+
+    def tearDown(self) -> None:
+        self.conn.close()
+        import shutil
+
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_run_project_autonomy_session_records_step(self) -> None:
+        from local_cli_coordinator.autonomous_runs import (
+            AutonomousRunOptions,
+            start_run_session,
+        )
+        from local_cli_coordinator.autonomy_runtime import run_project_autonomy_session
+        from local_cli_coordinator.config import AutonomyConfig, CoordinatorConfig
+        from local_cli_coordinator.supervisor_events import EventBroker
+
+        start_run_session(
+            self.conn,
+            project_id=self.project_id,
+            goal_id=self.goal_id,
+            options=AutonomousRunOptions(idle_backoff_seconds=0),
+        )
+        self.conn.commit()
+        config = CoordinatorConfig(
+            agents={},
+            repos={},
+            policy=__import__(
+                "local_cli_coordinator.config", fromlist=["PolicyConfig"]
+            ).PolicyConfig(
+                require_single_repo=False,
+                require_acceptance_criteria=False,
+                require_verification_commands=False,
+                require_handoff_summary=False,
+                max_files_touched=20,
+                max_expected_minutes=60,
+                max_attempts=3,
+                split_if_touches_multiple_subsystems=False,
+                split_if_research_and_code_are_mixed=False,
+            ),
+            autonomy=AutonomyConfig(enabled=True),
+        )
+        decisions = run_project_autonomy_session(
+            self.conn,
+            project_id=self.project_id,
+            config=config,
+            paths=self.paths,
+            broker=EventBroker(),
+        )
+        self.conn.commit()
+        self.assertEqual(len(decisions), 1)
+        steps = self.conn.execute(
+            "select count(*) from autonomous_run_steps where project_id = ?",
+            (self.project_id,),
+        ).fetchone()[0]
+        self.assertEqual(steps, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

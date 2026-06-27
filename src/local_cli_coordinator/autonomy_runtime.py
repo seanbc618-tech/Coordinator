@@ -8,6 +8,12 @@ from pathlib import Path
 from typing import Any
 
 from .autonomous_loop_db import list_backlog_items
+from .autonomous_runs import (
+    get_active_run_session,
+    project_has_runnable_run_session,
+    record_run_step,
+    run_snapshot_to_payload,
+)
 from .config import CoordinatorConfig, RepoConfig
 from .loop_autonomy import LoopDecision, run_autonomous_iteration
 from .projects import get_project
@@ -128,6 +134,143 @@ def run_project_autonomy(
         if decision.decision in {"wait", "pause", "blocked", "complete"}:
             break
     return decisions
+
+
+def run_project_autonomy_session(
+    conn: sqlite3.Connection,
+    *,
+    project_id: str,
+    config: CoordinatorConfig,
+    paths: RuntimePaths,
+    broker: EventBroker,
+    paused_projects: set[str] | None = None,
+    stopped_projects: set[str] | None = None,
+) -> list[LoopDecision]:
+    """Run one due active session tick and record autonomous_run_steps."""
+    session = get_active_run_session(conn, project_id=project_id)
+    if session is None or session.status == "paused":
+        return []
+    if not project_has_runnable_run_session(conn, project_id=project_id):
+        return []
+
+    row = conn.execute(
+        "select idle_backoff_seconds from autonomous_run_sessions where id = ?",
+        (session.id,),
+    ).fetchone()
+    idle_backoff_seconds = int(row["idle_backoff_seconds"]) if row is not None else 30
+
+    decision = run_autonomous_iteration(
+        conn,
+        project_id=project_id,
+        config=config,
+        paths=paths,
+        max_evaluations=config.autonomy.max_evaluations_per_iteration,
+        max_admissions=config.autonomy.max_admissions_per_iteration,
+        paused_projects=paused_projects,
+        stopped_projects=stopped_projects,
+    )
+    updated = record_run_step(
+        conn,
+        run_id=session.id,
+        decision=decision.decision,
+        loop_iteration_id=decision.iteration_id,
+        idle_backoff_seconds=idle_backoff_seconds,
+        reason=decision.reason,
+        evaluated_count=decision.evaluated_count,
+        admitted_count=len(decision.admitted_task_ids),
+        generated_count=len(decision.generated_backlog_ids),
+        goal_id=decision.goal_id,
+        project_id=project_id,
+    )
+    conn.commit()
+
+    broker.publish(
+        conn,
+        project_id,
+        "loop.run.step",
+        {
+            "run_id": updated.id,
+            "decision": decision.decision,
+            "reason": decision.reason,
+            "goal_id": decision.goal_id,
+            "loop_iteration_id": decision.iteration_id,
+            "evaluated_count": decision.evaluated_count,
+            "admitted_task_ids": list(decision.admitted_task_ids),
+            "generated_backlog_ids": list(decision.generated_backlog_ids),
+        },
+    )
+    broker.publish(
+        conn,
+        project_id,
+        "loop.run.status",
+        {
+            "run_id": updated.id,
+            "run": run_snapshot_to_payload(updated),
+        },
+    )
+    broker.publish(
+        conn,
+        project_id,
+        "loop.iteration",
+        {
+            "decision": decision.decision,
+            "reason": decision.reason,
+            "goal_id": decision.goal_id,
+            "evaluated_count": decision.evaluated_count,
+            "admitted_task_ids": list(decision.admitted_task_ids),
+            "generated_backlog_ids": list(decision.generated_backlog_ids),
+            "run_id": updated.id,
+        },
+    )
+    for task_id in decision.admitted_task_ids:
+        broker.publish(
+            conn,
+            project_id,
+            "backlog.item",
+            {
+                "action": "admitted",
+                "task_id": task_id,
+                "goal_id": decision.goal_id,
+                "run_id": updated.id,
+            },
+        )
+    for backlog_id in decision.generated_backlog_ids:
+        broker.publish(
+            conn,
+            project_id,
+            "backlog.item",
+            {
+                "action": "generated",
+                "backlog_id": backlog_id,
+                "goal_id": decision.goal_id,
+                "run_id": updated.id,
+            },
+        )
+    if decision.evaluated_count > 0:
+        rows = conn.execute(
+            """
+            select * from task_evaluations
+            where project_id = ?
+            order by created_at desc, id desc
+            limit ?
+            """,
+            (project_id, decision.evaluated_count),
+        ).fetchall()
+        for row in rows:
+            broker.publish(
+                conn,
+                project_id,
+                "task.evaluated",
+                {
+                    "task_id": row["task_id"],
+                    "evaluator_id": row["evaluator_id"],
+                    "verdict": row["verdict"],
+                    "next_action": row["next_action"],
+                    "summary": row["summary"],
+                    "run_id": updated.id,
+                },
+            )
+    return [decision]
 
 
 def build_loop_status_payload(
