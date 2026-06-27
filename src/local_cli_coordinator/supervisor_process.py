@@ -351,9 +351,6 @@ def ensure_supervisor(
 ) -> EnsureSupervisorResult:
     """Attach to a running Supervisor or start one detached process."""
     paths.create()
-    missing = missing_config_file(paths)
-    if missing is not None:
-        raise SupervisorReadinessError(f"missing config file: {missing}")
 
     result = _supervisor_ping_result(paths)
     if result is not None:
@@ -385,6 +382,10 @@ def ensure_supervisor(
                 started=False,
                 pid=_read_lock_pid(paths.lock),
             )
+
+        missing = missing_config_file(paths)
+        if missing is not None:
+            raise SupervisorReadinessError(f"missing config file: {missing}")
 
         child_pid = _spawn_detached_supervisor(paths)
         try:
