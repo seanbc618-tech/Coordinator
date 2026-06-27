@@ -87,19 +87,58 @@ Terminal tasks (done/failed/blocked) get exactly one evaluation per evaluator
 | `blocked` | Missing config, budget exhausted | `pause_goal` |
 | `human_review` | Touches merge/push/credentials/funds | `human_review` |
 
+## Autonomous run sessions (Phase 6C)
+
+Phase 6C adds durable **run sessions** so Coordinator can keep working while you
+step away. A run session is not the same as a manual `/loop step`:
+
+| Action | Starts a run session? | Behavior |
+|--------|----------------------|----------|
+| `/loop step` | No | One bounded iteration, then stops |
+| `/loop start` | Yes | Supervisor keeps ticking until caps/stop |
+
+Recommended first sequence on a real project:
+
+```bash
+coordinator --print -p "/loop"          # confirm autonomy + active goal
+coordinator --print -p "/loop start"    # begin unattended session
+coordinator --print -p "/loop run"      # inspect run id, iterations, idle count
+coordinator --print -p "/loop pause"    # pause without losing session state
+coordinator --print -p "/loop resume"   # resume ticking
+coordinator --print -p "/loop stop"     # operator stop with durable reason
+```
+
+Stop conditions (persisted in `autonomous_run_sessions`):
+
+- `max iterations reached`
+- `max runtime reached`
+- `idle limit reached` (repeated wait with no backlog/goal/work)
+- operator `/loop stop`
+- loop decisions `pause`, `blocked`, or `complete`
+
+Active run sessions wake the Supervisor scheduler even when no worker task is
+ready yet. Idle ticks apply `idle_backoff_seconds` before the next attempt.
+
 ## Slash commands
 
 | Command | RPC method | Description |
 |---------|------------|-------------|
-| `/loop` | `project.loop.status` | Active goal, last decision, backlog counts |
+| `/loop` | `project.loop.status` | Active goal, last decision, backlog counts, active run |
 | `/backlog` | `project.backlog` | Latest backlog items with status |
 | `/evals` | `project.evaluations` | Latest task evaluations |
-| `/loop step` | `project.loop.step` | Run one bounded iteration |
+| `/loop step` | `project.loop.step` | Run one bounded iteration (not a run session) |
+| `/loop start` | `project.loop.start` | Start unattended autonomous run session |
+| `/loop stop` | `project.loop.stop` | Stop active run (`reason: operator stop`) |
+| `/loop pause` | `project.loop.pause` | Pause active run session |
+| `/loop resume` | `project.loop.resume` | Resume paused run session |
+| `/loop run` | `project.loop.run.status` | Show active run counters only |
 
 Operator examples:
 
 ```bash
 coordinator --print -p "/loop"
+coordinator --print -p "/loop start"
+coordinator --print -p "/loop run"
 coordinator --print -p "/loop step"
 coordinator --print -p "/backlog"
 ```
@@ -108,6 +147,7 @@ After Commander generation, `/loop` may show:
 
 ```text
 Loop status [proj-example]
+  run: running run-abc123, iterations=3, idle=1
   last: generate — generated 1 backlog draft(s)
 ```
 
@@ -122,13 +162,18 @@ Loop status [proj-example]
 | No active goal | Iteration waits; `/loop` shows "no active goal" |
 | Running task + serial policy | Iteration waits; `/loop` shows running task id |
 
-## Data model (migration 014)
+## Data model
 
-Three new tables:
+Migration 014:
 
 - `project_backlog_items` — durable backlog with dedupe
 - `task_evaluations` — one evaluation per task/evaluator pair
 - `loop_iterations` — every decision is persisted with reason
+
+Migration 015 (Phase 6C):
+
+- `autonomous_run_sessions` — durable run controller state per project
+- `autonomous_run_steps` — per-tick audit trail linked to loop iterations
 
 ## Disabling autonomy
 

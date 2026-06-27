@@ -217,19 +217,25 @@ coordinator --print -p "/dashboard"
 ```
 
 Returns per-project: goal status, task counts by state, active workers.
+Also returns aggregate `autonomous_runs` counts (`running`, `paused`, `stopped`).
 No `project_id` required; aggregate counts only (no cross-project title leakage).
 
-## Autonomous loop (Phase 6 / 6B)
+## Autonomous loop (Phase 6 / 6B / 6C)
 
 ```bash
 coordinator --print -p "/loop"
+coordinator --print -p "/loop start"
+coordinator --print -p "/loop run"
 coordinator --print -p "/loop step"
 coordinator --print -p "/backlog"
 coordinator --print -p "/evals"
 ```
 
-- `/loop` — active goal, last iteration decision, backlog counts, generation caps.
-- `/loop step` — run one bounded autonomous iteration (requires autonomy enabled).
+- `/loop` — active goal, last iteration decision, backlog counts, active run.
+- `/loop start` — start an unattended autonomous run session (requires autonomy).
+- `/loop run` — show active run id, iteration count, idle count.
+- `/loop pause` / `/loop resume` / `/loop stop` — control the active session.
+- `/loop step` — run one bounded iteration only; does **not** start a session.
 - `/backlog` — latest backlog items with status and linked task ids.
 - `/evals` — latest task evaluations (verdict, summary, next_action).
 
