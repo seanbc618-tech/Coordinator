@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 import uuid
 from pathlib import Path
@@ -244,6 +245,122 @@ class AutonomousRunRpcTests(unittest.TestCase):
         conn.close()
         self.assertFalse(response.ok)
         self.assertIn("autonomy", (response.error or "").lower())
+
+
+class AutonomousRunRestartTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.home = self.tmp / "home"
+        self.home.mkdir()
+        self.repo = self.tmp / "repo"
+        self.repo.mkdir()
+        init_git_repo(self.repo)
+        self.paths = RuntimePaths(
+            self.home / "config", self.home / "data", self.home / "state"
+        )
+        self.paths.create()
+        _write_config(self.home / "config", self.repo)
+        self.conn = connect(self.paths.database)
+        init_db(self.conn)
+        draft = inspect_project(self.repo)
+        register_project(self.conn, draft, confirmed=True)
+        self.conn.commit()
+        self.project_id = self.conn.execute(
+            "select id from projects limit 1"
+        ).fetchone()["id"]
+        self.goal_id = create_goal(
+            self.conn, "Restart goal", "test", project_id=self.project_id
+        )
+        transition_goal(self.conn, self.goal_id, "active")
+        self.conn.commit()
+        self._orig_home = os.environ.get("COORDINATOR_HOME")
+        os.environ["COORDINATOR_HOME"] = str(self.home)
+        self._processes: list[subprocess.Popen[str]] = []
+
+    def tearDown(self) -> None:
+        _run_cli_with_home(self.home, "supervisor", "stop")
+        for process in self._processes:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=2.0)
+        self.conn.close()
+        if self._orig_home is not None:
+            os.environ["COORDINATOR_HOME"] = self._orig_home
+        else:
+            os.environ.pop("COORDINATOR_HOME", None)
+        import shutil
+
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _wait_for_supervisor(self, timeout: float = 10.0) -> None:
+        from local_cli_coordinator.supervisor_process import ping_supervisor
+
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if ping_supervisor(self.paths):
+                return
+            time.sleep(0.05)
+        self.fail("supervisor did not become ready")
+
+    def _start_foreground_supervisor(self) -> subprocess.Popen[str]:
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(SRC)
+        env["COORDINATOR_HOME"] = str(self.home)
+        process = subprocess.Popen(
+            [
+                _PYTHON,
+                "-m",
+                "local_cli_coordinator",
+                "supervisor",
+                "start",
+                "--foreground",
+            ],
+            cwd=ROOT,
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        self._processes.append(process)
+        return process
+
+    def test_running_autonomous_session_survives_supervisor_restart(self) -> None:
+        process = self._start_foreground_supervisor()
+
+        loop_start = _run_cli_with_home(
+            self.home, "--mode", "rpc", "-p", "/loop start", cwd=self.repo,
+        )
+        self.assertEqual(loop_start.returncode, 0, loop_start.stderr)
+        run_id = _rpc_envelope(loop_start.stdout)["result"]["run"]["id"]
+
+        stop = _run_cli_with_home(self.home, "supervisor", "stop")
+        self.assertEqual(stop.returncode, 0, stop.stderr)
+        process.wait(timeout=10.0)
+
+        self._start_foreground_supervisor()
+
+        conn = connect(self.paths.database)
+        init_db(conn)
+        row = conn.execute(
+            "select id, status from autonomous_run_sessions where id = ?",
+            (run_id,),
+        ).fetchone()
+        conn.close()
+        self.assertIsNotNone(row)
+        self.assertEqual(row["status"], "running")
+
+        run_status = _run_cli_with_home(
+            self.home, "--mode", "rpc", "-p", "/loop run", cwd=self.repo,
+        )
+        self.assertEqual(run_status.returncode, 0, run_status.stderr)
+        envelope = _rpc_envelope(run_status.stdout)
+        self.assertTrue(envelope["ok"])
+        self.assertEqual(envelope["result"]["run"]["id"], run_id)
+        self.assertEqual(envelope["result"]["run"]["status"], "running")
 
 
 class AutonomousRunCliRpcTests(unittest.TestCase):
