@@ -59,6 +59,7 @@ class AutonomyConfig:
     max_evaluations_per_iteration: int = 3
     max_admissions_per_iteration: int = 1
     max_generated_backlog_per_iteration: int = 3
+    commander_generation_timeout_seconds: int = 45
     wait_when_running: bool = True
     require_evaluation_before_followup: bool = True
     pause_after_consecutive_failures: int = 3
@@ -353,6 +354,9 @@ def load_config_from_dir(config_dir: Path) -> CoordinatorConfig:
         ),
         max_generated_backlog_per_iteration=int(
             autonomy_raw.get("max_generated_backlog_per_iteration", 3)
+        ),
+        commander_generation_timeout_seconds=int(
+            autonomy_raw.get("commander_generation_timeout_seconds", 45)
         ),
         wait_when_running=bool(autonomy_raw.get("wait_when_running", True)),
         require_evaluation_before_followup=bool(

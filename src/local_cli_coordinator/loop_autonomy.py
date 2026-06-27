@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from .autonomous_backlog import BacklogDraft, promote_next_backlog_item, propose_backlog_items
@@ -13,6 +14,8 @@ from .autonomous_loop_db import (
     insert_loop_iteration,
     project_has_running_task,
 )
+from .commander_backlog import commander_response_to_backlog
+from .commander_runner import CommanderRunActiveError, run_commander
 from .config import CoordinatorConfig
 from .evaluator import (
     DEFAULT_EVALUATOR_ID,
@@ -20,7 +23,14 @@ from .evaluator import (
     find_unevaluated_terminal_tasks,
     record_task_evaluation,
 )
-from .goals import transition_goal
+from .goals import (
+    clear_commander_failures,
+    get_goal,
+    linked_tasks_all_terminal,
+    record_commander_failure,
+    transition_goal,
+    update_goal_progress,
+)
 from .projects import get_project
 from .runtime_paths import RuntimePaths
 
@@ -247,8 +257,6 @@ def run_autonomous_iteration(
         project = get_project(conn, project_id)
         repo_path = paths.data_dir / project_id
         if project is not None:
-            from pathlib import Path
-
             repo_path = Path(project["canonical_path"])
         admitted_task_ids = promote_next_backlog_item(
             conn,
@@ -283,11 +291,18 @@ def run_autonomous_iteration(
 
     ready_count = _ready_backlog_count(conn, project_id=project_id, goal_id=goal_id)
     if ready_count < MIN_READY_BACKLOG:
+        project = get_project(conn, project_id)
+        root = (
+            Path(project["canonical_path"])
+            if project is not None
+            else paths.data_dir / project_id
+        )
         generated_ids = _maybe_generate_backlog(
             conn,
             project_id=project_id,
             goal_id=goal_id,
             config=config,
+            root=root,
         )
         if generated_ids:
             decision = LoopDecision(
@@ -310,20 +325,84 @@ def run_autonomous_iteration(
     return decision
 
 
+def _repo_autonomy_enabled(
+    conn: sqlite3.Connection,
+    *,
+    project_id: str,
+    config: CoordinatorConfig,
+) -> bool:
+    project = get_project(conn, project_id)
+    if project is None:
+        return False
+    canonical = Path(project["canonical_path"]).resolve()
+    for repo in config.repos.values():
+        if repo.path.resolve() == canonical and repo.autonomy_enabled:
+            return True
+    return False
+
+
 def _maybe_generate_backlog(
     conn: sqlite3.Connection,
     *,
     project_id: str,
     goal_id: int,
     config: CoordinatorConfig,
+    root: Path,
 ) -> list[str]:
     """Ask Commander for tiny backlog drafts when enabled and budget allows."""
     autonomy = _autonomy_settings(config)
-    if autonomy is None:
+    if autonomy is None or not autonomy.enabled:
         return []
-    if not bool(getattr(autonomy, "enabled", False)):
+    if not _repo_autonomy_enabled(conn, project_id=project_id, config=config):
         return []
-    max_generated = int(getattr(autonomy, "max_generated_backlog_per_iteration", 3))
+    max_generated = int(autonomy.max_generated_backlog_per_iteration)
     if max_generated <= 0:
         return []
-    return []
+    goal = get_goal(conn, goal_id)
+    if goal["commander_retry_after"]:
+        from datetime import datetime, timezone
+
+        try:
+            retry_after = datetime.fromisoformat(goal["commander_retry_after"])
+            if datetime.now(timezone.utc) < retry_after:
+                return []
+        except (ValueError, TypeError):
+            pass
+    timeout = int(getattr(autonomy, "commander_generation_timeout_seconds", 45))
+    try:
+        result = run_commander(
+            conn,
+            config,
+            root,
+            goal_id,
+            "replenishment",
+            timeout,
+        )
+    except CommanderRunActiveError:
+        return []
+    except ValueError:
+        return []
+    if not result.succeeded or result.response is None:
+        record_commander_failure(conn, goal_id)
+        return []
+    generation = commander_response_to_backlog(
+        conn,
+        project_id=project_id,
+        goal_id=goal_id,
+        response=result.response,
+        max_items=max_generated,
+    )
+    update_goal_progress(conn, goal_id, generation.progress_summary)
+    if generation.inserted_ids:
+        clear_commander_failures(conn, goal_id)
+    if (
+        generation.goal_status == "completed"
+        and linked_tasks_all_terminal(conn, goal_id)
+    ):
+        transition_goal(
+            conn,
+            goal_id,
+            "completed",
+            stop_reason=generation.stop_reason or "completed by Commander",
+        )
+    return list(generation.inserted_ids)
