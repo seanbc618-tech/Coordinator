@@ -289,6 +289,7 @@ def run_autonomous_iteration(
         _persist_iteration(conn, decision, caps=caps)
         return decision
 
+    idle_reason: str | None = None
     ready_count = _ready_backlog_count(conn, project_id=project_id, goal_id=goal_id)
     if ready_count < MIN_READY_BACKLOG:
         project = get_project(conn, project_id)
@@ -297,7 +298,7 @@ def run_autonomous_iteration(
             if project is not None
             else paths.data_dir / project_id
         )
-        generated_ids = _maybe_generate_backlog(
+        generated_ids, idle_reason = _maybe_generate_backlog(
             conn,
             project_id=project_id,
             goal_id=goal_id,
@@ -319,7 +320,7 @@ def run_autonomous_iteration(
         project_id=project_id,
         goal_id=goal_id,
         decision="wait",
-        reason="no backlog ready and no terminal work to evaluate",
+        reason=idle_reason or "no backlog ready and no terminal work to evaluate",
     )
     _persist_iteration(conn, decision, caps=caps)
     return decision
@@ -348,16 +349,16 @@ def _maybe_generate_backlog(
     goal_id: int,
     config: CoordinatorConfig,
     root: Path,
-) -> list[str]:
+) -> tuple[list[str], str | None]:
     """Ask Commander for tiny backlog drafts when enabled and budget allows."""
     autonomy = _autonomy_settings(config)
     if autonomy is None or not autonomy.enabled:
-        return []
+        return [], None
     if not _repo_autonomy_enabled(conn, project_id=project_id, config=config):
-        return []
+        return [], None
     max_generated = int(autonomy.max_generated_backlog_per_iteration)
     if max_generated <= 0:
-        return []
+        return [], None
     goal = get_goal(conn, goal_id)
     if goal["commander_retry_after"]:
         from datetime import datetime, timezone
@@ -365,7 +366,7 @@ def _maybe_generate_backlog(
         try:
             retry_after = datetime.fromisoformat(goal["commander_retry_after"])
             if datetime.now(timezone.utc) < retry_after:
-                return []
+                return [], None
         except (ValueError, TypeError):
             pass
     timeout = int(getattr(autonomy, "commander_generation_timeout_seconds", 45))
@@ -379,12 +380,12 @@ def _maybe_generate_backlog(
             timeout,
         )
     except CommanderRunActiveError:
-        return []
+        return [], None
     except ValueError:
-        return []
+        return [], None
     if not result.succeeded or result.response is None:
         record_commander_failure(conn, goal_id)
-        return []
+        return [], None
     generation = commander_response_to_backlog(
         conn,
         project_id=project_id,
@@ -405,4 +406,6 @@ def _maybe_generate_backlog(
             "completed",
             stop_reason=generation.stop_reason or "completed by Commander",
         )
-    return list(generation.inserted_ids)
+    if not generation.inserted_ids and generation.rejected_reasons:
+        return [], "no backlog ready and Commander generated no tasks"
+    return list(generation.inserted_ids), None

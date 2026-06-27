@@ -12,6 +12,7 @@ from typing import Sequence
 
 from .autonomous_loop_db import (
     insert_backlog_item,
+    is_open_backlog_dedupe_error,
     list_ready_backlog_items,
     mark_backlog_admitted,
     open_backlog_exists,
@@ -83,21 +84,26 @@ def propose_backlog_items(
             continue
         rejections = _small_task_rejection_reasons(draft)
         status = "ready" if not rejections else "candidate"
-        item_id = insert_backlog_item(
-            conn,
-            project_id=project_id,
-            goal_id=goal_id,
-            source=draft.source,
-            title=draft.title.strip(),
-            rationale=draft.rationale,
-            acceptance_criteria=list(draft.acceptance_criteria),
-            verification_commands=list(draft.verification_commands),
-            execution_policy=draft.execution_policy,
-            priority=draft.priority,
-            status=status,
-            dedupe_key=dedupe_key,
-            commit=False,
-        )
+        try:
+            item_id = insert_backlog_item(
+                conn,
+                project_id=project_id,
+                goal_id=goal_id,
+                source=draft.source,
+                title=draft.title.strip(),
+                rationale=draft.rationale,
+                acceptance_criteria=list(draft.acceptance_criteria),
+                verification_commands=list(draft.verification_commands),
+                execution_policy=draft.execution_policy,
+                priority=draft.priority,
+                status=status,
+                dedupe_key=dedupe_key,
+                commit=False,
+            )
+        except sqlite3.IntegrityError as exc:
+            if not is_open_backlog_dedupe_error(exc):
+                raise
+            continue
         if rejections:
             conn.execute(
                 """

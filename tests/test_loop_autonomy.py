@@ -372,3 +372,24 @@ class AutonomousIterationTests(unittest.TestCase):
         self.assertEqual(first.decision, "generate")
         self.assertEqual(backlog_count, 1)
         self.assertIn(second.decision, {"wait", "generate"})
+
+    @mock.patch("local_cli_coordinator.loop_autonomy.run_commander", create=True)
+    def test_no_task_commander_response_records_wait_reason(
+        self,
+        mock_run_commander: mock.MagicMock,
+    ) -> None:
+        """Commander responses without task proposals record a concrete wait reason."""
+        mock_run_commander.return_value = make_commander_run_result(
+            make_commander_response(intent="conversation"),
+            tmp_dir=self.tmp,
+        )
+        decision = self._run_iteration(
+            config=self._autonomy_config(),
+            max_evaluations=0,
+            max_admissions=0,
+        )
+        self.assertEqual(decision.decision, "wait")
+        self.assertEqual(
+            decision.reason,
+            "no backlog ready and Commander generated no tasks",
+        )

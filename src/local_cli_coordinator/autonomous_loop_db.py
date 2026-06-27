@@ -7,7 +7,20 @@ import sqlite3
 import uuid
 from typing import Any
 
+OPEN_BACKLOG_DEDUPE_INDEX = "idx_project_backlog_dedupe_open"
 OPEN_BACKLOG_STATUSES = ("candidate", "ready", "admitted")
+
+
+def is_open_backlog_dedupe_error(exc: sqlite3.IntegrityError) -> bool:
+    """Return True when an integrity error came from the open backlog dedupe index."""
+    message = str(exc).lower()
+    if OPEN_BACKLOG_DEDUPE_INDEX in message:
+        return True
+    return (
+        "project_backlog_items.project_id" in message
+        and "project_backlog_items.goal_id" in message
+        and "project_backlog_items.dedupe_key" in message
+    )
 TERMINAL_TASK_STATES = ("done", "failed", "blocked", "rejected")
 RUNNING_TASK_STATES = (
     "running",
