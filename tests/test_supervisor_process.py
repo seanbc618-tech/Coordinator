@@ -460,6 +460,21 @@ class SupervisorStartCliTests(SupervisorProcessTestBase):
         self.assertTrue(ping_supervisor(self.paths))
         self.assertIsNotNone(_live_supervisor_pid(self.home))
 
+    def test_supervisor_start_reports_missing_config_file(self) -> None:
+        agents_path = self.home / "config" / "agents.toml"
+        self.assertTrue(agents_path.exists())
+        agents_path.unlink()
+
+        started_at = time.time()
+        result = _run_cli_with_home(self.home, "supervisor", "start")
+        elapsed = time.time() - started_at
+
+        combined = f"{result.stdout}\n{result.stderr}".lower()
+        self.assertIn("missing config file", combined)
+        self.assertIn("agents.toml", combined)
+        self.assertLess(elapsed, 5.0, "missing config should fail immediately")
+        self.assertFalse(ping_supervisor(self.paths))
+
 
 if __name__ == "__main__":
     unittest.main()

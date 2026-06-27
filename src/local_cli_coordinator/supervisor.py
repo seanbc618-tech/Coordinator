@@ -14,6 +14,7 @@ from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as Futur
 from contextlib import contextmanager
 from typing import Any, Generator
 
+from .autonomy_runtime import project_autonomy_enabled, run_project_autonomy
 from .config import CoordinatorConfig
 from .db import (
     claim_project_ready_task,
@@ -108,6 +109,19 @@ class MultiProjectSupervisor:
 
         try:
             with self._get_conn() as conn:
+                if project_autonomy_enabled(
+                    conn, project_id=project_id, config=self._config
+                ):
+                    run_project_autonomy(
+                        conn,
+                        project_id=project_id,
+                        config=self._config,
+                        paths=self._paths,
+                        broker=self._broker,
+                        paused_projects=self._paused,
+                        stopped_projects=self._stopped,
+                    )
+
                 task, agent_id = claim_project_ready_task(
                     conn, project_id, self._config
                 )

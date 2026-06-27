@@ -442,6 +442,10 @@ class FakeSupervisor:
             "project.task.cancel",
             "project.task.log",
             "supervisor.dashboard",
+            "project.loop.status",
+            "project.backlog",
+            "project.evaluations",
+            "project.loop.step",
         ):
             self._handle_operational_rpc(
                 conn,
@@ -568,6 +572,39 @@ class FakeSupervisor:
             if not effective_project_id:
                 row = db.execute("select id from projects limit 1").fetchone()
                 effective_project_id = row["id"] if row else self.project_id
+
+            if method in (
+                "project.loop.status",
+                "project.backlog",
+                "project.evaluations",
+                "project.loop.step",
+            ):
+                from local_cli_coordinator.config_runtime import load_config_for_paths
+                from local_cli_coordinator.supervisor_methods import SupervisorMethods
+                from local_cli_coordinator.supervisor_protocol import RequestEnvelope
+
+                config = load_config_for_paths(paths)
+                methods = SupervisorMethods(config=config, paths=paths)
+                response = methods.handle(
+                    db,
+                    RequestEnvelope(
+                        protocol_version=PROTOCOL_VERSION,
+                        request_id=request_id,
+                        method=method,
+                        project_id=effective_project_id,
+                        params=params,
+                    ),
+                )
+                if response.ok:
+                    self._respond(conn, request_id, response.result or {})
+                else:
+                    self._respond(
+                        conn,
+                        request_id,
+                        ok=False,
+                        error=response.error or "request failed",
+                    )
+                return
 
             if method == "project.task":
                 task_id = str(params.get("args", "")).strip()

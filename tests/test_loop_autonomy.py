@@ -3,8 +3,9 @@
 These tests capture the contract for ``loop_autonomy.py``:
 ``run_autonomous_iteration`` and ``LoopDecision``.
 
-Owner: Claude Code (Phase 6 Task 0)
-Expected before implementation: ``ModuleNotFoundError`` for ``loop_autonomy``.
+Owner: Claude Code (Phase 6 Task 0, Phase 6B Task 0)
+Expected before implementation: generation tests fail until Commander backlog
+adapter and ``_maybe_generate_backlog()`` are implemented.
 """
 
 from __future__ import annotations
@@ -20,8 +21,15 @@ from unittest import mock
 from local_cli_coordinator.db import connect, init_db
 from local_cli_coordinator.goals import create_goal, transition_goal
 from local_cli_coordinator.projects import inspect_project, register_project
+from local_cli_coordinator.config import CoordinatorConfig
 from local_cli_coordinator.runtime_paths import RuntimePaths
-from tests.helpers import init_git_repo
+from tests.fixtures.phase6b_commander import (
+    autonomy_loop_config,
+    make_commander_proposal,
+    make_commander_response,
+    make_commander_run_result,
+)
+from tests.helpers import init_git_repo, insert_terminal_task
 
 
 class LoopDecisionTests(unittest.TestCase):
@@ -82,12 +90,24 @@ class AutonomousIterationTests(unittest.TestCase):
         import shutil
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def _run_iteration(self, **kwargs):
+    def _autonomy_config(self, *, max_generated: int = 3) -> CoordinatorConfig:
+        return autonomy_loop_config(
+            self.tmp,
+            self.repo,
+            max_generated=max_generated,
+        )
+
+    def _run_iteration(
+        self,
+        *,
+        config: CoordinatorConfig | None = None,
+        **kwargs,
+    ):
         from local_cli_coordinator.loop_autonomy import run_autonomous_iteration
         return run_autonomous_iteration(
             self.conn,
             project_id=self.project_id,
-            config=mock.MagicMock(),
+            config=config or mock.MagicMock(),
             paths=self.paths,
             **kwargs,
         )
@@ -95,10 +115,12 @@ class AutonomousIterationTests(unittest.TestCase):
     def test_loop_waits_when_project_has_running_task(self) -> None:
         """Iteration decides 'wait' when a task is already running."""
         # Insert a running task.
-        self.conn.execute(
-            "insert into tasks (id, title, status, project_id) "
-            "values ('task-running', 'busy', 'running', ?)",
-            (self.project_id,),
+        insert_terminal_task(
+            self.conn,
+            task_id="task-running",
+            title="busy",
+            state="running",
+            project_id=self.project_id,
         )
         self.conn.commit()
         decision = self._run_iteration(
@@ -143,10 +165,12 @@ class AutonomousIterationTests(unittest.TestCase):
         """Iteration evaluates at most max_evaluations terminal tasks."""
         # Create 5 terminal tasks.
         for i in range(5):
-            self.conn.execute(
-                "insert into tasks (id, title, status, project_id) "
-                "values (?, ?, 'done', ?)",
-                (f"task-eval-{i}", f"task {i}", self.project_id),
+            insert_terminal_task(
+                self.conn,
+                task_id=f"task-eval-{i}",
+                title=f"task {i}",
+                state="done",
+                project_id=self.project_id,
             )
         self.conn.commit()
         decision = self._run_iteration(
@@ -200,9 +224,12 @@ class AutonomousIterationTests(unittest.TestCase):
             propose_backlog_items,
         )
         # Insert a task in a different project.
-        self.conn.execute(
-            "insert into tasks (id, title, status, project_id) "
-            "values ('task-other', 'other', 'done', 'other-project')",
+        insert_terminal_task(
+            self.conn,
+            task_id="task-other",
+            title="other",
+            state="done",
+            project_id="other-project",
         )
         self.conn.commit()
         # Propose backlog for this project only.
@@ -220,3 +247,149 @@ class AutonomousIterationTests(unittest.TestCase):
         )
         # Should not evaluate tasks from other projects.
         self.assertLessEqual(decision.evaluated_count, 1)
+
+    @mock.patch("local_cli_coordinator.loop_autonomy.run_commander", create=True)
+    def test_loop_generates_backlog_when_idle_and_empty(
+        self,
+        mock_run_commander: mock.MagicMock,
+    ) -> None:
+        """Idle project with no ready backlog asks Commander for drafts."""
+        mock_run_commander.return_value = make_commander_run_result(
+            make_commander_response(make_commander_proposal(title="Generated slice")),
+            tmp_dir=self.tmp,
+        )
+        decision = self._run_iteration(
+            config=self._autonomy_config(),
+            max_evaluations=0,
+            max_admissions=0,
+        )
+        self.assertEqual(decision.decision, "generate")
+        self.assertEqual(len(decision.generated_backlog_ids), 1)
+        mock_run_commander.assert_called_once()
+
+    @mock.patch("local_cli_coordinator.loop_autonomy.run_commander", create=True)
+    def test_loop_generation_does_not_admit_task_same_iteration(
+        self,
+        mock_run_commander: mock.MagicMock,
+    ) -> None:
+        """Generation inserts backlog only; no task is admitted in the same tick."""
+        mock_run_commander.return_value = make_commander_run_result(
+            make_commander_response(make_commander_proposal(title="No same-tick admit")),
+            tmp_dir=self.tmp,
+        )
+        tasks_before = self.conn.execute("select count(*) from tasks").fetchone()[0]
+        decision = self._run_iteration(
+            config=self._autonomy_config(),
+            max_evaluations=0,
+            max_admissions=1,
+        )
+        tasks_after = self.conn.execute("select count(*) from tasks").fetchone()[0]
+
+        self.assertEqual(decision.decision, "generate")
+        self.assertEqual(len(decision.admitted_task_ids), 0)
+        self.assertEqual(tasks_before, tasks_after)
+
+    def test_loop_does_not_generate_when_ready_backlog_exists(self) -> None:
+        """Ready backlog is admitted before Commander generation runs."""
+        from local_cli_coordinator.autonomous_backlog import (
+            BacklogDraft,
+            propose_backlog_items,
+        )
+
+        propose_backlog_items(
+            self.conn,
+            project_id=self.project_id,
+            goal_id=self.goal_id,
+            drafts=[BacklogDraft(
+                source="operator",
+                title="Ready first",
+                rationale="r",
+                acceptance_criteria=["c"],
+                verification_commands=[],
+            )],
+        )
+        with mock.patch(
+            "local_cli_coordinator.loop_autonomy.run_commander",
+            create=True,
+        ) as mock_run_commander:
+            decision = self._run_iteration(
+                config=self._autonomy_config(),
+                max_evaluations=0,
+                max_admissions=1,
+            )
+            mock_run_commander.assert_not_called()
+        self.assertEqual(decision.decision, "admit")
+        self.assertEqual(len(decision.admitted_task_ids), 1)
+
+    @mock.patch("local_cli_coordinator.loop_autonomy.run_commander", create=True)
+    def test_loop_does_not_generate_when_commander_run_active(
+        self,
+        mock_run_commander: mock.MagicMock,
+    ) -> None:
+        """Active Commander run returns quickly without generating backlog."""
+        from local_cli_coordinator.commander_runner import CommanderRunActiveError
+
+        mock_run_commander.side_effect = CommanderRunActiveError(
+            "commander run already active"
+        )
+        decision = self._run_iteration(
+            config=self._autonomy_config(),
+            max_evaluations=0,
+            max_admissions=0,
+        )
+        mock_run_commander.assert_called_once()
+        self.assertEqual(decision.decision, "wait")
+        self.assertEqual(len(decision.generated_backlog_ids), 0)
+
+    @mock.patch("local_cli_coordinator.loop_autonomy.run_commander", create=True)
+    def test_duplicate_generated_backlog_is_idempotent(
+        self,
+        mock_run_commander: mock.MagicMock,
+    ) -> None:
+        """Repeated Commander proposals with the same dedupe key stay idempotent."""
+        mock_run_commander.return_value = make_commander_run_result(
+            make_commander_response(
+                make_commander_proposal(title="Idempotent backlog item")
+            ),
+            tmp_dir=self.tmp,
+        )
+        config = self._autonomy_config()
+        first = self._run_iteration(
+            config=config,
+            max_evaluations=0,
+            max_admissions=0,
+        )
+        second = self._run_iteration(
+            config=config,
+            max_evaluations=0,
+            max_admissions=0,
+        )
+        backlog_count = self.conn.execute(
+            "select count(*) from project_backlog_items where project_id = ?",
+            (self.project_id,),
+        ).fetchone()[0]
+
+        self.assertEqual(first.decision, "generate")
+        self.assertEqual(backlog_count, 1)
+        self.assertIn(second.decision, {"wait", "generate"})
+
+    @mock.patch("local_cli_coordinator.loop_autonomy.run_commander", create=True)
+    def test_no_task_commander_response_records_wait_reason(
+        self,
+        mock_run_commander: mock.MagicMock,
+    ) -> None:
+        """Commander responses without task proposals record a concrete wait reason."""
+        mock_run_commander.return_value = make_commander_run_result(
+            make_commander_response(intent="conversation"),
+            tmp_dir=self.tmp,
+        )
+        decision = self._run_iteration(
+            config=self._autonomy_config(),
+            max_evaluations=0,
+            max_admissions=0,
+        )
+        self.assertEqual(decision.decision, "wait")
+        self.assertEqual(
+            decision.reason,
+            "no backlog ready and Commander generated no tasks",
+        )

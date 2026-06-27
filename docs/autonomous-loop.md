@@ -19,6 +19,12 @@ Each autonomous iteration (one tick) follows this decision order:
 
 Every iteration records its decision and reason in `loop_iterations`.
 
+## Self-sustaining generation
+
+When autonomy is enabled and an active goal has no ready backlog, Coordinator
+asks Commander for up to N small task proposals. These proposals become backlog
+items first. They are not admitted as worker tasks until a later loop iteration.
+
 ## Configuration
 
 ### Per-repo opt-in
@@ -40,9 +46,19 @@ max_iterations_per_tick = 1              # iterations per supervisor tick
 max_evaluations_per_iteration = 3        # terminal tasks to evaluate
 max_admissions_per_iteration = 1         # backlog items to admit
 max_generated_backlog_per_iteration = 3  # Commander proposals to request
+commander_generation_timeout_seconds = 45
 wait_when_running = true                 # wait if serial task is running
 require_evaluation_before_followup = true
 pause_after_consecutive_failures = 3     # pause goal after N fails
+```
+
+Per-repo opt-in (required even when global autonomy is enabled):
+
+```toml
+# repos.toml
+[[repos]]
+path = "/Users/xiafan/polymarket-crypto-threshold"
+autonomy_enabled = true
 ```
 
 ## Backlog
@@ -79,6 +95,21 @@ Terminal tasks (done/failed/blocked) get exactly one evaluation per evaluator
 | `/backlog` | `project.backlog` | Latest backlog items with status |
 | `/evals` | `project.evaluations` | Latest task evaluations |
 | `/loop step` | `project.loop.step` | Run one bounded iteration |
+
+Operator examples:
+
+```bash
+coordinator --print -p "/loop"
+coordinator --print -p "/loop step"
+coordinator --print -p "/backlog"
+```
+
+After Commander generation, `/loop` may show:
+
+```text
+Loop status [proj-example]
+  last: generate — generated 1 backlog draft(s)
+```
 
 ## Failure modes
 

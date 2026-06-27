@@ -280,3 +280,44 @@ class BacklogPromoteTests(unittest.TestCase):
             max_items=2,
         )
         self.assertEqual(len(task_ids), 2)
+
+    def test_duplicate_insert_race_is_idempotent(self) -> None:
+        """Concurrent dedupe races skip duplicate open backlog inserts safely."""
+        from unittest import mock
+
+        from local_cli_coordinator.autonomous_backlog import (
+            BacklogDraft,
+            propose_backlog_items,
+        )
+
+        draft = BacklogDraft(
+            source="commander",
+            title="Race-safe backlog item",
+            rationale="r",
+            acceptance_criteria=["c"],
+            verification_commands=[],
+        )
+        first_ids = propose_backlog_items(
+            self.conn,
+            project_id=self.project_id,
+            goal_id=self.goal_id,
+            drafts=[draft],
+        )
+        with mock.patch(
+            "local_cli_coordinator.autonomous_backlog.open_backlog_exists",
+            return_value=False,
+        ):
+            second_ids = propose_backlog_items(
+                self.conn,
+                project_id=self.project_id,
+                goal_id=self.goal_id,
+                drafts=[draft],
+            )
+        backlog_count = self.conn.execute(
+            "select count(*) from project_backlog_items where project_id = ?",
+            (self.project_id,),
+        ).fetchone()[0]
+
+        self.assertEqual(len(first_ids), 1)
+        self.assertEqual(second_ids, [])
+        self.assertEqual(backlog_count, 1)
