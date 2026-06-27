@@ -702,8 +702,16 @@ def _cmd_supervisor_start(args: argparse.Namespace) -> int:
     paths = resolve_runtime_paths()
     paths.create()
     if not args.foreground:
-        from .supervisor_process import SupervisorReadinessError, ensure_supervisor
+        from .supervisor_process import (
+            SupervisorReadinessError,
+            ensure_supervisor,
+            missing_config_file,
+        )
 
+        missing = missing_config_file(paths)
+        if missing is not None:
+            print(f"error: missing config file: {missing}", file=sys.stderr)
+            return 1
         try:
             result = ensure_supervisor(paths)
         except SupervisorReadinessError as exc:

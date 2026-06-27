@@ -29,6 +29,16 @@ DEFAULT_POLL_INTERVAL = 0.1
 DEFAULT_SHUTDOWN_TIMEOUT = 30.0
 STARTUP_LOCK_NAME = "supervisor-startup.lock"
 SUPERVISOR_LOG_NAME = "supervisor.log"
+REQUIRED_CONFIG_FILES = ("agents.toml", "repos.toml", "policy.toml")
+
+
+def missing_config_file(paths: RuntimePaths) -> Path | None:
+    """Return the first missing required config file path, if any."""
+    for name in REQUIRED_CONFIG_FILES:
+        path = paths.config_dir / name
+        if not path.is_file():
+            return path
+    return None
 
 
 class SupervisorProcessError(RuntimeError):
@@ -341,6 +351,9 @@ def ensure_supervisor(
 ) -> EnsureSupervisorResult:
     """Attach to a running Supervisor or start one detached process."""
     paths.create()
+    missing = missing_config_file(paths)
+    if missing is not None:
+        raise SupervisorReadinessError(f"missing config file: {missing}")
 
     result = _supervisor_ping_result(paths)
     if result is not None:

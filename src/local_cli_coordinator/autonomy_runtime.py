@@ -91,6 +91,17 @@ def run_project_autonomy(
                     "goal_id": decision.goal_id,
                 },
             )
+        for backlog_id in decision.generated_backlog_ids:
+            broker.publish(
+                conn,
+                project_id,
+                "backlog.item",
+                {
+                    "action": "generated",
+                    "backlog_id": backlog_id,
+                    "goal_id": decision.goal_id,
+                },
+            )
         if decision.evaluated_count > 0:
             rows = conn.execute(
                 """
@@ -172,10 +183,16 @@ def build_loop_status_payload(
                 "decision": last_iteration["decision"],
                 "reason": last_iteration["reason"],
                 "started_at": last_iteration["started_at"],
+                "generated_count": last_iteration["generated_count"],
             }
             if last_iteration is not None
             else None
         ),
+        "generation": {
+            "enabled": config.autonomy.enabled,
+            "max_per_iteration": config.autonomy.max_generated_backlog_per_iteration,
+            "timeout_seconds": config.autonomy.commander_generation_timeout_seconds,
+        },
         "backlog_counts": backlog_counts,
         "unevaluated_terminal_count": unevaluated,
         "caps": {
