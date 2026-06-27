@@ -10,22 +10,25 @@ from unittest import TestCase
 
 from local_cli_coordinator.config import (
     AgentConfig,
+    AutonomyConfig,
     CoordinatorConfig,
     DaemonPolicyConfig,
     PolicyConfig,
     RepoConfig,
 )
 from local_cli_coordinator.db import connect, init_db, create_task, project_task_counts
+from local_cli_coordinator.goals import create_goal, transition_goal
+from local_cli_coordinator.projects import inspect_project, register_project
 from local_cli_coordinator.supervisor import MultiProjectSupervisor
 from local_cli_coordinator.supervisor_scheduler import FairProjectScheduler
 from local_cli_coordinator.supervisor_events import EventBroker
 from local_cli_coordinator.supervisor_capacity import SharedCapacity
 from local_cli_coordinator.supervisor_methods import SupervisorMethods
 from local_cli_coordinator.runtime_paths import RuntimePaths
-from tests.helpers import ROOT, SRC
+from tests.helpers import ROOT, SRC, init_git_repo
 
 
-def _test_config(tmp: Path) -> CoordinatorConfig:
+def _test_config(tmp: Path, *, autonomy_enabled: bool = False) -> CoordinatorConfig:
     repo = tmp / "repo"
     repo.mkdir(exist_ok=True)
     return CoordinatorConfig(
@@ -48,8 +51,10 @@ def _test_config(tmp: Path) -> CoordinatorConfig:
                 merge_policy="no_push",
                 verify_commands=[],
                 review_policy="tests_only",
+                autonomy_enabled=autonomy_enabled,
             ),
         },
+        autonomy=AutonomyConfig(enabled=autonomy_enabled),
         policy=PolicyConfig(
             require_single_repo=True,
             require_acceptance_criteria=False,
@@ -123,6 +128,77 @@ class MultiProjectSupervisorTest(TestCase):
         sup = _make_supervisor(self.root, ["proj-a"])
         sup.request_shutdown()
         self.assertTrue(sup.is_shutdown_requested())
+
+    def test_active_autonomous_run_makes_project_runnable_without_ready_task(self) -> None:
+        """A project with an active run session must be scheduled even with no ready tasks."""
+        from local_cli_coordinator.autonomous_runs import (
+            AutonomousRunOptions,
+            start_run_session,
+        )
+
+        repo = self.root / "repo"
+        repo.mkdir(exist_ok=True)
+        init_git_repo(repo)
+        paths = RuntimePaths(self.root / "config", self.root / "data", self.root / "state")
+        paths.create()
+        conn = connect(paths.database)
+        init_db(conn)
+        draft = inspect_project(repo)
+        register_project(conn, draft, confirmed=True)
+        project_id = conn.execute("select id from projects limit 1").fetchone()["id"]
+        goal_id = create_goal(conn, "Autonomous run goal", "test", project_id=project_id)
+        transition_goal(conn, goal_id, "active")
+        create_task(
+            conn,
+            title="done-task",
+            repo="demo",
+            source_path="x",
+            priority="normal",
+            capabilities=["code"],
+            goal="g",
+            acceptance_criteria=["a"],
+            verification_commands=[],
+            project_id=project_id,
+            state="done",
+        )
+        start_run_session(
+            conn,
+            project_id=project_id,
+            goal_id=goal_id,
+            options=AutonomousRunOptions(idle_backoff_seconds=0),
+        )
+        conn.commit()
+        conn.close()
+
+        config = _test_config(self.root, autonomy_enabled=True)
+        scheduler = FairProjectScheduler([project_id])
+        broker = EventBroker()
+        capacity = SharedCapacity(max_global_running=4, max_per_project=2)
+        methods = SupervisorMethods(broker=broker)
+        sup = MultiProjectSupervisor(
+            paths=paths,
+            scheduler=scheduler,
+            broker=broker,
+            capacity=capacity,
+            methods=methods,
+            config=config,
+        )
+
+        sup.tick()
+        sup.join_workers(timeout=5.0)
+
+        conn = connect(paths.database)
+        init_db(conn)
+        run_steps = conn.execute(
+            "select count(*) from autonomous_run_steps where project_id = ?",
+            (project_id,),
+        ).fetchone()[0]
+        loop_iterations = conn.execute(
+            "select count(*) from loop_iterations where project_id = ?",
+            (project_id,),
+        ).fetchone()[0]
+        conn.close()
+        self.assertGreater(run_steps + loop_iterations, 0)
 
 
 class MultiProjectSupervisorCliTest(TestCase):

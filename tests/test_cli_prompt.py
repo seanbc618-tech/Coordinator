@@ -396,7 +396,62 @@ class CliConfigRedTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# 7. Legacy chat regression — existing path must not break
+# 7. Phase 6C loop run slash mapping
+# ---------------------------------------------------------------------------
+
+class CliLoopRunSlashTests(unittest.TestCase):
+    """/loop start|stop|run map to autonomous run Supervisor RPCs."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self.tmp.name)
+        self.repo = self.home / "repo"
+        init_git_repo(self.repo)
+
+        self.paths = RuntimePaths(self.home / "config", self.home / "data", self.home / "state")
+        self.paths.create()
+
+        self.conn = connect(self.paths.database)
+        init_db(self.conn)
+        draft = inspect_project(self.repo)
+        register_project(self.conn, draft, confirmed=True)
+        self.conn.commit()
+
+        goal_id = create_goal(self.conn, "Loop run goal", "test", project_id=self.conn.execute(
+            "select id from projects limit 1"
+        ).fetchone()["id"])
+        self.conn.execute("update goals set status = 'active' where id = ?", (goal_id,))
+        self.conn.commit()
+
+        self.server = FakeSupervisor(str(self.paths.socket))
+        self.server.start()
+
+    def tearDown(self) -> None:
+        self.server.stop()
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def test_loop_start_slash_maps_to_project_loop_start(self) -> None:
+        _run_cli_with_home(self.home, "--mode", "rpc", "-p", "/loop start", cwd=self.repo)
+        methods = [m for m, _ in self.server.drain_requests()]
+        self.assertIn("project.loop.start", methods)
+
+    def test_loop_stop_slash_maps_to_project_loop_stop(self) -> None:
+        _run_cli_with_home(self.home, "--mode", "rpc", "-p", "/loop stop", cwd=self.repo)
+        requests = self.server.drain_requests()
+        methods = [m for m, _ in requests]
+        self.assertIn("project.loop.stop", methods)
+        stop_requests = [p for m, p in requests if m == "project.loop.stop"]
+        self.assertEqual(stop_requests[0].get("reason"), "operator stop")
+
+    def test_loop_run_status_slash_maps_to_project_loop_run_status(self) -> None:
+        _run_cli_with_home(self.home, "--mode", "rpc", "-p", "/loop run", cwd=self.repo)
+        methods = [m for m, _ in self.server.drain_requests()]
+        self.assertIn("project.loop.run.status", methods)
+
+
+# ---------------------------------------------------------------------------
+# 8. Legacy chat regression — existing path must not break
 # ---------------------------------------------------------------------------
 
 class CliLegacyChatRegressionTests(unittest.TestCase):
