@@ -30,7 +30,7 @@ happens on a later loop tick via `promote_next_backlog_item()`.
 | Commit | Message |
 |--------|---------|
 | `7669d81` | `test: capture Phase 6B self-sustaining generation contracts` |
-| `c77c1d4` | `docs: document Phase 6B self-sustaining autonomy` |
+| `9dd68e0` | `docs: document Phase 6B self-sustaining autonomy` |
 
 ## Red test suites
 
