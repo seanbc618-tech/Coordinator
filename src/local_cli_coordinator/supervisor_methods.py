@@ -20,8 +20,16 @@ from .autonomy_runtime import (
     build_backlog_payload,
     build_evaluations_payload,
     build_loop_status_payload,
+    build_run_status_payload,
     project_autonomy_enabled,
     run_project_autonomy,
+    start_project_autonomy_run,
+)
+from .autonomous_runs import (
+    pause_run_session,
+    resume_run_session,
+    run_snapshot_to_payload,
+    stop_run_session,
 )
 from .commander_service import confirm_goal, create_and_preview_goal
 from .config import CoordinatorConfig, RepoConfig
@@ -209,6 +217,11 @@ class SupervisorMethods:
             "project.backlog": self._handle_project_backlog,
             "project.evaluations": self._handle_project_evaluations,
             "project.loop.step": self._handle_project_loop_step,
+            "project.loop.start": self._handle_project_loop_start,
+            "project.loop.stop": self._handle_project_loop_stop,
+            "project.loop.pause": self._handle_project_loop_pause,
+            "project.loop.resume": self._handle_project_loop_resume,
+            "project.loop.run.status": self._handle_project_loop_run_status,
             "events.subscribe": self._handle_events_subscribe,
             "events.replay": self._handle_events_replay,
         }
@@ -842,6 +855,82 @@ class SupervisorMethods:
                 goal_id=parsed_goal_id,
             ),
         )
+
+    def _handle_project_loop_start(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        if self._config is None:
+            return self._error(request, "supervisor config is unavailable")
+        try:
+            payload = start_project_autonomy_run(
+                conn,
+                project_id=project_id,
+                config=self._config,
+                params=request.params,
+            )
+        except ValueError as exc:
+            return self._error(request, str(exc))
+        return self._ok(request, payload)
+
+    def _handle_project_loop_stop(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        reason = str(request.params.get("reason", "operator stop"))
+        try:
+            session = stop_run_session(conn, project_id=project_id, reason=reason)
+        except ValueError as exc:
+            return self._error(request, str(exc))
+        conn.commit()
+        return self._ok(
+            request,
+            {"project_id": project_id, "run": run_snapshot_to_payload(session)},
+        )
+
+    def _handle_project_loop_pause(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        try:
+            session = pause_run_session(conn, project_id=project_id)
+        except ValueError as exc:
+            return self._error(request, str(exc))
+        conn.commit()
+        return self._ok(
+            request,
+            {"project_id": project_id, "run": run_snapshot_to_payload(session)},
+        )
+
+    def _handle_project_loop_resume(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        try:
+            session = resume_run_session(conn, project_id=project_id)
+        except ValueError as exc:
+            return self._error(request, str(exc))
+        conn.commit()
+        return self._ok(
+            request,
+            {"project_id": project_id, "run": run_snapshot_to_payload(session)},
+        )
+
+    def _handle_project_loop_run_status(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        return self._ok(request, build_run_status_payload(conn, project_id=project_id))
 
     def _handle_project_loop_step(
         self, conn: sqlite3.Connection, request: RequestEnvelope

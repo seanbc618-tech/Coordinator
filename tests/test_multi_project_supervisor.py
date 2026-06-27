@@ -148,18 +148,14 @@ class MultiProjectSupervisorTest(TestCase):
         project_id = conn.execute("select id from projects limit 1").fetchone()["id"]
         goal_id = create_goal(conn, "Autonomous run goal", "test", project_id=project_id)
         transition_goal(conn, goal_id, "active")
-        create_task(
+        from tests.helpers import insert_terminal_task
+
+        insert_terminal_task(
             conn,
+            task_id="task-done-001",
             title="done-task",
-            repo="demo",
-            source_path="x",
-            priority="normal",
-            capabilities=["code"],
-            goal="g",
-            acceptance_criteria=["a"],
-            verification_commands=[],
-            project_id=project_id,
             state="done",
+            project_id=project_id,
         )
         start_run_session(
             conn,
@@ -168,7 +164,6 @@ class MultiProjectSupervisorTest(TestCase):
             options=AutonomousRunOptions(idle_backoff_seconds=0),
         )
         conn.commit()
-        conn.close()
 
         config = _test_config(self.root, autonomy_enabled=True)
         scheduler = FairProjectScheduler([project_id])
@@ -187,16 +182,17 @@ class MultiProjectSupervisorTest(TestCase):
         sup.tick()
         sup.join_workers(timeout=5.0)
 
-        conn = connect(paths.database)
-        init_db(conn)
-        run_steps = conn.execute(
+        verify_conn = connect(paths.database)
+        init_db(verify_conn)
+        run_steps = verify_conn.execute(
             "select count(*) from autonomous_run_steps where project_id = ?",
             (project_id,),
         ).fetchone()[0]
-        loop_iterations = conn.execute(
+        loop_iterations = verify_conn.execute(
             "select count(*) from loop_iterations where project_id = ?",
             (project_id,),
         ).fetchone()[0]
+        verify_conn.close()
         conn.close()
         self.assertGreater(run_steps + loop_iterations, 0)
 

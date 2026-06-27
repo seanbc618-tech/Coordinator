@@ -446,6 +446,11 @@ class FakeSupervisor:
             "project.backlog",
             "project.evaluations",
             "project.loop.step",
+            "project.loop.start",
+            "project.loop.stop",
+            "project.loop.pause",
+            "project.loop.resume",
+            "project.loop.run.status",
         ):
             self._handle_operational_rpc(
                 conn,
@@ -578,6 +583,11 @@ class FakeSupervisor:
                 "project.backlog",
                 "project.evaluations",
                 "project.loop.step",
+                "project.loop.start",
+                "project.loop.stop",
+                "project.loop.pause",
+                "project.loop.resume",
+                "project.loop.run.status",
             ):
                 from local_cli_coordinator.config_runtime import load_config_for_paths
                 from local_cli_coordinator.supervisor_methods import SupervisorMethods

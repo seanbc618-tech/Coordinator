@@ -14,7 +14,11 @@ from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as Futur
 from contextlib import contextmanager
 from typing import Any, Generator
 
-from .autonomy_runtime import project_autonomy_enabled, run_project_autonomy
+from .autonomous_runs import project_has_runnable_run_session
+from .autonomy_runtime import (
+    project_autonomy_enabled,
+    run_project_autonomy_session,
+)
 from .config import CoordinatorConfig
 from .db import (
     claim_project_ready_task,
@@ -109,18 +113,15 @@ class MultiProjectSupervisor:
 
         try:
             with self._get_conn() as conn:
-                if project_autonomy_enabled(
-                    conn, project_id=project_id, config=self._config
-                ):
-                    run_project_autonomy(
-                        conn,
-                        project_id=project_id,
-                        config=self._config,
-                        paths=self._paths,
-                        broker=self._broker,
-                        paused_projects=self._paused,
-                        stopped_projects=self._stopped,
-                    )
+                run_project_autonomy_session(
+                    conn,
+                    project_id=project_id,
+                    config=self._config,
+                    paths=self._paths,
+                    broker=self._broker,
+                    paused_projects=self._paused,
+                    stopped_projects=self._stopped,
+                )
 
                 task, agent_id = claim_project_ready_task(
                     conn, project_id, self._config
@@ -259,7 +260,13 @@ class MultiProjectSupervisor:
         with self._get_conn() as conn:
             if self._capacity.active_count() >= self._executor._max_workers:
                 return False
-            return project_is_runnable(conn, self._config, project_id)
+            if project_is_runnable(conn, self._config, project_id):
+                return True
+            if not project_autonomy_enabled(
+                conn, project_id=project_id, config=self._config
+            ):
+                return False
+            return project_has_runnable_run_session(conn, project_id=project_id)
 
     def _refresh_projects(self) -> None:
         """Discover new projects from tasks and the projects registry."""

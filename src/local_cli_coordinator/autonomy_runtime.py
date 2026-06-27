@@ -9,11 +9,17 @@ from typing import Any
 
 from .autonomous_loop_db import list_backlog_items
 from .autonomous_runs import (
+    AutonomousRunOptions,
     get_active_run_session,
+    pause_run_session,
     project_has_runnable_run_session,
     record_run_step,
+    resume_run_session,
     run_snapshot_to_payload,
+    start_run_session,
+    stop_run_session,
 )
+from .autonomous_loop_db import active_goal_row
 from .config import CoordinatorConfig, RepoConfig
 from .loop_autonomy import LoopDecision, run_autonomous_iteration
 from .projects import get_project
@@ -273,6 +279,62 @@ def run_project_autonomy_session(
     return [decision]
 
 
+def _parse_run_options(params: dict[str, Any]) -> AutonomousRunOptions:
+    return AutonomousRunOptions(
+        max_iterations=int(params.get("max_iterations", 100)),
+        max_runtime_seconds=int(params.get("max_runtime_seconds", 28800)),
+        idle_backoff_seconds=int(params.get("idle_backoff_seconds", 30)),
+        max_idle_iterations=int(params.get("max_idle_iterations", 12)),
+        mode=str(params.get("mode", "continuous")),
+    )
+
+
+def build_run_status_payload(
+    conn: sqlite3.Connection,
+    *,
+    project_id: str,
+) -> dict[str, Any]:
+    active_run = get_active_run_session(conn, project_id=project_id)
+    return {
+        "project_id": project_id,
+        "run": (
+            run_snapshot_to_payload(active_run)
+            if active_run is not None
+            else None
+        ),
+    }
+
+
+def start_project_autonomy_run(
+    conn: sqlite3.Connection,
+    *,
+    project_id: str,
+    config: CoordinatorConfig,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    force = bool(params.get("force", False))
+    enabled = project_autonomy_enabled(conn, project_id=project_id, config=config)
+    if not enabled and not force:
+        raise ValueError(
+            "autonomy is disabled for this project; pass force=true to override"
+        )
+    goal = active_goal_row(conn, project_id=project_id)
+    if goal is None:
+        raise ValueError("project has no active goal")
+    session = start_run_session(
+        conn,
+        project_id=project_id,
+        goal_id=int(goal["id"]),
+        options=_parse_run_options(params),
+        started_by=str(params.get("started_by", "operator")),
+    )
+    conn.commit()
+    return {
+        "project_id": project_id,
+        "run": run_snapshot_to_payload(session),
+    }
+
+
 def build_loop_status_payload(
     conn: sqlite3.Connection,
     *,
@@ -309,9 +371,15 @@ def build_loop_status_payload(
             next_action = "review generated backlog"
         else:
             next_action = decision
+    active_run = get_active_run_session(conn, project_id=project_id)
     return {
         "project_id": project_id,
         "autonomy_enabled": enabled,
+        "run": (
+            run_snapshot_to_payload(active_run)
+            if active_run is not None
+            else None
+        ),
         "goal": (
             {
                 "id": goal_id,
