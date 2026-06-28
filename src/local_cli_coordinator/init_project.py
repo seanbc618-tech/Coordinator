@@ -335,7 +335,6 @@ def apply_init_plan(paths: RuntimePaths, plan: dict[str, Any]) -> list[str]:
 
 def run_init_command(args: argparse.Namespace) -> int:
     paths = resolve_runtime_paths()
-    paths.create()
     json_mode = getattr(args, "json", False)
     dry_run = getattr(args, "dry_run", False)
     yes = getattr(args, "yes", False)
@@ -399,6 +398,7 @@ def run_init_command(args: argparse.Namespace) -> int:
         print(hint, file=sys.stderr)
         return 1
 
+    paths.create()
     try:
         written = apply_init_plan(paths, plan)
     except InitProjectError as exc:

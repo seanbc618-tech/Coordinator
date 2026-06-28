@@ -81,6 +81,27 @@ class InitProjectRedTests(unittest.TestCase):
         self.assertEqual(data["command"], "init")
         self.assertFalse((self.paths.config_dir / "repos.toml").exists())
 
+    def test_init_dry_run_json_does_not_create_coordinator_home(self) -> None:
+        fresh_home = Path(self.tmp.name) / "fresh-coordinator-home"
+        self.assertFalse(fresh_home.exists())
+        result = _run_cli_with_home(
+            fresh_home, "init", "--dry-run", "--json", cwd=self.repo
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout)
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["command"], "init")
+        if fresh_home.exists():
+            self.assertEqual(list(fresh_home.iterdir()), [])
+
+        empty_home = Path(self.tmp.name) / "empty-coordinator-home"
+        empty_home.mkdir()
+        result = _run_cli_with_home(
+            empty_home, "init", "--dry-run", "--json", cwd=self.repo
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(list(empty_home.iterdir()), [])
+
     def test_init_refuses_non_git_directory(self) -> None:
         not_git = Path(self.tmp.name) / "not-git"
         not_git.mkdir()
