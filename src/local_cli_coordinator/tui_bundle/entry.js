@@ -39392,6 +39392,16 @@ function formatHelpText() {
       lines.push("/dashboard - Multi-project task counts (no titles)");
       continue;
     }
+    if (cmd.name === "/loop") {
+      lines.push("/loop - Loop status");
+      lines.push("/loop step - Run one bounded iteration");
+      lines.push("/loop start - Start unattended autonomous run");
+      lines.push("/loop stop - Stop active autonomous run");
+      lines.push("/loop pause - Pause active autonomous run");
+      lines.push("/loop resume - Resume paused autonomous run");
+      lines.push("/loop run - Show active run status");
+      continue;
+    }
     lines.push(`${cmd.name} - ${cmd.description}`);
   }
   return lines.join("\n");
@@ -39414,6 +39424,7 @@ var init_slash = __esm({
       { name: "/retry", description: "Retry a failed task", method: "project.task.retry" },
       { name: "/cancel", description: "Cancel a running task", method: "project.task.cancel", destructive: true },
       { name: "/dashboard", description: "Show multi-project dashboard", method: "supervisor.dashboard" },
+      { name: "/loop", description: "Autonomous loop status and run controls", method: "project.loop.status" },
       { name: "/logs", description: "Show recent logs", method: "project.logs" },
       { name: "/agents", description: "List active agents", method: "project.agents" },
       { name: "/pause", description: "Pause project scheduling", method: "project.pause" },
@@ -39433,6 +39444,7 @@ var init_slash = __esm({
       "/approve",
       "/retry",
       "/dashboard",
+      "/loop",
       "/cancel",
       "/logs",
       "/quit"
@@ -39715,6 +39727,63 @@ function buildSlashRpc(commandName, method, args) {
       displayMethod: "project.task"
     };
   }
+  if (commandName === "/loop") {
+    const sub = args.trim().split(/\s+/)[0]?.toLowerCase() ?? "";
+    if (sub === "step") {
+      return {
+        ok: true,
+        method: "project.loop.step",
+        params: { force: true },
+        displayMethod: "project.loop.step"
+      };
+    }
+    if (sub === "start") {
+      return {
+        ok: true,
+        method: "project.loop.start",
+        params: {},
+        displayMethod: "project.loop.start"
+      };
+    }
+    if (sub === "stop") {
+      return {
+        ok: true,
+        method: "project.loop.stop",
+        params: { reason: "operator stop" },
+        displayMethod: "project.loop.stop"
+      };
+    }
+    if (sub === "pause") {
+      return {
+        ok: true,
+        method: "project.loop.pause",
+        params: {},
+        displayMethod: "project.loop.pause"
+      };
+    }
+    if (sub === "resume") {
+      return {
+        ok: true,
+        method: "project.loop.resume",
+        params: {},
+        displayMethod: "project.loop.resume"
+      };
+    }
+    if (sub === "run") {
+      return {
+        ok: true,
+        method: "project.loop.run.status",
+        params: {},
+        displayMethod: "project.loop.run.status"
+      };
+    }
+    return {
+      ok: true,
+      method: "project.loop.status",
+      params: {},
+      displayMethod: "project.loop.status"
+    };
+  }
   if (method === "project.task.approve" || method === "project.task.retry" || method === "project.task.cancel") {
     const taskId = args.trim();
     if (!taskId) {
@@ -39876,13 +39945,41 @@ function formatSlashResponse(method, result) {
 --- supervisor log ---
 ${logText}`;
     }
+    case "project.loop.status":
+    case "project.loop.run.status": {
+      const run = result.run;
+      if (!run) {
+        return `Loop [${result.project_id}] \u2014 run: none`;
+      }
+      return `Loop [${result.project_id}] \u2014 run: ${run.status} ${run.id}, iterations=${run.iteration_count ?? 0}, idle=${run.idle_iteration_count ?? 0}`;
+    }
+    case "project.loop.step": {
+      return `Loop step \u2014 ${result.decision}: ${result.reason}`;
+    }
+    case "project.loop.start":
+    case "project.loop.stop":
+    case "project.loop.pause":
+    case "project.loop.resume": {
+      const run = result.run;
+      if (!run) {
+        return `Loop run [${result.project_id}] \u2014 run: none`;
+      }
+      return `Loop run [${result.project_id}] \u2014 ${run.status} ${run.id}, iterations=${run.iteration_count ?? 0}, idle=${run.idle_iteration_count ?? 0}`;
+    }
     case "supervisor.dashboard": {
       const projects = result.projects ?? [];
+      const runs = result.autonomous_runs;
       if (!projects.length) {
         return "Dashboard \u2014 (no projects)";
       }
+      const lines = ["Dashboard:"];
+      if (runs) {
+        lines.push(
+          `autonomous_runs: running=${runs.running ?? 0} paused=${runs.paused ?? 0} stopped=${runs.stopped ?? 0}`
+        );
+      }
       return [
-        "Dashboard:",
+        ...lines,
         ...projects.map((entry) => {
           const counts = entry.task_counts ?? {};
           const countText = Object.keys(counts).length ? Object.entries(counts).map(([k, v]) => `${k}=${v}`).join(", ") : "none";

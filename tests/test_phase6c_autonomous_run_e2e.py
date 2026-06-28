@@ -287,6 +287,7 @@ class AutonomousRunRestartTests(unittest.TestCase):
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait(timeout=2.0)
+            self._close_process_streams(process)
         self.conn.close()
         if self._orig_home is not None:
             os.environ["COORDINATOR_HOME"] = self._orig_home
@@ -295,6 +296,15 @@ class AutonomousRunRestartTests(unittest.TestCase):
         import shutil
 
         shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _close_process_streams(self, process: subprocess.Popen[str]) -> None:
+        for stream in (process.stdout, process.stderr, process.stdin):
+            if stream is None:
+                continue
+            try:
+                stream.close()
+            except OSError:
+                pass
 
     def _wait_for_supervisor(self, timeout: float = 10.0) -> None:
         from local_cli_coordinator.supervisor_process import ping_supervisor
