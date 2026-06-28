@@ -7,8 +7,8 @@ Plan: `docs/superpowers/plans/2026-06-28-phase6c-autonomous-run-controller.md`
 ## Status
 
 **Grok Tasks 0–6:** complete
-**Gemini adversarial review:** pending (`docs/superpowers/handoffs/2026-06-28-phase6c-gemini-review.md`)
-**Codex Gate F:** blocked until Gemini returns PASS
+**Gemini adversarial review:** PASS (`docs/superpowers/handoffs/2026-06-28-phase6c-gemini-review.md`)
+**Codex Gate F:** PASS (`docs/superpowers/handoffs/2026-06-28-phase6c-codex-signoff.md`)
 
 ## Commits
 
@@ -20,7 +20,8 @@ Plan: `docs/superpowers/plans/2026-06-28-phase6c-autonomous-run-controller.md`
 | `8311ee6` | `feat: control autonomous run sessions from Supervisor` |
 | `9cdee2a` | `feat: expose autonomous run controls in CLI and TUI` |
 | `3893c40` | `test: verify autonomous run restart persistence` |
-| Task 6 HEAD | `docs: document Phase 6C autonomous run controller` |
+| `35bdbad` | `docs: document Phase 6C autonomous run controller` |
+| `36ed117` | `fix: clean up Phase 6C gate artifacts` |
 
 ## Focused verification (Grok)
 
@@ -96,7 +97,30 @@ COORDINATOR_HOME="$tmpdir/home" "$tmpdir/venv/bin/coordinator" --print -p "/loop
 COORDINATOR_HOME="$tmpdir/home" "$tmpdir/venv/bin/coordinator" --print -p "/loop stop"
 ```
 
-Smoke output: pending Codex Gate F (installed wheel, no `PYTHONPATH`).
+Codex Gate F note: `/loop start` requires an active goal. The final clean-wheel
+smoke therefore creates an active goal using the installed wheel's Python API
+after project registration, still with `PYTHONPATH` unset.
+
+Smoke output:
+
+```text
+registered: proj-7a3c983acbc5
+canonical_path: /Users/xiafan/polymarket-crypto-threshold
+goal 1 active for proj-7a3c983acbc5
+Loop status [proj-7a3c983acbc5]
+  autonomy: on
+  unevaluated terminal: 0
+  backlog: empty
+  next: wait
+  goal: Gate F clean-wheel smoke (active)
+  run: none
+Run status [proj-7a3c983acbc5]
+  run: running run-1fed1cae4f07, iterations=0, idle=0
+Run status [proj-7a3c983acbc5]
+  run: running run-1fed1cae4f07, iterations=0, idle=0
+Run status [proj-7a3c983acbc5]
+  run: stopped run-1fed1cae4f07, iterations=0, idle=0
+```
 
 ## Known P2 limitations
 
@@ -106,4 +130,4 @@ Smoke output: pending Codex Gate F (installed wheel, no `PYTHONPATH`).
 
 ## Next step
 
-Gemini completes adversarial review in `2026-06-28-phase6c-gemini-review.md`, then Codex runs Gate F sign-off.
+Phase 6C is ready for merge after normal branch hygiene and push/PR review.
