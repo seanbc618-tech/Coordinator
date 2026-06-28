@@ -271,3 +271,21 @@ def assert_event_cursors_monotonic(events: list[EventEnvelope]) -> None:
                 "event cursors must increase monotonically per project"
             )
         last_by_project[event.project_id] = event.cursor
+
+
+def assert_event_seq_monotonic(events: list[dict[str, Any]]) -> None:
+    """Validate schema-v2 ``seq`` values increase per project."""
+    last_by_project: dict[str, int] = {}
+    for event in events:
+        project_id = event.get("project_id")
+        seq = event.get("seq")
+        if not isinstance(project_id, str) or not project_id.strip():
+            raise ProtocolError("project_id must be a non-blank string")
+        if not isinstance(seq, int) or isinstance(seq, bool):
+            raise ProtocolError("seq must be an integer")
+        previous = last_by_project.get(project_id)
+        if previous is not None and seq <= previous:
+            raise ProtocolError(
+                "event seq must increase monotonically per project"
+            )
+        last_by_project[project_id] = seq

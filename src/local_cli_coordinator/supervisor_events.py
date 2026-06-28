@@ -54,6 +54,15 @@ class EventBroker:
             event_type=event_type,
             payload=payload,
         )
+        from .event_schema_v2 import mirror_legacy_event
+
+        mirror_legacy_event(
+            conn,
+            project_id=project_id,
+            legacy_event_type=event_type,
+            payload=payload,
+            legacy_cursor=cursor,
+        )
 
         envelope = EventEnvelope(
             project_id=project_id,

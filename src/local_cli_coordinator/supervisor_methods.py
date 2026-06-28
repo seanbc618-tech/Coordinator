@@ -224,6 +224,7 @@ class SupervisorMethods:
             "project.loop.run.status": self._handle_project_loop_run_status,
             "events.subscribe": self._handle_events_subscribe,
             "events.replay": self._handle_events_replay,
+            "events.v2.replay": self._handle_events_v2_replay,
         }
 
     def set_paused_ref(self, paused: set[str]) -> None:
@@ -1058,6 +1059,21 @@ class SupervisorMethods:
                 for e in events
             ]
         })
+
+    def _handle_events_v2_replay(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .event_schema_v2 import list_events_v2
+
+        after = request.params.get("after", 0)
+        limit = request.params.get("limit", 100)
+        events = list_events_v2(
+            conn,
+            project_id=request.project_id,
+            after=after,
+            limit=limit,
+        )
+        return self._ok(request, {"events": events})
 
     @staticmethod
     def _ok(request: RequestEnvelope, result: dict[str, Any]) -> ResponseEnvelope:
