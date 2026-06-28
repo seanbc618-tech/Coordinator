@@ -127,6 +127,10 @@ input starts with `/`.
 | `/status` | Show task counts, paused/stopped state |
 | `/tasks` | List project tasks (title, state, goal summary, latest note) |
 | `/task <id>` | Show one task in detail (goal, verify commands, last event, attempt log) |
+| `/plan` | Show active goal, autonomous run, backlog, and next action |
+| `/scan` | Read-only diagnostics (git tree, verify commands, failed tasks, agents) |
+| `/jump <target>` | Resolve a task, log, goal, worktree, or supervisor log path (hint only) |
+| `/open <target>` | Alias of `/jump` (does not launch an editor) |
 | `/logs` | Show recent logs |
 | `/help` | List available commands (local; works offline) |
 | `/agents` | List active agents |

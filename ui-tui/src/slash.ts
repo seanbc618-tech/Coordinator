@@ -19,6 +19,10 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/cancel', description: 'Cancel a running task', method: 'project.task.cancel', destructive: true },
   { name: '/dashboard', description: 'Show multi-project dashboard', method: 'supervisor.dashboard' },
   { name: '/loop', description: 'Autonomous loop status and run controls', method: 'project.loop.status' },
+  { name: '/plan', description: 'Show autonomous plan and next action', method: 'project.plan' },
+  { name: '/scan', description: 'Read-only project diagnostics', method: 'project.scan' },
+  { name: '/jump', description: 'Resolve task, log, or worktree target', method: 'project.jump' },
+  { name: '/open', description: 'Alias of /jump', method: 'project.jump' },
   { name: '/logs', description: 'Show recent logs', method: 'project.logs' },
   { name: '/agents', description: 'List active agents', method: 'project.agents' },
   { name: '/pause', description: 'Pause project scheduling', method: 'project.pause' },
@@ -78,6 +82,10 @@ const HELP_COMMAND_NAMES = new Set([
   '/retry',
   '/dashboard',
   '/loop',
+  '/plan',
+  '/scan',
+  '/jump',
+  '/open',
   '/cancel',
   '/logs',
   '/quit',
@@ -114,6 +122,22 @@ export function formatHelpText(): string {
     }
     if (cmd.name === '/dashboard') {
       lines.push('/dashboard - Multi-project task counts (no titles)')
+      continue
+    }
+    if (cmd.name === '/plan') {
+      lines.push('/plan - Show autonomous plan and next action')
+      continue
+    }
+    if (cmd.name === '/scan') {
+      lines.push('/scan - Read-only project diagnostics')
+      continue
+    }
+    if (cmd.name === '/jump') {
+      lines.push('/jump <task-id|goal|log|worktree> - Resolve a path or hint')
+      lines.push('/open <target> - Alias of /jump')
+      continue
+    }
+    if (cmd.name === '/open') {
       continue
     }
     if (cmd.name === '/loop') {

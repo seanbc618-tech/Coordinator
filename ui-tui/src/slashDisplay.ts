@@ -168,6 +168,43 @@ export function formatSlashResponse(
       return `Task ${result.task_id} -> ${result.state}${terminated}`
     }
 
+    case 'project.plan': {
+      const goal = result.goal as Record<string, unknown> | null | undefined
+      const run = result.run as Record<string, unknown> | null | undefined
+      const backlog = (result.backlog as Record<string, number> | undefined) ?? {}
+      const tasks = (result.tasks as Record<string, number> | undefined) ?? {}
+      const goalText = goal
+        ? `goal ${goal.id} [${goal.status}] ${goal.title}`
+        : 'no goal'
+      const runText = run
+        ? `run ${run.status} (${run.last_decision ?? 'wait'})`
+        : 'run none'
+      return (
+        `Plan — ${goalText}; ${runText}; `
+        + `backlog ready=${backlog.ready ?? 0} blocked=${backlog.blocked ?? 0}; `
+        + `tasks running=${tasks.running ?? 0} failed=${tasks.failed ?? 0}; `
+        + `next: ${String(result.next ?? 'wait')}`
+      )
+    }
+
+    case 'project.scan': {
+      const worktree = (result.working_tree as Record<string, unknown> | undefined) ?? {}
+      const cleanText = worktree.clean ? 'clean' : 'dirty'
+      const verify = (result.verify_commands as string[] | undefined) ?? []
+      const verifyText = verify.length ? verify.join(', ') : '(none)'
+      const activeRun = result.active_run as Record<string, unknown> | null | undefined
+      const runText = activeRun ? `${activeRun.status} (${activeRun.id})` : 'none'
+      return (
+        `Scan — git ${result.git_root_exists ? 'ok' : 'missing'}, `
+        + `tree ${cleanText}, verify: ${verifyText}, `
+        + `failed tasks: ${result.failed_tasks ?? 0}, run: ${runText}`
+      )
+    }
+
+    case 'project.jump': {
+      return String(result.hint ?? result.path ?? '(no target)')
+    }
+
     case 'project.goal': {
       if (typeof result.message === 'string') {
         return result.message

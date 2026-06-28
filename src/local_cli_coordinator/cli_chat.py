@@ -614,6 +614,15 @@ def run_admin_loop_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _parse_jump_slash(text: str) -> tuple[str, dict[str, Any]]:
+    parts = text.strip().split(maxsplit=1)
+    target = parts[1].strip() if len(parts) > 1 else ""
+    params: dict[str, Any] = {"target": target}
+    if parts and parts[0].lower() == "/open":
+        params["alias"] = "open"
+    return params
+
+
 def _parse_loop_slash(text: str) -> tuple[str, dict[str, Any]]:
     parts = text.strip().split()
     sub = parts[1].lower() if len(parts) >= 2 else ""
@@ -871,6 +880,61 @@ def _handle_slash(
             user_reply=reply,
             intent="status_question",
         )
+    if command == "/plan":
+        from .project_operability import format_plan_text
+
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="project.plan",
+            params={},
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=format_plan_text(result),
+            intent="status_question",
+        )
+    if command == "/scan":
+        from .project_operability import format_scan_text
+
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="project.scan",
+            params={},
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=format_scan_text(result),
+            intent="status_question",
+        )
+    if command in {"/jump", "/open"}:
+        from .project_operability import format_jump_text
+
+        params = _parse_jump_slash(text)
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="project.jump",
+            params=params,
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=format_jump_text(result),
+            intent="status_question",
+        )
     return _error_outcome("unknown_slash", f"Unknown command: {command}. Use /help.")
 
 
@@ -1054,6 +1118,36 @@ def _rpc_slash(
         if envelope is not None:
             return envelope, 0 if envelope.ok else 1
         return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/plan":
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="project.plan",
+            params={},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/scan":
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="project.scan",
+            params={},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command in {"/jump", "/open"}:
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="project.jump",
+            params=_parse_jump_slash(text),
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
     outcome = _error_outcome("unknown_slash", f"Unknown command: {command}. Use /help.")
     return _outcome_to_rpc(outcome), 1
 
@@ -1226,6 +1320,62 @@ def run_cli_prompt(args: argparse.Namespace) -> int:
             _emit_rpc(envelope)
             return exit_code
         if args.mode == "json":
+            from .admin_json import emit_envelope, envelope
+
+            slash_command = prompt_text.strip().split()[0].lower()
+            if slash_command == "/plan":
+                result, err, _envelope = _send_rpc(
+                    paths,
+                    project_id=project_id,
+                    method="project.plan",
+                    params={},
+                )
+                if err is not None:
+                    return emit_envelope(
+                        envelope(
+                            command="plan",
+                            ok=False,
+                            errors=[_outcome_to_admin_error(err)],
+                        )
+                    )
+                assert result is not None
+                return emit_envelope(envelope(command="plan", ok=True, data=result))
+            if slash_command == "/scan":
+                result, err, _envelope = _send_rpc(
+                    paths,
+                    project_id=project_id,
+                    method="project.scan",
+                    params={},
+                )
+                if err is not None:
+                    return emit_envelope(
+                        envelope(
+                            command="scan",
+                            ok=False,
+                            errors=[_outcome_to_admin_error(err)],
+                        )
+                    )
+                assert result is not None
+                return emit_envelope(envelope(command="scan", ok=True, data=result))
+            if slash_command in {"/jump", "/open"}:
+                result, err, _envelope = _send_rpc(
+                    paths,
+                    project_id=project_id,
+                    method="project.jump",
+                    params=_parse_jump_slash(prompt_text),
+                )
+                if err is not None:
+                    return emit_envelope(
+                        envelope(
+                            command=slash_command.lstrip("/"),
+                            ok=False,
+                            errors=[_outcome_to_admin_error(err)],
+                        )
+                    )
+                assert result is not None
+                return emit_envelope(
+                    envelope(command=slash_command.lstrip("/"), ok=True, data=result)
+                )
             task_id, action = _parse_task_slash(prompt_text)
             if task_id and action is None:
                 result, err, _envelope = _send_rpc(

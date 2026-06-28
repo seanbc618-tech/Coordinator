@@ -588,13 +588,16 @@ class FakeSupervisor:
                 "project.loop.pause",
                 "project.loop.resume",
                 "project.loop.run.status",
+                "project.plan",
+                "project.scan",
+                "project.jump",
             ):
                 from local_cli_coordinator.config_runtime import load_config_for_paths
                 from local_cli_coordinator.supervisor_methods import SupervisorMethods
                 from local_cli_coordinator.supervisor_protocol import RequestEnvelope
 
                 config = load_config_for_paths(paths)
-                methods = SupervisorMethods(config=config, paths=paths)
+                methods = SupervisorMethods(config=config, paths=paths, broker=None)
                 response = methods.handle(
                     db,
                     RequestEnvelope(

@@ -55,6 +55,43 @@ describe('formatSlashResponse', () => {
     expect(text).toContain('worker line 1')
   })
 
+  it('formats project.plan summary', () => {
+    const text = formatSlashResponse('project.plan', {
+      goal: { id: 1, status: 'active', title: 'Roadmap' },
+      run: { status: 'running', last_decision: 'wait' },
+      backlog: { ready: 2, blocked: 0 },
+      tasks: { running: 1, failed: 0 },
+      next: 'wait for running task',
+    })
+    expect(text).toContain('Plan')
+    expect(text).toContain('goal 1 [active]')
+    expect(text).toContain('failed=0')
+    expect(text).toContain('wait for running task')
+  })
+
+  it('formats project.scan diagnostics', () => {
+    const text = formatSlashResponse('project.scan', {
+      git_root_exists: true,
+      working_tree: { clean: true, changed_files: 0 },
+      verify_commands: ['true'],
+      failed_tasks: 1,
+      active_run: null,
+    })
+    expect(text).toContain('verify')
+    expect(text).toContain('failed tasks: 1')
+  })
+
+  it('formats project.jump hint without editor command', () => {
+    const text = formatSlashResponse('project.jump', {
+      target_type: 'task.log',
+      path: '/tmp/agent.log',
+      hint: 'Task log: /tmp/agent.log',
+    })
+    expect(text).toContain('/tmp/agent.log')
+    expect(text.toLowerCase()).not.toContain('open ')
+    expect(text.toLowerCase()).not.toContain('cursor ')
+  })
+
   it('formats project.goal confirm message', () => {
     const text = formatSlashResponse('project.goal', {
       message: 'goal 3 activated',

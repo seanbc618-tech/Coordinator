@@ -54,7 +54,16 @@ coordinator --print -p "/task <task-id> log"
 coordinator --print -p "/task <task-id> cancel"
 coordinator --print -p "/approve <task-id>"
 coordinator --print -p "/retry <task-id>"
+coordinator --print -p "/plan"
+coordinator --print -p "/scan"
+coordinator --print -p "/jump <task-id> log"
+coordinator --print -p "/open <task-id> log"
+coordinator --mode json -p "/plan"
 ```
+
+Operability slash commands (`/plan`, `/scan`, `/jump`, `/open`) call Supervisor
+RPCs (`project.plan`, `project.scan`, `project.jump`). They are read-only and
+return paths or hints only — no editor or shell is spawned.
 
 Task control notes:
 

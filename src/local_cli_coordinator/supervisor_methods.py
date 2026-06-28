@@ -63,6 +63,11 @@ from .task_control import (
     retry_task,
 )
 from .supervisor_events import EventBroker
+from .project_operability import (
+    build_project_jump_payload,
+    build_project_plan_payload,
+    build_project_scan_payload,
+)
 from .supervisor_process import supervisor_log_path
 from .supervisor_protocol import (
     PROTOCOL_VERSION,
@@ -222,6 +227,9 @@ class SupervisorMethods:
             "project.loop.pause": self._handle_project_loop_pause,
             "project.loop.resume": self._handle_project_loop_resume,
             "project.loop.run.status": self._handle_project_loop_run_status,
+            "project.plan": self._handle_project_plan,
+            "project.scan": self._handle_project_scan,
+            "project.jump": self._handle_project_jump,
             "events.subscribe": self._handle_events_subscribe,
             "events.replay": self._handle_events_replay,
             "events.v2.replay": self._handle_events_v2_replay,
@@ -932,6 +940,63 @@ class SupervisorMethods:
         if not isinstance(project_id, str):
             return project_id
         return self._ok(request, build_run_status_payload(conn, project_id=project_id))
+
+    def _handle_project_plan(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        return self._ok(
+            request,
+            build_project_plan_payload(
+                conn,
+                project_id=project_id,
+                config=self._config,
+            ),
+        )
+
+    def _handle_project_scan(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        if self._paths is None:
+            return self._error(request, "supervisor paths are unavailable")
+        try:
+            payload = build_project_scan_payload(
+                conn,
+                project_id=project_id,
+                paths=self._paths,
+                config=self._config,
+            )
+        except ValueError as exc:
+            return self._error(request, str(exc))
+        return self._ok(request, payload)
+
+    def _handle_project_jump(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        if self._paths is None:
+            return self._error(request, "supervisor paths are unavailable")
+        target = str(request.params.get("target", "")).strip()
+        alias = request.params.get("alias")
+        alias_text = str(alias) if isinstance(alias, str) and alias else None
+        try:
+            payload = build_project_jump_payload(
+                conn,
+                project_id=project_id,
+                target=target,
+                paths=self._paths,
+                alias=alias_text,
+            )
+        except ValueError as exc:
+            return self._error(request, str(exc))
+        return self._ok(request, payload)
 
     def _handle_project_loop_step(
         self, conn: sqlite3.Connection, request: RequestEnvelope

@@ -75,6 +75,32 @@ export function buildSlashRpc(
     }
   }
 
+  if (commandName === '/jump' || commandName === '/open') {
+    const target = args.trim()
+    if (!target) {
+      return { ok: false, error: 'usage: /jump <task-id|goal|log|worktree>' }
+    }
+    const params: Record<string, unknown> = { target }
+    if (commandName === '/open') {
+      params.alias = 'open'
+    }
+    return {
+      ok: true,
+      method: 'project.jump',
+      params,
+      displayMethod: 'project.jump',
+    }
+  }
+
+  if (commandName === '/plan' || commandName === '/scan') {
+    return {
+      ok: true,
+      method,
+      params: {},
+      displayMethod: method,
+    }
+  }
+
   if (commandName === '/loop') {
     const sub = args.trim().split(/\s+/)[0]?.toLowerCase() ?? ''
     if (sub === 'step') {

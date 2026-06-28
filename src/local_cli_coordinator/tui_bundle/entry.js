@@ -39392,6 +39392,22 @@ function formatHelpText() {
       lines.push("/dashboard - Multi-project task counts (no titles)");
       continue;
     }
+    if (cmd.name === "/plan") {
+      lines.push("/plan - Show autonomous plan and next action");
+      continue;
+    }
+    if (cmd.name === "/scan") {
+      lines.push("/scan - Read-only project diagnostics");
+      continue;
+    }
+    if (cmd.name === "/jump") {
+      lines.push("/jump <task-id|goal|log|worktree> - Resolve a path or hint");
+      lines.push("/open <target> - Alias of /jump");
+      continue;
+    }
+    if (cmd.name === "/open") {
+      continue;
+    }
     if (cmd.name === "/loop") {
       lines.push("/loop - Loop status");
       lines.push("/loop step - Run one bounded iteration");
@@ -39425,6 +39441,10 @@ var init_slash = __esm({
       { name: "/cancel", description: "Cancel a running task", method: "project.task.cancel", destructive: true },
       { name: "/dashboard", description: "Show multi-project dashboard", method: "supervisor.dashboard" },
       { name: "/loop", description: "Autonomous loop status and run controls", method: "project.loop.status" },
+      { name: "/plan", description: "Show autonomous plan and next action", method: "project.plan" },
+      { name: "/scan", description: "Read-only project diagnostics", method: "project.scan" },
+      { name: "/jump", description: "Resolve task, log, or worktree target", method: "project.jump" },
+      { name: "/open", description: "Alias of /jump", method: "project.jump" },
       { name: "/logs", description: "Show recent logs", method: "project.logs" },
       { name: "/agents", description: "List active agents", method: "project.agents" },
       { name: "/pause", description: "Pause project scheduling", method: "project.pause" },
@@ -39445,6 +39465,10 @@ var init_slash = __esm({
       "/retry",
       "/dashboard",
       "/loop",
+      "/plan",
+      "/scan",
+      "/jump",
+      "/open",
       "/cancel",
       "/logs",
       "/quit"
@@ -39727,6 +39751,30 @@ function buildSlashRpc(commandName, method, args) {
       displayMethod: "project.task"
     };
   }
+  if (commandName === "/jump" || commandName === "/open") {
+    const target = args.trim();
+    if (!target) {
+      return { ok: false, error: "usage: /jump <task-id|goal|log|worktree>" };
+    }
+    const params = { target };
+    if (commandName === "/open") {
+      params.alias = "open";
+    }
+    return {
+      ok: true,
+      method: "project.jump",
+      params,
+      displayMethod: "project.jump"
+    };
+  }
+  if (commandName === "/plan" || commandName === "/scan") {
+    return {
+      ok: true,
+      method,
+      params: {},
+      displayMethod: method
+    };
+  }
   if (commandName === "/loop") {
     const sub = args.trim().split(/\s+/)[0]?.toLowerCase() ?? "";
     if (sub === "step") {
@@ -40001,6 +40049,27 @@ ${tail}`;
     case "project.task.cancel": {
       const terminated = result.worker_terminated === true ? " (worker stopped)" : "";
       return `Task ${result.task_id} -> ${result.state}${terminated}`;
+    }
+    case "project.plan": {
+      const goal = result.goal;
+      const run = result.run;
+      const backlog = result.backlog ?? {};
+      const tasks = result.tasks ?? {};
+      const goalText = goal ? `goal ${goal.id} [${goal.status}] ${goal.title}` : "no goal";
+      const runText = run ? `run ${run.status} (${run.last_decision ?? "wait"})` : "run none";
+      return `Plan \u2014 ${goalText}; ${runText}; backlog ready=${backlog.ready ?? 0} blocked=${backlog.blocked ?? 0}; tasks running=${tasks.running ?? 0} failed=${tasks.failed ?? 0}; next: ${String(result.next ?? "wait")}`;
+    }
+    case "project.scan": {
+      const worktree = result.working_tree ?? {};
+      const cleanText = worktree.clean ? "clean" : "dirty";
+      const verify = result.verify_commands ?? [];
+      const verifyText = verify.length ? verify.join(", ") : "(none)";
+      const activeRun = result.active_run;
+      const runText = activeRun ? `${activeRun.status} (${activeRun.id})` : "none";
+      return `Scan \u2014 git ${result.git_root_exists ? "ok" : "missing"}, tree ${cleanText}, verify: ${verifyText}, failed tasks: ${result.failed_tasks ?? 0}, run: ${runText}`;
+    }
+    case "project.jump": {
+      return String(result.hint ?? result.path ?? "(no target)");
     }
     case "project.goal": {
       if (typeof result.message === "string") {

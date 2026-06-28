@@ -419,6 +419,38 @@ class ProjectSlashMethodsTest(TestCase):
         self.assertEqual(row["goal"], "Ship slice")
         self.assertEqual(row["latest_note"], "agent command failed")
 
+    def test_project_plan_returns_goal_backlog_and_tasks(self) -> None:
+        goal_id = create_goal(
+            self.conn,
+            "Roadmap",
+            "Finish roadmap",
+            project_id=self.project_id,
+            repo_ids=["demo"],
+        )
+        transition_goal(self.conn, goal_id, "active")
+        task_id = create_task(
+            self.conn,
+            title="Running slice",
+            repo="demo",
+            source_path="tasks/generated/running.md",
+            priority="normal",
+            capabilities=["code"],
+            goal="Ship slice",
+            acceptance_criteria=["a"],
+            verification_commands=[],
+            project_id=self.project_id,
+        )
+        transition_task(self.conn, task_id, "running", "assigned")
+
+        resp = self.methods.handle(
+            self.conn, _request("project.plan", project_id=self.project_id)
+        )
+        self.assertTrue(resp.ok)
+        self.assertEqual(resp.result["goal"]["id"], goal_id)
+        self.assertIn("backlog", resp.result)
+        self.assertEqual(resp.result["tasks"]["running"], 1)
+        self.assertTrue(resp.result["next"])
+
     def test_project_logs_returns_tail_and_commander_run(self) -> None:
         goal_id = create_goal(
             self.conn,
