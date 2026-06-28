@@ -132,6 +132,23 @@ input starts with `/`.
 | `/jump <target>` | Resolve a task, log, goal, worktree, or supervisor log path (hint only) |
 | `/open <target>` | Alias of `/jump` (does not launch an editor) |
 | `/logs` | Show recent logs |
+
+### Operability commands (Phase 6D)
+
+`/plan`, `/scan`, `/jump`, and `/open` call Supervisor RPC methods
+(`project.plan`, `project.scan`, `project.jump`). They are read-only diagnostics
+— no editor, shell, or filesystem mutation is spawned from the TUI.
+
+- `/plan` — active goal summary, autonomous run status, backlog counts, and the
+  next scheduler decision.
+- `/scan` — repo cleanliness, configured verify commands, missing agent
+  binaries, and recent failed tasks.
+- `/jump <task-id|goal|log|worktree>` — resolves an absolute path or command
+  hint for manual inspection.
+- `/open <target>` — same as `/jump`; displays the hint only.
+
+Failed or cancelled tasks may include a worker-state snapshot reference in
+`/task <id>` detail (see [cli.md](cli.md#worker-state-snapshots-phase-6d)).
 | `/help` | List available commands (local; works offline) |
 | `/agents` | List active agents |
 | `/pause` | Pause scheduling for this project |

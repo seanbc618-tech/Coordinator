@@ -423,13 +423,101 @@ For local validation errors (unknown slash command, missing project), the
 `request_id` is prefixed `cli-local-`. Remote errors from the Supervisor use
 the original `request_id`.
 
+## `coordinator init`: not a git repository
+
+**Symptom:** `error: not a git repository` or JSON `errors[].code` =
+`invalid_project` (exit code 1).
+
+**Cause:** `coordinator init` requires a Git working tree at the current
+directory or `--path`.
+
+**Fix:** `cd` into your repository root (or pass `--path /path/to/repo`). Use
+`coordinator init --dry-run --json` first to preview planned config changes
+without writing files.
+
+## `coordinator init --dry-run` wrote files
+
+**Symptom:** Config files appeared after a dry-run.
+
+**Cause:** This is a bug — dry-run must have zero filesystem side effects.
+
+**Fix:** Remove unintended files under `COORDINATOR_HOME` or XDG config, then
+re-run with `--dry-run --json` and confirm `data.would_write` lists paths but
+nothing is created on disk. Report if files are written.
+
+## Admin `--json` parse errors
+
+**Symptom:** `jq` or scripts fail to parse stdout; or `ok: false` with typed
+`errors[].code`.
+
+**Common codes:**
+
+| Code | Command | Fix |
+|---|---|---|
+| `supervisor_not_running` | `supervisor status --json` | `coordinator supervisor start` or launch TUI |
+| `missing_config` | `config --json` | Run `coordinator init` or copy templates from install docs |
+| `invalid_project` | `loop --json`, slash JSON | `cd` into a registered repo or `coordinator project add` |
+| `confirmation_required` | `init` without `--yes` | Re-run with `--yes` after reviewing dry-run output |
+
+JSON admin output uses the Phase 6D envelope (`schema_version`, `data`,
+`warnings`, `errors`). Do not parse human text from `--json` commands.
+
+## `mock-provider` fixture errors
+
+**Symptom:** Exit code 2 with `fixture schema`, `prompt not found`, or
+`fixture role mismatch`.
+
+**Cause:** The fixture path is wrong, the JSON does not match the expected
+Commander/worker schema, or the Commander prompt file is missing.
+
+**Fix:**
+
+```bash
+coordinator mock-provider run commander \
+  --fixture "$(pwd)/tests/fixtures/commander/one-task.json" \
+  --prompt /path/to/prompt.md
+```
+
+Use absolute fixture paths in clean-wheel smoke. Ensure agent `command` templates
+include `mock-provider` when routing through the harness.
+
+## Worker-state or event v2 tables missing
+
+**Symptom:** Supervisor logs mention `no such table: worker_state_snapshots` or
+`supervisor_events_v2`.
+
+**Cause:** Database predates migration 016.
+
+**Fix:**
+
+```bash
+coordinator migrate
+coordinator doctor --json
+```
+
+Both migration roots ship migration 016 in the installed wheel.
+
+## Config explain shows `[REDACTED]`
+
+**Symptom:** Effective values appear as `[REDACTED]` in `config explain` output.
+
+**Cause:** Secret-like keys (tokens, API keys, env overrides) are intentionally
+redacted in text and JSON.
+
+**Fix:** Inspect the non-secret fields (`source_kind`, `source_path`) to see
+which file or environment variable set the value. Edit the source file directly;
+do not expect raw secrets in CLI output.
+
 ## Still stuck?
 
 Gather diagnostics:
 
 ```bash
 coordinator supervisor status
+coordinator supervisor status --json
 coordinator doctor
+coordinator doctor --json
+coordinator config explain --json
 tail -100 ~/.local/state/coordinator/supervisor.log
 python3 --version
 node --version

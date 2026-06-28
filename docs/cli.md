@@ -1,12 +1,14 @@
 # Coordinator CLI Prompt Modes
 
-> **Phase 5.5 merged** — this file now covers `@file` context, `--resume`/`--fork`
-> goal sessions, `--tools`/`--no-tools`/`--exclude-tools` execution policy,
-> `--mode rpc` envelope output, `/approve`, `/cancel`, `/retry`, `/dashboard`,
-> `/task <id> log`, and `/loop`, `/backlog`, `/evals`, `/loop step` autonomous
-> loop commands.  See [troubleshooting](troubleshooting.md) for error codes,
+> **Phase 6D merged** — this file now covers machine-readable admin `--json`
+> output, `coordinator init`, `config explain`, permission modes, worker-state
+> snapshots, event schema v2 replay, the mock-provider harness, and operability
+> slash commands (`/plan`, `/scan`, `/jump`, `/open`). Earlier phases cover
+> `@file` context, `--resume`/`--fork`, execution policy, `/approve`, `/cancel`,
+> `/retry`, `/dashboard`, `/task <id> log`, and `/loop` autonomous loop commands.
+> See [troubleshooting](troubleshooting.md) for error codes,
 > [autonomous-loop](autonomous-loop.md) for loop configuration, and
-> [migration](migration.md) for schema changes (migrations 012–014).
+> [migration](migration.md) for schema changes (migrations 012–016).
 
 Phase 5.3 adds Pi-inspired headless entry points on top of the global Supervisor
 `chat.send` path. The Ink TUI remains the default interactive shell.
@@ -82,6 +84,43 @@ coordinator --no-tui -p "记录一下进度"
 coordinator --print -p "总结状态"   # --print implies --no-tui
 ```
 
+## Machine-readable admin output (Phase 6D)
+
+Selected administrative commands accept `--json` and emit a stable envelope:
+
+```json
+{
+  "ok": true,
+  "command": "doctor",
+  "schema_version": 1,
+  "generated_at": "2026-06-28T12:00:00Z",
+  "data": {},
+  "warnings": [],
+  "errors": []
+}
+```
+
+On failure, `ok` is `false` and `errors` contains typed objects with `code`,
+`message`, and optional `hint`. Scripts should parse keys, not prose substrings.
+
+Supported commands:
+
+```bash
+coordinator doctor --json
+coordinator supervisor status --json
+coordinator config --json
+coordinator config explain --json
+coordinator loop --json
+coordinator loop run --json
+coordinator init --dry-run --json
+```
+
+Print-mode slash commands also accept `--json` when routed through the admin
+envelope (for example `/status`, `/dashboard`, `/plan`, `/scan`, `/jump`).
+
+`--mode json` on prompt commands remains the smaller public chat schema.
+`--mode rpc` returns the Supervisor `ResponseEnvelope` protocol shape.
+
 ## Config inspection
 
 ```bash
@@ -95,6 +134,11 @@ coordinator config explain --json
 Shows agents, repo allowlist, policy caps, permission modes, and XDG/runtime
 paths. `config explain` reports which file or default produced each effective
 setting. Secret-like values are redacted in text and JSON output.
+
+Permission modes (`read-only`, `workspace-write`, `danger`) and per-agent tool
+allowlists appear in `config` and `config explain` output. Defaults keep
+Commander and reviewers read-only and workers at workspace-write; merge/push
+remain governed by repo policy.
 
 ## Project bootstrap
 
@@ -301,3 +345,52 @@ commander_generation_timeout_seconds = 45
 ```
 
 See [autonomous-loop](autonomous-loop.md) for full configuration and failure modes.
+
+## Worker-state snapshots (Phase 6D)
+
+Every worker terminal path (success, failure, cancel) writes a redacted
+`post_attempt` snapshot to `worker_state_snapshots` (migration 016). Snapshots
+record command, cwd, exit code, changed files, and verification summary — not
+environment values, tokens, or full prompt text.
+
+Inspect the latest snapshot from task detail:
+
+```bash
+coordinator --print -p "/task <task-id>"
+coordinator --mode json -p "/task <task-id>"
+```
+
+The JSON payload includes `worker_state.snapshot_id`, `state_type`, and
+`log_path` when a snapshot exists.
+
+## Event schema v2 replay (Phase 6D)
+
+Legacy `supervisor_events` remain authoritative for TUI replay. Newly published
+events are mirrored into `supervisor_events_v2` with monotonic per-project `seq`
+and a `legacy_cursor` link.
+
+Replay v2 events through the Supervisor RPC:
+
+```bash
+coordinator --mode rpc -p "/status"   # any connected project context
+```
+
+Or call `events.v2.replay` with params `{"after": 0, "limit": 100}` via the
+Supervisor client. Canonical names include `task.created`, `task.failed`,
+`commander.completed`, `loop.iteration`, and `run.started`.
+
+## Mock-provider parity harness (Phase 6D)
+
+Run deterministic Commander or worker fixtures without live model binaries:
+
+```bash
+coordinator mock-provider run commander \
+  --fixture tests/fixtures/commander/one-task.json
+coordinator mock-provider run worker \
+  --fixture tests/fixtures/worker/success.json
+```
+
+The harness validates fixture schema, renders the configured agent command,
+checks prompt file existence (Commander), and asserts output shape. It never
+calls network or live model CLIs. Configure agents with `mock-provider` in the
+command template to route production invocations through the harness in CI.
