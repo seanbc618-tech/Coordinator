@@ -350,6 +350,9 @@ def run_commander(
         if not argv:
             error = "empty command"
         else:
+            from .mock_provider import ensure_mock_provider_prompt
+
+            ensure_mock_provider_prompt(argv, prompt_path=prompt_path)
             execution_context = ExecutionContext(
                 stage="commander",
                 actor=agent.id,

@@ -393,6 +393,20 @@ def run_command(
         )
     )
 
+    from .mock_provider import try_run_mock_provider
+
+    inline_result = try_run_mock_provider(
+        argv,
+        cwd=cwd,
+        env=env,
+        reporter=reporter,
+        context=context,
+        stdout_sink=stdout_sink,
+        stderr_sink=stderr_sink,
+    )
+    if inline_result is not None:
+        return inline_result
+
     process = subprocess.Popen(
         argv,
         cwd=cwd,

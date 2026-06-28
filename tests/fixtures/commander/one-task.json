@@ -1,0 +1,22 @@
+{
+  "schema_version": 2,
+  "intent": "task_request",
+  "user_reply": "Created one task.",
+  "goal_status": "active",
+  "progress_summary": "Planning next task.",
+  "stop_reason": null,
+  "tasks": [
+    {
+      "title": "Add operability tests",
+      "repo": "test-repo",
+      "capabilities": ["code"],
+      "goal": "Cover mock provider",
+      "acceptance_criteria": ["tests pass"],
+      "verification_commands": ["true"],
+      "expected_files": 1,
+      "expected_minutes": 10,
+      "parent_task_id": null,
+      "rationale": "Need deterministic CI coverage."
+    }
+  ]
+}

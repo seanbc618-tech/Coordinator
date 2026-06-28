@@ -1,0 +1,7 @@
+{
+  "exit_code": 0,
+  "stdout": "worker completed\n",
+  "stderr": "",
+  "changed_files": ["src/example.py"],
+  "log_text": "worker completed\n"
+}

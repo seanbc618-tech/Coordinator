@@ -1,0 +1,9 @@
+{
+  "schema_version": 2,
+  "intent": "conversation",
+  "user_reply": "Goal complete.",
+  "goal_status": "completed",
+  "progress_summary": "All work done.",
+  "stop_reason": "goal_met",
+  "tasks": []
+}

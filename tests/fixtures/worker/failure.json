@@ -1,0 +1,7 @@
+{
+  "exit_code": 1,
+  "stdout": "",
+  "stderr": "worker failed\n",
+  "changed_files": [],
+  "log_text": "worker failed\n"
+}

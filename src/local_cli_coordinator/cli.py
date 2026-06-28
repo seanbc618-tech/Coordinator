@@ -1111,6 +1111,7 @@ _ADMIN_COMMANDS = frozenset({
     "config",
     "loop",
     "init",
+    "mock-provider",
 })
 
 _PROMPT_FLAGS = frozenset({
@@ -1359,6 +1360,16 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--json", action="store_true")
     init.add_argument("--yes", action="store_true")
 
+    mock_provider = subparsers.add_parser("mock-provider")
+    mock_provider_subparsers = mock_provider.add_subparsers(
+        dest="mock_provider_command"
+    )
+    mock_provider_subparsers.required = True
+    mock_provider_run = mock_provider_subparsers.add_parser("run")
+    mock_provider_run.add_argument("role", choices=("commander", "worker"))
+    mock_provider_run.add_argument("--fixture", required=True)
+    mock_provider_run.add_argument("--prompt")
+
     return parser
 
 
@@ -1464,5 +1475,17 @@ def main(argv: list[str] | None = None) -> int:
         from .init_project import run_init_command
 
         return run_init_command(args)
+    if args.command == "mock-provider" and args.mock_provider_command == "run":
+        from .mock_provider import MockProviderError, run_mock_provider_cli
+
+        try:
+            return run_mock_provider_cli(
+                role=args.role,
+                fixture=args.fixture,
+                prompt=getattr(args, "prompt", None),
+            )
+        except MockProviderError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
     print(f"{args.command}: command is registered")
     return 0
