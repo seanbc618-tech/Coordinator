@@ -82,6 +82,21 @@ coordinator config
 Shows agents, repo allowlist, policy caps, and XDG/runtime paths. Read-only in
 Phase 5.3.
 
+## Project bootstrap
+
+```bash
+cd /path/to/your-repo
+coordinator init --dry-run --json
+coordinator init --yes
+coordinator init --repo-id polymarket_crypto_threshold --verify "uv run pytest" --yes
+```
+
+`coordinator init` discovers the current git root (or `--path`), scaffolds global
+`agents.toml`, `repos.toml`, and `policy.toml` under `COORDINATOR_HOME` or XDG
+config, and adds a repo allowlist entry. Autonomy stays **off** unless
+`--autonomy on` is passed explicitly. Existing `agents.toml` files are preserved
+on repeat runs.
+
 ## Safe admin commands (dry-run first)
 
 Destructive repo/task operations require a confirm token from dry-run:

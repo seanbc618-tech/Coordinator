@@ -1110,6 +1110,7 @@ _ADMIN_COMMANDS = frozenset({
     "migrate",
     "config",
     "loop",
+    "init",
 })
 
 _PROMPT_FLAGS = frozenset({
@@ -1345,6 +1346,15 @@ def build_parser() -> argparse.ArgumentParser:
     loop_run = loop_subparsers.add_parser("run")
     loop_run.add_argument("--json", action="store_true")
 
+    init = subparsers.add_parser("init")
+    init.add_argument("--path")
+    init.add_argument("--repo-id")
+    init.add_argument("--verify", action="append", default=[])
+    init.add_argument("--autonomy", choices=("off", "on"), default="off")
+    init.add_argument("--dry-run", action="store_true")
+    init.add_argument("--json", action="store_true")
+    init.add_argument("--yes", action="store_true")
+
     return parser
 
 
@@ -1441,5 +1451,9 @@ def main(argv: list[str] | None = None) -> int:
         from .cli_chat import run_admin_loop_command
 
         return run_admin_loop_command(args)
+    if args.command == "init":
+        from .init_project import run_init_command
+
+        return run_init_command(args)
     print(f"{args.command}: command is registered")
     return 0
