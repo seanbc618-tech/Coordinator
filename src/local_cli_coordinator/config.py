@@ -2,6 +2,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import tomllib
 
+from .permission_modes import (
+    AgentPermissions,
+    PermissionsPolicyConfig,
+    parse_agent_permissions,
+    parse_permissions_policy,
+)
+
 SUPPORTED_AGENT_ROLES = frozenset({
     "worker",
     "spec_reviewer",
@@ -28,6 +35,9 @@ class AgentConfig:
     max_concurrency: int
     role: str = "worker"
     fallback_agents: tuple[str, ...] = ()
+    permissions: AgentPermissions = field(
+        default_factory=lambda: AgentPermissions(mode="workspace-write")
+    )
 
 
 @dataclass(frozen=True)
@@ -108,6 +118,9 @@ class CoordinatorConfig:
     connectors: dict[str, ConnectorConfig] = field(default_factory=dict)
     daemon_policy: DaemonPolicyConfig = field(default_factory=DaemonPolicyConfig)
     autonomy: AutonomyConfig = field(default_factory=AutonomyConfig)
+    permissions_policy: PermissionsPolicyConfig = field(
+        default_factory=PermissionsPolicyConfig
+    )
 
 
 def iter_agents_by_role(
@@ -279,6 +292,12 @@ def load_config_from_dir(config_dir: Path) -> CoordinatorConfig:
     discovery_sources = _load_discovery_sources(config_dir)
     connectors = _load_connectors(config_dir)
 
+    permissions_policy = (
+        parse_permissions_policy(policy_doc)
+        if isinstance(policy_doc.get("permissions"), dict)
+        else PermissionsPolicyConfig()
+    )
+
     agents = {}
     for agent_id, raw in agents_raw.items():
         role = str(raw.get("role", "worker"))
@@ -286,6 +305,8 @@ def load_config_from_dir(config_dir: Path) -> CoordinatorConfig:
             raise ValueError(
                 f"agent {agent_id!r} has unsupported role {role!r}"
             )
+        agent_raw = dict(raw)
+        agent_raw["id"] = agent_id
         agents[agent_id] = AgentConfig(
             id=agent_id,
             command=str(raw["command"]),
@@ -293,6 +314,11 @@ def load_config_from_dir(config_dir: Path) -> CoordinatorConfig:
             max_concurrency=int(raw.get("max_concurrency", 1)),
             role=role,
             fallback_agents=tuple(raw.get("fallback_agents", [])),
+            permissions=parse_agent_permissions(
+                agent_raw,
+                role=role,
+                policy=permissions_policy,
+            ),
         )
 
     repos = {
@@ -375,6 +401,7 @@ def load_config_from_dir(config_dir: Path) -> CoordinatorConfig:
         connectors=connectors,
         daemon_policy=daemon_policy,
         autonomy=autonomy,
+        permissions_policy=permissions_policy,
     )
 
 

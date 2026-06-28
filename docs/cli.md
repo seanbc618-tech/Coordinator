@@ -77,10 +77,15 @@ coordinator --print -p "总结状态"   # --print implies --no-tui
 
 ```bash
 coordinator config
+coordinator config --json
+coordinator config explain
+coordinator config explain policy.max_tasks_per_day
+coordinator config explain --json
 ```
 
-Shows agents, repo allowlist, policy caps, and XDG/runtime paths. Read-only in
-Phase 5.3.
+Shows agents, repo allowlist, policy caps, permission modes, and XDG/runtime
+paths. `config explain` reports which file or default produced each effective
+setting. Secret-like values are redacted in text and JSON output.
 
 ## Project bootstrap
 

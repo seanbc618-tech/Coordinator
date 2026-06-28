@@ -1309,6 +1309,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     config = subparsers.add_parser("config")
     config.add_argument("--json", action="store_true")
+    config_subparsers = config.add_subparsers(dest="config_command")
+    config_explain = config_subparsers.add_parser("explain")
+    config_explain.add_argument("setting_key", nargs="?", default=None)
+    config_explain.add_argument("--json", action="store_true")
 
     subparsers.add_parser("logs").add_argument("task_id")
 
@@ -1444,8 +1448,13 @@ def main(argv: list[str] | None = None) -> int:
             return launch_tui(start_path=Path(args.root).resolve())
         parser.error(f"unknown command: {cli_argv[0]}")
     if args.command == "config":
-        from .cli_config import run_config_command
+        from .cli_config import run_config_command, run_config_explain_command
 
+        if getattr(args, "config_command", None) == "explain":
+            return run_config_explain_command(
+                setting_key=getattr(args, "setting_key", None),
+                json_mode=getattr(args, "json", False),
+            )
         return run_config_command(json_mode=getattr(args, "json", False))
     if args.command == "loop":
         from .cli_chat import run_admin_loop_command

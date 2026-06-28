@@ -5,7 +5,9 @@ from __future__ import annotations
 import shutil
 
 from .admin_json import AdminError, emit_envelope, envelope
+from .config_explain import explain_config
 from .config_runtime import load_config_for_paths
+from .permission_modes import permissions_to_dict
 from .runtime_paths import resolve_runtime_paths
 from .supervisor_process import missing_config_admin_error, missing_config_file
 
@@ -67,6 +69,7 @@ def run_config_command(*, json_mode: bool = False) -> int:
                 "role": agent.role,
                 "capabilities": list(agent.capabilities),
                 "status": status,
+                "permissions": permissions_to_dict(agent.permissions),
             }
         )
 
@@ -142,4 +145,66 @@ def run_config_command(*, json_mode: bool = False) -> int:
 
     print("Runtime")
     print("  status: ok")
+    return 0
+
+
+def run_config_explain_command(
+    *,
+    setting_key: str | None = None,
+    json_mode: bool = False,
+) -> int:
+    paths = resolve_runtime_paths()
+    paths.create()
+
+    missing = missing_config_file(paths)
+    if missing is not None:
+        if json_mode:
+            return emit_envelope(
+                envelope(
+                    command="config.explain",
+                    ok=False,
+                    errors=[missing_config_admin_error(missing)],
+                )
+            )
+        print(f"error: missing config file: {missing}", file=sys.stderr)
+        return 1
+
+    try:
+        entries = explain_config(paths, key=setting_key)
+    except (FileNotFoundError, KeyError, ValueError) as exc:
+        if json_mode:
+            return emit_envelope(
+                envelope(
+                    command="config.explain",
+                    ok=False,
+                    errors=[
+                        AdminError(
+                            code="missing_config_file",
+                            message=str(exc),
+                            hint="Run `coordinator init` or create the required config files.",
+                        )
+                    ],
+                )
+            )
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    if json_mode:
+        return emit_envelope(
+            envelope(
+                command="config.explain",
+                ok=True,
+                data={"entries": entries},
+            )
+        )
+
+    print("Coordinator config explain")
+    if not entries:
+        print("  (no matching settings)")
+        return 0
+    for entry in entries:
+        value = entry["effective_value"]
+        print(f"{entry['key']}: {value}")
+        print(f"  source: {entry['source_kind']} ({entry['source']})")
+        print(f"  note: {entry['explanation']}")
     return 0
