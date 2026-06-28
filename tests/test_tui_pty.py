@@ -934,6 +934,25 @@ class TuiPtyTests(unittest.TestCase):
         finally:
             _cleanup_tui(pid, fd)
 
+    def test_pty_plan_slash_calls_project_plan_rpc(self) -> None:
+        """Phase 6D: /plan must route through project.plan Supervisor RPC."""
+        pid, fd = _spawn_tui(self.socket_path, "proj-a", cols=100, rows=30)
+        try:
+            _wait_for_connection(fd)
+            _read_available(fd, timeout=0.5)
+            _type_string_and_wait(fd, "/plan")
+            _type_enter_and_wait(fd)
+            self.assertTrue(
+                self.server.wait_for_request_method("project.plan", timeout=10),
+                "project.plan RPC not received for /plan",
+            )
+            output = _read_available(fd, timeout=3.0)
+            frame = _final_frame_text(output)
+            self.assertNotIn("unsupported method", frame.lower())
+            self.assertNotIn("Unknown command: /plan", frame)
+        finally:
+            _cleanup_tui(pid, fd)
+
     def _assert_footer_visible_once(self, frame: str) -> None:
         self.assertIn("connected", frame)
         self.assertEqual(frame.count("Tab"), 1)
