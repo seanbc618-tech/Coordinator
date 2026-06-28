@@ -747,6 +747,12 @@ def run_worker_attempt(
         fallback_from_attempt_id=fallback_from_attempt_id,
     )
 
+    from .db import get_task as _get_task
+    from .worker_state import record_post_attempt_snapshot
+
+    task_row = _get_task(conn, task_id)
+    project_id = str(task_row["project_id"])
+
     try:
         agent_result = run_agent(
             agent,
@@ -770,6 +776,18 @@ def run_worker_attempt(
             result_reason=classified.reason,
             log_path=str(agent_result.log_path),
         )
+        record_post_attempt_snapshot(
+            conn,
+            project_id=project_id,
+            task_id=task_id,
+            attempt_id=attempt_id,
+            agent=agent,
+            attempt_number=attempt_number,
+            worktree=worktree,
+            exit_code=agent_result.exit_code,
+            timed_out=agent_result.timed_out,
+            log_path=str(agent_result.log_path),
+        )
         # Add attempt log as artifact
         add_artifact(conn, task_id, "attempt_log", agent_result.log_path)
         # Keep compatibility pointer
@@ -779,6 +797,18 @@ def run_worker_attempt(
         finish_attempt(
             conn, attempt_id, exit_code=127, result_class="command_failed",
             result_reason="exception",
+        )
+        record_post_attempt_snapshot(
+            conn,
+            project_id=project_id,
+            task_id=task_id,
+            attempt_id=attempt_id,
+            agent=agent,
+            attempt_number=attempt_number,
+            worktree=worktree,
+            exit_code=127,
+            timed_out=False,
+            log_path="",
         )
         raise
 

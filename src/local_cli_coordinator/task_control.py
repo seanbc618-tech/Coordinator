@@ -21,6 +21,7 @@ from .goals import active_goal_for_project
 from .projects import get_project
 from .supervisor_events import EventBroker
 from .worker_registry import GLOBAL_WORKER_REGISTRY
+from .worker_state import list_worker_state_snapshots, write_worker_state_snapshot
 
 
 class TaskControlError(Exception):
@@ -201,6 +202,19 @@ def build_task_detail_payload(
         ),
         "artifacts": [{"kind": art["kind"], "path": art["path"]} for art in artifacts],
     }
+    snapshots = list_worker_state_snapshots(
+        conn, project_id=project_id, task_id=task_id, limit=1
+    )
+    if snapshots:
+        snap = snapshots[0]
+        payload["worker_state"] = {
+            "snapshot_id": snap["id"],
+            "state_type": snap["state_type"],
+            "created_at": snap["created_at"],
+            "log_path": attempt["log_path"] if attempt else None,
+        }
+    else:
+        payload["worker_state"] = None
     return payload
 
 
@@ -221,6 +235,7 @@ def flatten_task_detail_json(payload: dict[str, Any]) -> dict[str, Any]:
     flat["latest_event"] = payload.get("latest_event")
     flat["latest_attempt"] = payload.get("latest_attempt")
     flat["artifacts"] = payload.get("artifacts", [])
+    flat["worker_state"] = payload.get("worker_state")
     return flat
 
 
@@ -331,6 +346,21 @@ def cancel_task(
         )
     worker_terminated = GLOBAL_WORKER_REGISTRY.terminate(task_id)
     release_task_lease(conn, task_id)
+    latest_attempt = task_latest_attempt(conn, task_id)
+    write_worker_state_snapshot(
+        conn,
+        project_id=project_id,
+        task_id=task_id,
+        attempt_id=latest_attempt["id"] if latest_attempt else None,
+        agent_id=latest_attempt["agent_id"] if latest_attempt else None,
+        run_id=None,
+        state_type="cancellation",
+        payload={
+            "task_id": task_id,
+            "worker_terminated": worker_terminated,
+            "previous_state": row["state"],
+        },
+    )
     if row["state"] not in {"done", "failed", "blocked", "rejected"}:
         transition_task(conn, task_id, "failed", "cancelled by operator")
         new_state = "failed"

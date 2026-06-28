@@ -132,6 +132,22 @@ def run_project_cycle(
             stop_reason="task skipped",
         )
     except Exception as exc:
+        from .worker_state import write_worker_state_snapshot
+
+        write_worker_state_snapshot(
+            conn,
+            project_id=runtime.project_id,
+            task_id=task_id,
+            attempt_id=None,
+            agent_id=agent_id,
+            run_id=None,
+            state_type="failure",
+            payload={
+                "task_id": task_id,
+                "agent_id": agent_id,
+                "error": f"{type(exc).__name__}: {exc}",
+            },
+        )
         return ProjectCycleResult(
             project_id=runtime.project_id,
             task_id=task_id,
