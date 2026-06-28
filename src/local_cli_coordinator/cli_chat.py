@@ -457,6 +457,163 @@ def _format_run_status(result: dict[str, Any]) -> str:
     )
 
 
+def _loop_admin_data(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "project_id": payload.get("project_id"),
+        "run": payload.get("run"),
+        "next_decision": payload.get("next_expected_action", "wait"),
+    }
+
+
+def _admin_error(code: str, message: str, hint: str = "") -> "AdminError":
+    from .admin_json import AdminError
+
+    return AdminError(code=code, message=message, hint=hint)
+
+
+def _outcome_to_admin_error(outcome: PromptOutcome) -> "AdminError":
+    code = outcome.error_code or "invalid_project"
+    hints = {
+        "supervisor_not_running": "Run `coordinator supervisor start`.",
+        "project_not_registered": "Run `coordinator project add` or `coordinator init`.",
+        "supervisor_unreachable": "Run `coordinator supervisor start`.",
+    }
+    return _admin_error(
+        code,
+        outcome.error_message or "request failed",
+        hints.get(code, ""),
+    )
+
+
+def run_admin_loop_command(args: argparse.Namespace) -> int:
+    from .admin_json import emit_envelope, envelope
+
+    command = "loop.run" if getattr(args, "loop_command", None) == "run" else "loop"
+    method = (
+        "project.loop.run.status"
+        if command == "loop.run"
+        else "project.loop.status"
+    )
+    json_mode = getattr(args, "json", False)
+
+    try:
+        git_root = resolve_git_root(Path(args.root).resolve())
+    except NotGitRepositoryError as exc:
+        if json_mode:
+            return emit_envelope(
+                envelope(
+                    command=command,
+                    ok=False,
+                    errors=[_admin_error("invalid_project", str(exc))],
+                )
+            )
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    paths = resolve_runtime_paths()
+    paths.create()
+
+    project_id, project_err = _resolve_project(paths, git_root)
+    if project_err is not None:
+        if json_mode:
+            return emit_envelope(
+                envelope(
+                    command=command,
+                    ok=False,
+                    errors=[_outcome_to_admin_error(project_err)],
+                )
+            )
+        print(f"error: {project_err.error_message}", file=sys.stderr)
+        return 1
+
+    assert project_id is not None
+
+    if not paths.socket.exists():
+        if json_mode:
+            return emit_envelope(
+                envelope(
+                    command=command,
+                    ok=False,
+                    errors=[
+                        _admin_error(
+                            "supervisor_not_running",
+                            "Supervisor is not running",
+                            "Run `coordinator supervisor start`.",
+                        )
+                    ],
+                )
+            )
+        print("error: Supervisor is not running", file=sys.stderr)
+        return 1
+
+    try:
+        ensure_supervisor(paths)
+    except SupervisorIncompatibleError:
+        if json_mode:
+            return emit_envelope(
+                envelope(
+                    command=command,
+                    ok=False,
+                    errors=[
+                        _admin_error(
+                            "supervisor_not_running",
+                            INCOMPATIBLE_SUPERVISOR_MESSAGE,
+                            "Run `coordinator supervisor restart`.",
+                        )
+                    ],
+                )
+            )
+        print(f"error: {INCOMPATIBLE_SUPERVISOR_MESSAGE}", file=sys.stderr)
+        return 1
+    except SupervisorReadinessError as exc:
+        if json_mode:
+            return emit_envelope(
+                envelope(
+                    command=command,
+                    ok=False,
+                    errors=[_admin_error("supervisor_not_running", str(exc))],
+                )
+            )
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    result, err, _envelope = _send_rpc(
+        paths,
+        project_id=project_id,
+        method=method,
+        params={},
+    )
+    if err is not None:
+        if json_mode:
+            return emit_envelope(
+                envelope(
+                    command=command,
+                    ok=False,
+                    errors=[_outcome_to_admin_error(err)],
+                )
+            )
+        print(f"error: {err.error_message}", file=sys.stderr)
+        return 1
+
+    assert result is not None
+    if json_mode:
+        data = (
+            _loop_admin_data(result)
+            if command == "loop"
+            else {
+                "project_id": result.get("project_id"),
+                "run": result.get("run"),
+            }
+        )
+        return emit_envelope(envelope(command=command, ok=True, data=data))
+
+    if command == "loop.run":
+        print(_format_run_status(result))
+    else:
+        print(_format_loop_status(result))
+    return 0
+
+
 def _parse_loop_slash(text: str) -> tuple[str, dict[str, Any]]:
     parts = text.strip().split()
     sub = parts[1].lower() if len(parts) >= 2 else ""

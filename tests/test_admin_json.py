@@ -130,12 +130,19 @@ class AdminJsonRedTests(unittest.TestCase):
         self.conn.execute("update goals set status = 'active' where id = ?", (goal_id,))
         self.conn.commit()
 
+        self._orig_home = os.environ.get("COORDINATOR_HOME")
+        os.environ["COORDINATOR_HOME"] = str(self.home)
+
         self.server = FakeSupervisor(str(self.paths.socket), project_id=self.project_id)
         self.server.start()
 
     def tearDown(self) -> None:
         self.server.stop()
         self.conn.close()
+        if self._orig_home is not None:
+            os.environ["COORDINATOR_HOME"] = self._orig_home
+        else:
+            os.environ.pop("COORDINATOR_HOME", None)
         self.tmp.cleanup()
 
     def test_doctor_json_uses_admin_envelope(self) -> None:

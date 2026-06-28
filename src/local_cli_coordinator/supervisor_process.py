@@ -41,6 +41,26 @@ def missing_config_file(paths: RuntimePaths) -> Path | None:
     return None
 
 
+def supervisor_not_running_error() -> "AdminError":
+    from local_cli_coordinator.admin_json import AdminError
+
+    return AdminError(
+        code="supervisor_not_running",
+        message="Supervisor is not running",
+        hint="Run `coordinator supervisor start`.",
+    )
+
+
+def missing_config_admin_error(path: Path) -> "AdminError":
+    from local_cli_coordinator.admin_json import AdminError
+
+    return AdminError(
+        code="missing_config_file",
+        message=f"Missing required config file: {path}",
+        hint="Run `coordinator init` or create the file manually.",
+    )
+
+
 class SupervisorProcessError(RuntimeError):
     """Raised when Supervisor process management fails."""
 

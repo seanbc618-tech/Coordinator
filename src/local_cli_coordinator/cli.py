@@ -78,8 +78,34 @@ def _move_to_accepted(root: Path, source_path: str) -> None:
 
 
 def _cmd_doctor(args: argparse.Namespace) -> int:
+    from .admin_json import emit_envelope, envelope
+
     root = Path(args.root)
     config, config_error = try_load_config(root)
+    readiness = [
+        {
+            "name": check.name,
+            "status": check.status,
+            "message": check.message,
+        }
+        for check in check_loop_readiness(root, config)
+    ]
+    if getattr(args, "json", False):
+        warnings: list[str] = []
+        if config_error is not None:
+            warnings.append(str(config_error))
+        return emit_envelope(
+            envelope(
+                command="doctor",
+                ok=True,
+                data={
+                    "root": str(root),
+                    "status": "degraded" if config_error is not None else "ok",
+                    "readiness": readiness,
+                },
+                warnings=warnings,
+            )
+        )
     print("Coordinator doctor")
     print(f"root: {args.root}")
     print(f"status: {'degraded' if config_error is not None else 'ok'}")
@@ -861,11 +887,23 @@ def _cmd_supervisor_start(args: argparse.Namespace) -> int:
 
 
 def _cmd_supervisor_status(args: argparse.Namespace) -> int:
+    from .admin_json import AdminError, emit_envelope, envelope
     from .runtime_paths import resolve_runtime_paths
+    from .supervisor_process import supervisor_not_running_error
     from .supervisor_server import send_request
     from .supervisor_protocol import RequestEnvelope
+
     paths = resolve_runtime_paths()
+    json_mode = getattr(args, "json", False)
     if not paths.socket.exists():
+        if json_mode:
+            return emit_envelope(
+                envelope(
+                    command="supervisor.status",
+                    ok=False,
+                    errors=[supervisor_not_running_error()],
+                )
+            )
         print("Supervisor is not running")
         return 1
     try:
@@ -877,12 +915,52 @@ def _cmd_supervisor_status(args: argparse.Namespace) -> int:
             params={},
         ))
         if response.ok:
+            if json_mode:
+                return emit_envelope(
+                    envelope(
+                        command="supervisor.status",
+                        ok=True,
+                        data={
+                            "running": True,
+                            "socket": str(paths.socket),
+                            "identity": response.result or {},
+                        },
+                    )
+                )
             print("Supervisor is running")
             print(f"socket: {paths.socket}")
         else:
+            if json_mode:
+                return emit_envelope(
+                    envelope(
+                        command="supervisor.status",
+                        ok=False,
+                        errors=[
+                            AdminError(
+                                code="supervisor_not_running",
+                                message=response.error or "Supervisor is not running",
+                                hint="Run `coordinator supervisor start`.",
+                            )
+                        ],
+                    )
+                )
             print(f"Supervisor error: {response.error}")
             return 1
     except Exception as exc:
+        if json_mode:
+            return emit_envelope(
+                envelope(
+                    command="supervisor.status",
+                    ok=False,
+                    errors=[
+                        AdminError(
+                            code="supervisor_not_running",
+                            message=f"Cannot reach Supervisor: {exc}",
+                            hint="Run `coordinator supervisor start`.",
+                        )
+                    ],
+                )
+            )
         print(f"Cannot reach Supervisor: {exc}")
         return 1
     return 0
@@ -1031,6 +1109,7 @@ _ADMIN_COMMANDS = frozenset({
     "project",
     "migrate",
     "config",
+    "loop",
 })
 
 _PROMPT_FLAGS = frozenset({
@@ -1178,7 +1257,8 @@ def build_parser() -> argparse.ArgumentParser:
     daemon.add_argument("--quiet", action="store_true")
     status = subparsers.add_parser("status")
     status.add_argument("--loop", action="store_true")
-    subparsers.add_parser("doctor")
+    doctor = subparsers.add_parser("doctor")
+    doctor.add_argument("--json", action="store_true")
     subparsers.add_parser("digest")
     discover = subparsers.add_parser("discover")
     discover.add_argument("--once", action="store_true")
@@ -1226,7 +1306,8 @@ def build_parser() -> argparse.ArgumentParser:
     # Chat command
     subparsers.add_parser("chat")
 
-    subparsers.add_parser("config")
+    config = subparsers.add_parser("config")
+    config.add_argument("--json", action="store_true")
 
     subparsers.add_parser("logs").add_argument("task_id")
 
@@ -1236,7 +1317,8 @@ def build_parser() -> argparse.ArgumentParser:
     supervisor_subparsers.required = True
     start = supervisor_subparsers.add_parser("start")
     start.add_argument("--foreground", action="store_true")
-    supervisor_subparsers.add_parser("status")
+    supervisor_status = supervisor_subparsers.add_parser("status")
+    supervisor_status.add_argument("--json", action="store_true")
     supervisor_subparsers.add_parser("stop")
     supervisor_subparsers.add_parser("restart")
     supervisor_drain = supervisor_subparsers.add_parser("drain")
@@ -1256,6 +1338,12 @@ def build_parser() -> argparse.ArgumentParser:
     migrate.add_argument("--source", required=True, help="Legacy root directory")
     migrate.add_argument("--dry-run", action="store_true", help="Validate without writing")
     migrate.add_argument("--yes", action="store_true", help="Confirm migration")
+
+    loop = subparsers.add_parser("loop")
+    loop.add_argument("--json", action="store_true")
+    loop_subparsers = loop.add_subparsers(dest="loop_command")
+    loop_run = loop_subparsers.add_parser("run")
+    loop_run.add_argument("--json", action="store_true")
 
     return parser
 
@@ -1348,6 +1436,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "config":
         from .cli_config import run_config_command
 
-        return run_config_command()
+        return run_config_command(json_mode=getattr(args, "json", False))
+    if args.command == "loop":
+        from .cli_chat import run_admin_loop_command
+
+        return run_admin_loop_command(args)
     print(f"{args.command}: command is registered")
     return 0
