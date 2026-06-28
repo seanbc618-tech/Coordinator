@@ -21,8 +21,9 @@ from local_cli_coordinator.config import (
     PolicyConfig,
     RepoConfig,
 )
-from local_cli_coordinator.db import connect, create_task, init_db
+from local_cli_coordinator.db import connect, create_task, init_db, transition_task
 from local_cli_coordinator.engine import run_worker_attempt
+from local_cli_coordinator.task_control import cancel_task
 from local_cli_coordinator.projects import inspect_project, register_project
 from local_cli_coordinator.runtime_paths import RuntimePaths
 from tests.helpers import init_git_repo
@@ -160,3 +161,68 @@ class WorkerStateRedTests(unittest.TestCase):
         self.assertNotIn("OPENAI_API_KEY", encoded)
         self.assertIn("[REDACTED]", encoded)
         self.assertNotIn("env", encoded.lower())
+
+    def test_worker_launch_exception_writes_post_attempt_snapshot(self) -> None:
+        from local_cli_coordinator.worker_state import list_worker_state_snapshots
+
+        agent = AgentConfig(
+            id="worker",
+            command="grok --token sk-secret-token",
+            capabilities=["code"],
+            max_concurrency=1,
+            role="worker",
+        )
+        prompt = self.tmp / "prompt.md"
+        prompt.write_text("do work")
+        worktree = self.repo
+        run_dir = self.tmp / "runs" / self.task_id
+        run_dir.mkdir(parents=True)
+
+        with mock.patch(
+            "local_cli_coordinator.engine.run_agent",
+            side_effect=RuntimeError("agent launch failed"),
+        ):
+            with self.assertRaises(RuntimeError):
+                run_worker_attempt(
+                    self.conn,
+                    self.config,
+                    self.task_id,
+                    agent,
+                    prompt,
+                    worktree,
+                    run_dir,
+                )
+        self.conn.commit()
+
+        snapshots = list_worker_state_snapshots(
+            self.conn, project_id=self.project_id, task_id=self.task_id
+        )
+        self.assertTrue(snapshots)
+        latest = snapshots[0]
+        self.assertEqual(latest["state_type"], "post_attempt")
+        payload = latest["payload"]
+        self.assertEqual(payload["exit_code"], 127)
+        encoded = json.dumps(payload)
+        self.assertNotIn("sk-secret-token", encoded)
+        self.assertNotIn("OPENAI_API_KEY", encoded)
+
+    def test_cancel_running_task_writes_cancellation_snapshot(self) -> None:
+        from local_cli_coordinator.worker_state import list_worker_state_snapshots
+
+        transition_task(self.conn, self.task_id, "running", "assigned to worker")
+        self.conn.commit()
+
+        cancel_task(
+            self.conn,
+            project_id=self.project_id,
+            task_id=self.task_id,
+        )
+        self.conn.commit()
+
+        snapshots = list_worker_state_snapshots(
+            self.conn, project_id=self.project_id, task_id=self.task_id
+        )
+        self.assertTrue(snapshots)
+        latest = snapshots[0]
+        self.assertEqual(latest["state_type"], "cancellation")
+        self.assertEqual(latest["payload"]["previous_state"], "running")
