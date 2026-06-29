@@ -58,6 +58,7 @@ from .reporting import NULL_REPORTER, Reporter
 from .memory import LoopMemoryEntry, append_loop_memory, loop_memory_path
 from .review_inbox import write_review_packet
 from .evidence import (
+    list_task_evidence,
     record_diff_evidence,
     record_no_change_evidence,
     record_verification_evidence,
@@ -240,6 +241,127 @@ def _reviewer_outcomes_for_policy(
     if repo.review_policy == "tests_only":
         return True, True
     return spec_review_passed, quality_review_passed
+
+
+def _completion_gate_blocks_done(
+    conn: sqlite3.Connection,
+    root: Path,
+    task: dict,
+    repo: RepoConfig,
+    config: CoordinatorConfig,
+    *,
+    project_id: str,
+    attempt_id: int | None,
+    changed_files: list[str],
+    diff_text: str = "",
+) -> bool:
+    """Apply Phase 8 evidence gate. Return True when done transition must stop."""
+    from .evidence_evaluator import (
+        evaluate_completion_evidence,
+        infer_acceptance_evidence,
+        record_rules_verdict,
+    )
+    from .risk import assess_task_risk
+
+    infer_acceptance_evidence(
+        conn, project_id=project_id, task_id=task["id"], commit=True
+    )
+    gate = evaluate_completion_evidence(
+        conn, project_id=project_id, task_id=task["id"]
+    )
+    evidence_ids = [
+        row.id
+        for row in list_task_evidence(
+            conn, project_id=project_id, task_id=task["id"]
+        )
+    ]
+    if gate.allowed:
+        record_rules_verdict(
+            conn,
+            project_id=project_id,
+            task_id=task["id"],
+            attempt_id=attempt_id,
+            verdict="approve",
+            rationale="durable evidence satisfies completion gate",
+            evidence_ids=evidence_ids,
+            commit=True,
+        )
+    else:
+        reasons = list(gate.blockers)
+        if gate.missing_acceptance:
+            reasons.append("missing acceptance evidence")
+        record_rules_verdict(
+            conn,
+            project_id=project_id,
+            task_id=task["id"],
+            attempt_id=attempt_id,
+            verdict="reject",
+            rationale="; ".join(reasons),
+            evidence_ids=evidence_ids,
+            commit=True,
+        )
+        _write_review_packet_if_needed(
+            conn,
+            root,
+            task,
+            "failed",
+            changed_files=changed_files,
+            verifier_result="passed",
+            suggested_action="address completion evidence blockers",
+        )
+        _finish_task(
+            conn,
+            root,
+            task["id"],
+            "failed",
+            f"completion evidence gate blocked done: {'; '.join(reasons)}",
+            verifier_result="passed",
+            next_action="inspect evidence and retry",
+        )
+        return True
+
+    capabilities = [part for part in task["capabilities"].split(",") if part]
+    risk = assess_task_risk(
+        conn,
+        project_id=project_id,
+        task_id=task["id"],
+        changed_files=changed_files,
+        diff_text=diff_text,
+        capabilities=capabilities,
+        max_files_touched=config.policy.max_files_touched,
+        commit=True,
+    )
+    spec_ok, quality_ok = True, True
+    requires_human, review_reasons = should_require_human_review(
+        repo,
+        changed_files=changed_files,
+        max_files_touched=config.policy.max_files_touched,
+        spec_review_passed=spec_ok,
+        quality_review_passed=quality_ok,
+    )
+    if risk.requires_human_review or requires_human:
+        reasons = list(risk.reasons)
+        reasons.extend(review_reasons)
+        _write_review_packet_if_needed(
+            conn,
+            root,
+            task,
+            "awaiting_human",
+            changed_files=changed_files,
+            verifier_result="passed",
+            suggested_action="human review required before marking done",
+        )
+        _finish_task(
+            conn,
+            root,
+            task["id"],
+            "awaiting_human",
+            f"human review required: {'; '.join(dict.fromkeys(reasons))}",
+            verifier_result="passed",
+            next_action="review evidence packet and approve",
+        )
+        return True
+    return False
 
 
 def _pause_for_human_review_before_merge(
@@ -1078,6 +1200,17 @@ def _process_task(
             commit=True,
         )
         if verification.passed:
+            if _completion_gate_blocks_done(
+                conn,
+                root,
+                task,
+                repo,
+                config,
+                project_id=project_id,
+                attempt_id=attempt_id,
+                changed_files=[],
+            ):
+                return True
             _finish_task(
                 conn,
                 root,
@@ -1429,6 +1562,18 @@ def _process_task(
                     next_action="inspect merge failure and retry",
                 )
                 return True
+    if _completion_gate_blocks_done(
+        conn,
+        root,
+        task,
+        repo,
+        config,
+        project_id=project_id,
+        attempt_id=attempt_id,
+        changed_files=changed_files,
+        diff_text=patch_text,
+    ):
+        return True
     _finish_task(
         conn,
         root,
