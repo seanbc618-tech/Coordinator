@@ -101,6 +101,24 @@ export function buildSlashRpc(
     }
   }
 
+  if (
+    commandName === '/evidence'
+    || commandName === '/review'
+    || commandName === '/risk'
+    || commandName === '/merge-ready'
+  ) {
+    const taskId = args.trim().split(/\s+/)[0] ?? ''
+    if (!taskId) {
+      return { ok: false, error: `usage: ${commandName} <task-id>` }
+    }
+    return {
+      ok: true,
+      method,
+      params: { task_id: taskId },
+      displayMethod: method,
+    }
+  }
+
   if (commandName === '/recoveries') {
     return {
       ok: true,

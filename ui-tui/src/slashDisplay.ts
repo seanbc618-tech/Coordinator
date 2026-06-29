@@ -188,6 +188,44 @@ export function formatSlashResponse(
       )
     }
 
+    case 'project.evidence': {
+      const evidence = (result.evidence as Array<Record<string, unknown>> | undefined) ?? []
+      if (!evidence.length) {
+        return `Evidence — ${result.task_id}: (none)`
+      }
+      return [
+        `Evidence — ${result.task_id}:`,
+        ...evidence.map(
+          e => `- [${e.type}] ${e.status}: ${e.summary}`,
+        ),
+      ].join('\n')
+    }
+
+    case 'project.review': {
+      return (
+        `Review — ${result.task_id} [${result.state}] allowed=${result.completion_allowed} `
+        + `risk=${result.risk_level ?? 'unknown'} human=${result.requires_human_review}`
+      )
+    }
+
+    case 'project.risk': {
+      const reasons = (result.reasons as string[] | undefined) ?? []
+      const reasonText = reasons.length ? reasons.join('; ') : '(none)'
+      return (
+        `Risk — ${result.task_id}: ${result.risk_level ?? 'unknown'} `
+        + `human=${result.requires_human_review}; ${reasonText}`
+      )
+    }
+
+    case 'project.merge_ready': {
+      const blockers = (result.blockers as string[] | undefined) ?? []
+      const blockerText = blockers.length ? blockers.join('; ') : '(none)'
+      return (
+        `Merge-ready — ${result.task_id}: ${result.merge_ready} `
+        + `human=${result.requires_human_review}; blockers: ${blockerText}`
+      )
+    }
+
     case 'project.recoveries': {
       const proposals = (result.proposals as Array<Record<string, unknown>> | undefined) ?? []
       if (!proposals.length) {

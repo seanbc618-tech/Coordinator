@@ -19,6 +19,10 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/cancel', description: 'Cancel a running task', method: 'project.task.cancel', destructive: true },
   { name: '/dashboard', description: 'Show multi-project dashboard', method: 'supervisor.dashboard' },
   { name: '/strategy', description: 'Show current milestone objective', method: 'project.strategy' },
+  { name: '/evidence', description: 'Show durable task evidence', method: 'project.evidence' },
+  { name: '/review', description: 'Show evidence review summary', method: 'project.review' },
+  { name: '/risk', description: 'Show task risk assessment', method: 'project.risk' },
+  { name: '/merge-ready', description: 'Check merge readiness under repo policy', method: 'project.merge_ready' },
   { name: '/recoveries', description: 'List pending recovery proposals', method: 'project.recoveries' },
   { name: '/overnight', description: 'Overnight window and latest summary', method: 'project.overnight' },
   { name: '/loop', description: 'Autonomous loop status and run controls', method: 'project.loop.status' },
@@ -85,6 +89,10 @@ const HELP_COMMAND_NAMES = new Set([
   '/retry',
   '/dashboard',
   '/strategy',
+  '/evidence',
+  '/review',
+  '/risk',
+  '/merge-ready',
   '/recoveries',
   '/agents',
   '/overnight',
@@ -133,6 +141,22 @@ export function formatHelpText(): string {
     }
     if (cmd.name === '/strategy') {
       lines.push('/strategy - Show current milestone objective')
+      continue
+    }
+    if (cmd.name === '/evidence') {
+      lines.push('/evidence <task-id> - Show durable task evidence')
+      continue
+    }
+    if (cmd.name === '/review') {
+      lines.push('/review <task-id> - Show evidence review summary')
+      continue
+    }
+    if (cmd.name === '/risk') {
+      lines.push('/risk <task-id> - Show task risk assessment')
+      continue
+    }
+    if (cmd.name === '/merge-ready') {
+      lines.push('/merge-ready <task-id> - Check merge readiness under repo policy')
       continue
     }
     if (cmd.name === '/recoveries') {
