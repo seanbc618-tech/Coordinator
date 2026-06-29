@@ -36,7 +36,7 @@ class MilestoneModuleTests(unittest.TestCase):
         self.assertTrue(callable(list_milestones))
         self.assertTrue(callable(get_active_milestone))
         self.assertTrue(callable(complete_milestone))
-        self.assertTrue(hasattr(Milestone, "id"))
+        self.assertIn("id", Milestone.__annotations__)
 
 
 class MilestoneCRUDTests(unittest.TestCase):
