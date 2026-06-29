@@ -46,7 +46,7 @@ class OvernightModuleTests(unittest.TestCase):
         self.assertTrue(callable(persist_overnight_summary))
         self.assertTrue(callable(get_latest_overnight_summary))
         self.assertTrue(callable(parse_overnight_until))
-        self.assertTrue(hasattr(OvernightWindow, "quiet_start"))
+        self.assertIn("quiet_start", OvernightWindow.__annotations__)
 
 
 class QuietHoursTests(unittest.TestCase):

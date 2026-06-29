@@ -159,6 +159,16 @@ def run_project_autonomy_session(
     if not project_has_runnable_run_session(conn, project_id=project_id):
         return []
 
+    from .overnight import maybe_pause_for_quiet_hours
+
+    quiet_decision = maybe_pause_for_quiet_hours(
+        conn,
+        project_id=project_id,
+        config=config,
+    )
+    if quiet_decision.should_pause:
+        return []
+
     row = conn.execute(
         "select idle_backoff_seconds from autonomous_run_sessions where id = ?",
         (session.id,),
