@@ -26,7 +26,8 @@ Plan: `docs/superpowers/plans/2026-06-28-phase6d-claw-inspired-operability.md`
 | `ce3e1c2` | `feat: mirror supervisor events into schema v2` |
 | `a278393` | `feat: add deterministic mock provider harness` |
 | `d245681` | `feat: add planning scan and jump slash commands` |
-| *(pending)* | `docs: record Phase 6D operability acceptance` |
+| `986b225` | `docs: record Phase 6D operability acceptance` |
+| `1c5f9f6` | `chore: ignore macOS .DS_Store artifacts` |
 
 ## Focused verification (Grok Task 8)
 
@@ -93,9 +94,11 @@ python3 -m venv "$tmpdir/venv"
 "$tmpdir/venv/bin/pip" install dist/*.whl
 COORD="$tmpdir/venv/bin/coordinator"
 REPO_ROOT="/Users/xiafan/Coordinator"
+COORDINATOR_HOME="$tmpdir/home"
 
 cd "$REPO_ROOT"
-"$COORD" init --dry-run --json          # ok: true
+COORDINATOR_HOME="$tmpdir/home" "$COORD" init --dry-run --json   # ok: true
+COORDINATOR_HOME="$tmpdir/home" "$COORD" init --yes              # materialize config
 COORDINATOR_HOME="$tmpdir/home" "$COORD" config explain --json   # ok: true
 COORDINATOR_HOME="$tmpdir/home" "$COORD" doctor --json           # ok: true
 "$COORD" mock-provider run commander \
@@ -104,8 +107,9 @@ COORDINATOR_HOME="$tmpdir/home" "$COORD" doctor --json           # ok: true
   --fixture "$REPO_ROOT/tests/fixtures/worker/success.json"       # worker completed
 ```
 
-All JSON commands parsed as valid JSON. `init --dry-run` wrote no files under
-`COORDINATOR_HOME`. Mock-provider ran without live model binaries.
+All JSON commands parsed as valid JSON. On a fresh `COORDINATOR_HOME`,
+`init --dry-run` writes nothing and leaves config absent; `config explain`
+requires `init --yes` first. Mock-provider ran without live model binaries.
 
 ## Documentation
 

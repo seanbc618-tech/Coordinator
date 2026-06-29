@@ -1103,6 +1103,7 @@ In a fresh temp directory with no `PYTHONPATH`, install the built wheel and run:
 
 ```bash
 coordinator init --dry-run --json
+coordinator init --yes
 coordinator config explain --json
 coordinator doctor --json
 coordinator mock-provider run commander --fixture /abs/path/to/tests/fixtures/commander/one-task.json
@@ -1111,7 +1112,8 @@ coordinator mock-provider run commander --fixture /abs/path/to/tests/fixtures/co
 Expected:
 
 - all JSON commands parse as valid JSON;
-- `init --dry-run` writes nothing;
+- `init --dry-run` writes nothing on a fresh `COORDINATOR_HOME`;
+- `init --yes` materializes config before `config explain` / `doctor`;
 - mock provider runs without live model binaries.
 
 - [ ] **Step 7: Gemini review**
