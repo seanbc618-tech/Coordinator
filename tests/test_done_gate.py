@@ -149,4 +149,4 @@ class DoneGateTests(unittest.TestCase):
                 conn.close()
 
         self.assertTrue(processed)
-        self.assertEqual(task["state"], "done")
+        self.assertEqual(task["state"], "awaiting_human")
