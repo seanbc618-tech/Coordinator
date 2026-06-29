@@ -159,6 +159,16 @@ def run_project_autonomy_session(
     if not project_has_runnable_run_session(conn, project_id=project_id):
         return []
 
+    from .overnight import maybe_pause_for_quiet_hours
+
+    quiet_decision = maybe_pause_for_quiet_hours(
+        conn,
+        project_id=project_id,
+        config=config,
+    )
+    if quiet_decision.should_pause:
+        return []
+
     row = conn.execute(
         "select idle_backoff_seconds from autonomous_run_sessions where id = ?",
         (session.id,),
@@ -371,6 +381,9 @@ def build_loop_status_payload(
             next_action = "review generated backlog"
         else:
             next_action = decision
+    from .strategy import get_active_milestone
+
+    active_milestone = get_active_milestone(conn, project_id=project_id)
     active_run = get_active_run_session(conn, project_id=project_id)
     return {
         "project_id": project_id,
@@ -387,6 +400,15 @@ def build_loop_status_payload(
                 "status": goal["status"],
             }
             if goal is not None
+            else None
+        ),
+        "current_milestone": (
+            {
+                "id": active_milestone.id,
+                "title": active_milestone.title,
+                "priority": active_milestone.priority,
+            }
+            if active_milestone is not None
             else None
         ),
         "last_iteration": (
@@ -438,6 +460,7 @@ def build_backlog_payload(
                 "priority": row["priority"],
                 "linked_task_id": row["linked_task_id"],
                 "dedupe_key": row["dedupe_key"],
+                "milestone_id": row["milestone_id"],
                 "created_at": row["created_at"],
             }
         )

@@ -497,6 +497,70 @@ coordinator doctor --json
 
 Both migration roots ship migration 016 in the installed wheel.
 
+## Strategic autonomy tables missing (Phase 7)
+
+**Symptom:** `/strategy`, `/recoveries`, or `/agents` return RPC errors mentioning
+`project_milestones`, `task_recovery_proposals`, `agent_scorecards`, or
+`overnight_summaries`.
+
+**Cause:** Database predates migration 017.
+
+**Fix:**
+
+```bash
+coordinator migrate
+coordinator doctor --json
+```
+
+Migration `017_strategy_recovery.sql` is byte-identical in both migration roots
+and ships in the installed wheel.
+
+## `/recoveries` shows nothing after a failed task
+
+**Symptom:** A task failed but `/recoveries` reports none pending.
+
+**Cause:** Recovery proposals are created when the autonomous loop evaluates a
+terminal failed/blocked task, or when `propose_recovery_for_failed_task` runs.
+Duplicate proposals for the same task are deduped.
+
+**Fix:**
+
+```bash
+coordinator --print -p "/loop step"
+coordinator --print -p "/recoveries"
+coordinator --print -p "/evals"
+```
+
+Confirm a `fail` or `blocked` evaluation exists before expecting backlog admission.
+
+## Overnight run paused during quiet hours
+
+**Symptom:** `/loop run` shows `paused` with reason mentioning quiet hours;
+no new tasks start overnight.
+
+**Cause:** Phase 7 pauses autonomous run ticking during the configured quiet
+window. Active workers are **not** killed — they finish at a safe boundary.
+
+**Fix:** Wait for quiet hours to end, or adjust `policy.toml`:
+
+```toml
+[overnight]
+quiet_start = "22:00"
+quiet_end = "08:00"
+```
+
+Then `coordinator --print -p "/loop resume"` if the session was paused.
+
+## `/agents` shows an agent on cooldown
+
+**Symptom:** Preferred rank is empty or an agent shows `cooldown_until` in the future.
+
+**Cause:** Individual agent cooldowns after failures/timeouts. Other capable
+agents continue to receive work.
+
+**Fix:** Wait for cooldown to expire, or inspect scorecards with
+`coordinator --print -p "/agents"`. Cooldown on one agent does not block all agents.
+
 ## Config explain shows `[REDACTED]`
 
 **Symptom:** Effective values appear as `[REDACTED]` in `config explain` output.

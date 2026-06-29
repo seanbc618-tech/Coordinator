@@ -33,6 +33,7 @@ class BacklogDraft:
     verification_commands: list[str]
     execution_policy: str = "normal"
     priority: int = 50
+    milestone_id: int | None = None
 
 
 def compute_backlog_dedupe_key(
@@ -82,6 +83,14 @@ def propose_backlog_items(
             dedupe_key=dedupe_key,
         ):
             continue
+        milestone_id = draft.milestone_id
+        if milestone_id is not None:
+            milestone_row = conn.execute(
+                "select project_id from project_milestones where id = ?",
+                (milestone_id,),
+            ).fetchone()
+            if milestone_row is None or milestone_row["project_id"] != project_id:
+                continue
         rejections = _small_task_rejection_reasons(draft)
         status = "ready" if not rejections else "candidate"
         try:
@@ -98,6 +107,7 @@ def propose_backlog_items(
                 priority=draft.priority,
                 status=status,
                 dedupe_key=dedupe_key,
+                milestone_id=milestone_id,
                 commit=False,
             )
         except sqlite3.IntegrityError as exc:

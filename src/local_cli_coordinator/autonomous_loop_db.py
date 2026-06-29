@@ -48,6 +48,7 @@ def insert_backlog_item(
     priority: int,
     status: str,
     dedupe_key: str,
+    milestone_id: int | None = None,
     commit: bool = True,
 ) -> str:
     item_id = f"backlog-{uuid.uuid4().hex[:12]}"
@@ -56,8 +57,8 @@ def insert_backlog_item(
         insert into project_backlog_items(
             id, project_id, goal_id, source, title, rationale,
             acceptance_criteria_json, verification_commands_json,
-            execution_policy, priority, status, dedupe_key
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            execution_policy, priority, status, dedupe_key, milestone_id
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             item_id,
@@ -72,6 +73,7 @@ def insert_backlog_item(
             priority,
             status,
             dedupe_key,
+            milestone_id,
         ),
     )
     if commit:
@@ -363,6 +365,7 @@ def insert_loop_iteration(
     admitted_count: int = 0,
     generated_count: int = 0,
     caps: dict[str, Any] | None = None,
+    milestone_id: int | None = None,
     commit: bool = True,
 ) -> str:
     iteration_id = f"loop-{uuid.uuid4().hex[:12]}"
@@ -371,8 +374,8 @@ def insert_loop_iteration(
         insert into loop_iterations(
             id, project_id, goal_id, decision, reason,
             evaluated_count, admitted_count, generated_count,
-            caps_json, ended_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, current_timestamp)
+            caps_json, milestone_id, ended_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, current_timestamp)
         """,
         (
             iteration_id,
@@ -384,6 +387,7 @@ def insert_loop_iteration(
             admitted_count,
             generated_count,
             json.dumps(caps or {}),
+            milestone_id,
         ),
     )
     if commit:

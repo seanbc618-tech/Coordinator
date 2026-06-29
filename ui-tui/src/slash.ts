@@ -18,13 +18,16 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/retry', description: 'Retry a failed task', method: 'project.task.retry' },
   { name: '/cancel', description: 'Cancel a running task', method: 'project.task.cancel', destructive: true },
   { name: '/dashboard', description: 'Show multi-project dashboard', method: 'supervisor.dashboard' },
+  { name: '/strategy', description: 'Show current milestone objective', method: 'project.strategy' },
+  { name: '/recoveries', description: 'List pending recovery proposals', method: 'project.recoveries' },
+  { name: '/overnight', description: 'Overnight window and latest summary', method: 'project.overnight' },
   { name: '/loop', description: 'Autonomous loop status and run controls', method: 'project.loop.status' },
   { name: '/plan', description: 'Show autonomous plan and next action', method: 'project.plan' },
   { name: '/scan', description: 'Read-only project diagnostics', method: 'project.scan' },
   { name: '/jump', description: 'Resolve task, log, or worktree target', method: 'project.jump' },
   { name: '/open', description: 'Alias of /jump', method: 'project.jump' },
   { name: '/logs', description: 'Show recent logs', method: 'project.logs' },
-  { name: '/agents', description: 'List active agents', method: 'project.agents' },
+  { name: '/agents', description: 'Show agent scorecards and routing hints', method: 'project.agents' },
   { name: '/pause', description: 'Pause project scheduling', method: 'project.pause' },
   { name: '/resume', description: 'Resume project scheduling', method: 'project.resume' },
   { name: '/stop', description: 'Stop project at safe boundary', method: 'project.stop', destructive: true },
@@ -81,6 +84,10 @@ const HELP_COMMAND_NAMES = new Set([
   '/approve',
   '/retry',
   '/dashboard',
+  '/strategy',
+  '/recoveries',
+  '/agents',
+  '/overnight',
   '/loop',
   '/plan',
   '/scan',
@@ -122,6 +129,23 @@ export function formatHelpText(): string {
     }
     if (cmd.name === '/dashboard') {
       lines.push('/dashboard - Multi-project task counts (no titles)')
+      continue
+    }
+    if (cmd.name === '/strategy') {
+      lines.push('/strategy - Show current milestone objective')
+      continue
+    }
+    if (cmd.name === '/recoveries') {
+      lines.push('/recoveries - List pending recovery proposals')
+      continue
+    }
+    if (cmd.name === '/agents') {
+      lines.push('/agents - Show agent scorecards and routing hints')
+      continue
+    }
+    if (cmd.name === '/overnight') {
+      lines.push('/overnight - Overnight window and latest summary')
+      lines.push('/overnight start --until 08:00 - Configure overnight run window')
       continue
     }
     if (cmd.name === '/plan') {

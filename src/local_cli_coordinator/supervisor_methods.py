@@ -228,6 +228,10 @@ class SupervisorMethods:
             "project.loop.resume": self._handle_project_loop_resume,
             "project.loop.run.status": self._handle_project_loop_run_status,
             "project.plan": self._handle_project_plan,
+            "project.strategy": self._handle_project_strategy,
+            "project.recoveries": self._handle_project_recoveries,
+            "project.agents": self._handle_project_agents,
+            "project.overnight": self._handle_project_overnight,
             "project.scan": self._handle_project_scan,
             "project.jump": self._handle_project_jump,
             "events.subscribe": self._handle_events_subscribe,
@@ -955,6 +959,131 @@ class SupervisorMethods:
                 config=self._config,
             ),
         )
+
+    def _handle_project_strategy(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .strategy import build_strategy_summary
+
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        return self._ok(
+            request,
+            build_strategy_summary(conn, project_id=project_id),
+        )
+
+    def _handle_project_recoveries(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .recovery import list_recovery_proposals
+
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        status = request.params.get("status")
+        status_text = str(status) if status is not None else None
+        proposals = list_recovery_proposals(
+            conn,
+            project_id=project_id,
+            status=status_text,
+        )
+        return self._ok(
+            request,
+            {
+                "project_id": project_id,
+                "proposals": [
+                    {
+                        "id": proposal.id,
+                        "task_id": proposal.task_id,
+                        "proposal_type": proposal.proposal_type,
+                        "status": proposal.status,
+                        "title": proposal.title,
+                        "rationale": proposal.rationale,
+                        "verification_commands": list(proposal.verification_commands),
+                    }
+                    for proposal in proposals
+                ],
+            },
+        )
+
+    def _handle_project_agents(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .agent_scorecard import get_agent_scorecard, rank_workers_for_capabilities
+
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        preferred_workers: list[str] = []
+        if self._config is not None:
+            preferred_workers = rank_workers_for_capabilities(
+                self._config,
+                conn,
+                capabilities=["code"],
+            )
+        agents_payload: list[dict[str, object]] = []
+        if self._config is not None:
+            for agent_id, agent in self._config.agents.items():
+                card = get_agent_scorecard(
+                    conn,
+                    agent_id=agent_id,
+                    role=agent.role,
+                )
+                agents_payload.append(
+                    {
+                        "agent_id": agent_id,
+                        "role": agent.role,
+                        "capabilities": list(agent.capabilities),
+                        "successes": card.successes,
+                        "failures": card.failures,
+                        "timeouts": card.timeouts,
+                        "cancellations": card.cancellations,
+                        "cooldown_until": card.cooldown_until,
+                        "preferred_rank": (
+                            preferred_workers.index(agent_id) + 1
+                            if agent_id in preferred_workers
+                            else None
+                        ),
+                    }
+                )
+        return self._ok(
+            request,
+            {
+                "project_id": project_id,
+                "agents": agents_payload,
+                "preferred_workers": preferred_workers,
+            },
+        )
+
+    def _handle_project_overnight(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .overnight import (
+            get_latest_overnight_summary,
+            overnight_window_from_config,
+            parse_overnight_until,
+        )
+
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        if self._config is None:
+            return self._error(request, "supervisor config is unavailable")
+        window = overnight_window_from_config(self._config)
+        args = str(request.params.get("args", "")).strip()
+        parsed = parse_overnight_until(args)
+        payload: dict[str, object] = {
+            "project_id": project_id,
+            "quiet_start": window.quiet_start,
+            "quiet_end": window.quiet_end,
+            "enabled": parsed.enabled,
+            "until": parsed.until_time,
+            "latest_summary": get_latest_overnight_summary(
+                conn, project_id=project_id
+            ),
+        }
+        return self._ok(request, payload)
 
     def _handle_project_scan(
         self, conn: sqlite3.Connection, request: RequestEnvelope

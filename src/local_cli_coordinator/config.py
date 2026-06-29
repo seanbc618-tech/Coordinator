@@ -63,6 +63,13 @@ class DaemonPolicyConfig:
 
 
 @dataclass(frozen=True)
+class OvernightConfig:
+    quiet_start: str = "22:00"
+    quiet_end: str = "08:00"
+    enabled: bool = False
+
+
+@dataclass(frozen=True)
 class AutonomyConfig:
     enabled: bool = False
     max_iterations_per_tick: int = 1
@@ -118,6 +125,7 @@ class CoordinatorConfig:
     connectors: dict[str, ConnectorConfig] = field(default_factory=dict)
     daemon_policy: DaemonPolicyConfig = field(default_factory=DaemonPolicyConfig)
     autonomy: AutonomyConfig = field(default_factory=AutonomyConfig)
+    overnight: OvernightConfig = field(default_factory=OvernightConfig)
     permissions_policy: PermissionsPolicyConfig = field(
         default_factory=PermissionsPolicyConfig
     )
@@ -369,6 +377,13 @@ def load_config_from_dir(config_dir: Path) -> CoordinatorConfig:
     )
 
     autonomy_raw = policy_doc.get("autonomy", {})
+    overnight_raw = policy_doc.get("overnight", {})
+    overnight = OvernightConfig(
+        quiet_start=str(overnight_raw.get("quiet_start", "22:00")),
+        quiet_end=str(overnight_raw.get("quiet_end", "08:00")),
+        enabled=bool(overnight_raw.get("enabled", False)),
+    )
+
     autonomy = AutonomyConfig(
         enabled=bool(autonomy_raw.get("enabled", False)),
         max_iterations_per_tick=int(autonomy_raw.get("max_iterations_per_tick", 1)),
@@ -401,6 +416,7 @@ def load_config_from_dir(config_dir: Path) -> CoordinatorConfig:
         connectors=connectors,
         daemon_policy=daemon_policy,
         autonomy=autonomy,
+        overnight=overnight,
         permissions_policy=permissions_policy,
     )
 

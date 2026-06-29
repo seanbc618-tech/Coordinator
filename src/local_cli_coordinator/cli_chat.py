@@ -623,6 +623,12 @@ def _parse_jump_slash(text: str) -> tuple[str, dict[str, Any]]:
     return params
 
 
+def _parse_overnight_slash(text: str) -> tuple[str, dict[str, Any]]:
+    parts = text.strip().split(maxsplit=1)
+    args = parts[1] if len(parts) > 1 else ""
+    return "project.overnight", {"args": args}
+
+
 def _parse_loop_slash(text: str) -> tuple[str, dict[str, Any]]:
     parts = text.strip().split()
     sub = parts[1].lower() if len(parts) >= 2 else ""
@@ -670,9 +676,16 @@ def _handle_slash(
         for entry in projects:
             counts = entry.get("task_counts") or {}
             count_text = ", ".join(f"{k}={v}" for k, v in counts.items()) or "none"
+            strategic = entry.get("strategic") or {}
+            strategic_text = (
+                f"milestones={strategic.get('active_milestones', 0)} "
+                f"recoveries={strategic.get('pending_recoveries', 0)} "
+                f"overnight={strategic.get('overnight_summaries', 0)}"
+            )
             lines.append(
                 f"  {entry.get('project_id')} goal={entry.get('goal_status')} "
-                f"workers={entry.get('active_workers', 0)} tasks[{count_text}]"
+                f"workers={entry.get('active_workers', 0)} tasks[{count_text}] "
+                f"{strategic_text}"
             )
         return PromptOutcome(
             ok=True,
@@ -874,6 +887,82 @@ def _handle_slash(
                     f"({entry.get('next_action')})"
                 )
             reply = "\n".join(lines)
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=reply,
+            intent="status_question",
+        )
+    if command == "/strategy":
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="project.strategy",
+            params={},
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        milestone = result.get("current_milestone")
+        if milestone:
+            reply = (
+                f"Strategy: {milestone.get('title')} "
+                f"(priority {milestone.get('priority')})"
+            )
+        else:
+            reply = "Strategy: no active milestone"
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=reply,
+            intent="status_question",
+        )
+    if command == "/recoveries":
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="project.recoveries",
+            params={"status": "pending"},
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        proposals = result.get("proposals") or []
+        if not proposals:
+            reply = "Recoveries: none pending"
+        else:
+            lines = ["Recoveries:"]
+            for proposal in proposals:
+                lines.append(
+                    f"  {proposal.get('task_id')} -> {proposal.get('proposal_type')}: "
+                    f"{proposal.get('title')}"
+                )
+            reply = "\n".join(lines)
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=reply,
+            intent="status_question",
+        )
+    if command == "/overnight":
+        method, params = _parse_overnight_slash(text)
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method=method,
+            params=params,
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        reply = (
+            f"Overnight: quiet {result.get('quiet_start')}-{result.get('quiet_end')}"
+        )
+        latest = result.get("latest_summary")
+        if latest:
+            reply += (
+                f"; last summary tasks_completed={latest.get('tasks_completed', 0)}"
+            )
         return PromptOutcome(
             ok=True,
             project_id=project_id,
@@ -1114,6 +1203,37 @@ def _rpc_slash(
             project_id=project_id,
             method="project.evaluations",
             params={},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/strategy":
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="project.strategy",
+            params={},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/recoveries":
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="project.recoveries",
+            params={"status": "pending"},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/overnight":
+        method, params = _parse_overnight_slash(text)
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method=method,
+            params=params,
         )
         if envelope is not None:
             return envelope, 0 if envelope.ok else 1

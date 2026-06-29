@@ -147,7 +147,16 @@ export function formatSlashResponse(
           const countText = Object.keys(counts).length
             ? Object.entries(counts).map(([k, v]) => `${k}=${v}`).join(', ')
             : 'none'
-          return `- ${entry.project_id} goal=${entry.goal_status} workers=${entry.active_workers ?? 0} [${countText}]`
+          const strategic = (entry.strategic as Record<string, number> | undefined) ?? {}
+          const strategicText = (
+            `milestones=${strategic.active_milestones ?? 0} `
+            + `recoveries=${strategic.pending_recoveries ?? 0} `
+            + `overnight=${strategic.overnight_summaries ?? 0}`
+          )
+          return (
+            `- ${entry.project_id} goal=${entry.goal_status} `
+            + `workers=${entry.active_workers ?? 0} [${countText}] ${strategicText}`
+          )
         }),
       ].join('\n')
     }
@@ -166,6 +175,56 @@ export function formatSlashResponse(
     case 'project.task.cancel': {
       const terminated = result.worker_terminated === true ? ' (worker stopped)' : ''
       return `Task ${result.task_id} -> ${result.state}${terminated}`
+    }
+
+    case 'project.strategy': {
+      const milestone = result.current_milestone as Record<string, unknown> | null | undefined
+      if (!milestone) {
+        return 'Strategy — no active milestone'
+      }
+      return (
+        `Strategy — ${milestone.title} (priority ${milestone.priority ?? 0}); `
+        + `active=${result.active_milestone_count ?? 0}`
+      )
+    }
+
+    case 'project.recoveries': {
+      const proposals = (result.proposals as Array<Record<string, unknown>> | undefined) ?? []
+      if (!proposals.length) {
+        return 'Recoveries — none pending'
+      }
+      return [
+        'Recoveries:',
+        ...proposals.map(
+          p => `- ${p.task_id} [${p.proposal_type}] ${p.title}`,
+        ),
+      ].join('\n')
+    }
+
+    case 'project.agents': {
+      const agents = (result.agents as Array<Record<string, unknown>> | undefined) ?? []
+      if (!agents.length) {
+        return 'Agents — (none configured)'
+      }
+      return [
+        'Agents:',
+        ...agents.map(
+          a => (
+            `- ${a.agent_id} [${a.role}] ok=${a.successes ?? 0} `
+            + `fail=${a.failures ?? 0} rank=${a.preferred_rank ?? '-'}`
+          ),
+        ),
+      ].join('\n')
+    }
+
+    case 'project.overnight': {
+      const latest = result.latest_summary as Record<string, unknown> | null | undefined
+      const latestText = latest
+        ? `; last tasks_completed=${latest.tasks_completed ?? 0}`
+        : ''
+      return (
+        `Overnight — quiet ${result.quiet_start}-${result.quiet_end}${latestText}`
+      )
     }
 
     case 'project.plan': {

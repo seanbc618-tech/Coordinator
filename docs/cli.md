@@ -1,14 +1,17 @@
 # Coordinator CLI Prompt Modes
 
-> **Phase 6D merged** — this file now covers machine-readable admin `--json`
-> output, `coordinator init`, `config explain`, permission modes, worker-state
-> snapshots, event schema v2 replay, the mock-provider harness, and operability
-> slash commands (`/plan`, `/scan`, `/jump`, `/open`). Earlier phases cover
-> `@file` context, `--resume`/`--fork`, execution policy, `/approve`, `/cancel`,
-> `/retry`, `/dashboard`, `/task <id> log`, and `/loop` autonomous loop commands.
+> **Phase 7 merged** — this file now covers strategic autonomy slash commands
+> (`/strategy`, `/recoveries`, `/agents`, `/overnight`), milestone-linked backlog,
+> bounded recovery proposals, agent scorecards, and overnight quiet-hour summaries.
+> Phase 6D covers machine-readable admin `--json` output, `coordinator init`,
+> `config explain`, permission modes, worker-state snapshots, event schema v2
+> replay, the mock-provider harness, and operability slash commands (`/plan`,
+> `/scan`, `/jump`, `/open`). Earlier phases cover `@file` context,
+> `--resume`/`--fork`, execution policy, `/approve`, `/cancel`, `/retry`,
+> `/dashboard`, `/task <id> log`, and `/loop` autonomous loop commands.
 > See [troubleshooting](troubleshooting.md) for error codes,
 > [autonomous-loop](autonomous-loop.md) for loop configuration, and
-> [migration](migration.md) for schema changes (migrations 012–016).
+> [migration](migration.md) for schema changes (migrations 012–017).
 
 Phase 5.3 adds Pi-inspired headless entry points on top of the global Supervisor
 `chat.send` path. The Ink TUI remains the default interactive shell.
@@ -58,9 +61,15 @@ coordinator --print -p "/approve <task-id>"
 coordinator --print -p "/retry <task-id>"
 coordinator --print -p "/plan"
 coordinator --print -p "/scan"
+coordinator --print -p "/strategy"
+coordinator --print -p "/recoveries"
+coordinator --print -p "/agents"
+coordinator --print -p "/overnight"
+coordinator --print -p "/overnight start --until 08:00"
 coordinator --print -p "/jump <task-id> log"
 coordinator --print -p "/open <task-id> log"
 coordinator --mode json -p "/plan"
+coordinator --mode json -p "/strategy"
 ```
 
 Operability slash commands (`/plan`, `/scan`, `/jump`, `/open`) call Supervisor
@@ -289,9 +298,48 @@ coordinator --print -p "/task <task-id> log"
 coordinator --print -p "/dashboard"
 ```
 
-Returns per-project: goal status, task counts by state, active workers.
+Returns per-project: goal status, task counts by state, active workers, and
+strategic counts (`active_milestones`, `pending_recoveries`, `overnight_summaries`).
 Also returns aggregate `autonomous_runs` counts (`running`, `paused`, `stopped`).
 No `project_id` required; aggregate counts only (no cross-project title leakage).
+
+## Strategic autonomy (Phase 7)
+
+```bash
+coordinator --print -p "/strategy"
+coordinator --print -p "/recoveries"
+coordinator --print -p "/agents"
+coordinator --print -p "/overnight"
+coordinator --print -p "/overnight start --until 08:00"
+```
+
+All commands route through Supervisor RPC — never local shortcuts:
+
+| Slash | RPC | What you see |
+|---|---|---|
+| `/strategy` | `project.strategy` | Current milestone title, priority, active count |
+| `/recoveries` | `project.recoveries` | Pending recovery proposals for failed tasks |
+| `/agents` | `project.agents` | Per-agent scorecards and routing preference |
+| `/overnight` | `project.overnight` | Quiet-hour window and latest overnight summary |
+
+- **Milestones** are project-scoped. `/strategy` never shows another project's
+  milestone titles.
+- **Recoveries** are deduped per failed task. At most one open proposal exists;
+  admission requires a recorded `fail`/`blocked` evaluation and creates a normal
+  ready backlog item (not an immediate worker task).
+- **Agent scorecards** influence worker routing only among capable agents. One
+  agent on cooldown does not block others.
+- **Overnight quiet hours** pause autonomous run ticking without killing active
+  workers. Configure in `policy.toml`:
+
+```toml
+[overnight]
+quiet_start = "22:00"
+quiet_end = "08:00"
+enabled = false
+```
+
+`/loop status` also reports `current_milestone` when an active milestone exists.
 
 ## Autonomous loop (Phase 6 / 6B / 6C)
 

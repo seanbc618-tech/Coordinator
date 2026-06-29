@@ -92,12 +92,39 @@ export function buildSlashRpc(
     }
   }
 
-  if (commandName === '/plan' || commandName === '/scan') {
+  if (commandName === '/plan' || commandName === '/scan' || commandName === '/strategy') {
     return {
       ok: true,
       method,
       params: {},
       displayMethod: method,
+    }
+  }
+
+  if (commandName === '/recoveries') {
+    return {
+      ok: true,
+      method: 'project.recoveries',
+      params: { status: 'pending' },
+      displayMethod: 'project.recoveries',
+    }
+  }
+
+  if (commandName === '/agents') {
+    return {
+      ok: true,
+      method: 'project.agents',
+      params: {},
+      displayMethod: 'project.agents',
+    }
+  }
+
+  if (commandName === '/overnight') {
+    return {
+      ok: true,
+      method: 'project.overnight',
+      params: { args: args.trim() },
+      displayMethod: 'project.overnight',
     }
   }
 
