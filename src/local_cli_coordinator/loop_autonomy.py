@@ -109,6 +109,10 @@ def _persist_iteration(
     generated_count: int = 0,
     caps: dict[str, Any] | None = None,
 ) -> str:
+    from .strategy import get_active_milestone
+
+    milestone = get_active_milestone(conn, project_id=decision.project_id)
+    milestone_id = milestone.id if milestone is not None else None
     return insert_loop_iteration(
         conn,
         project_id=decision.project_id,
@@ -119,6 +123,7 @@ def _persist_iteration(
         admitted_count=len(decision.admitted_task_ids),
         generated_count=generated_count,
         caps=caps or {},
+        milestone_id=milestone_id,
     )
 
 
