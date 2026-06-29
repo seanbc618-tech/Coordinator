@@ -65,9 +65,22 @@ def _slug(text: str) -> str:
     return cleaned[:40] or "task"
 
 
-def _select_agent(config: CoordinatorConfig, capabilities: list[str], role: str = "worker"):
+def _select_agent(
+    config: CoordinatorConfig,
+    capabilities: list[str],
+    role: str = "worker",
+    conn: sqlite3.Connection | None = None,
+):
     if not capabilities:
         return None
+    if conn is not None and role == "worker":
+        from .agent_scorecard import rank_workers_for_capabilities
+
+        ranked = rank_workers_for_capabilities(
+            config, conn, capabilities=capabilities
+        )
+        if ranked:
+            return config.agents.get(ranked[0])
     return select_agent_by_role(config, role, capabilities)
 
 
@@ -320,7 +333,7 @@ def _claim_next_ready_task(
                 if capabilities and not set(capabilities).issubset(set(agent.capabilities)):
                     continue
             else:
-                agent = _select_agent(config, capabilities)
+                agent = _select_agent(config, capabilities, conn=conn)
             if agent is None:
                 continue
             if active_lease_count(conn, agent.id) >= agent.max_concurrency:
@@ -339,7 +352,7 @@ def _claim_next_ready_task(
         fallback_id = _fallback_claim_agent_id(config)
         for task in candidates:
             capabilities = [part for part in task["capabilities"].split(",") if part]
-            if _select_agent(config, capabilities) is not None:
+            if _select_agent(config, capabilities, conn=conn) is not None:
                 continue
             if active_lease_count(conn) >= max_global:
                 break
@@ -889,7 +902,7 @@ def _process_task(
             )
             return True
     else:
-        agent = _select_agent(config, capabilities)
+        agent = _select_agent(config, capabilities, conn=conn)
 
     if agent is None:
         capability_text = ", ".join(capabilities) if capabilities else "(none)"
