@@ -39392,6 +39392,23 @@ function formatHelpText() {
       lines.push("/dashboard - Multi-project task counts (no titles)");
       continue;
     }
+    if (cmd.name === "/strategy") {
+      lines.push("/strategy - Show current milestone objective");
+      continue;
+    }
+    if (cmd.name === "/recoveries") {
+      lines.push("/recoveries - List pending recovery proposals");
+      continue;
+    }
+    if (cmd.name === "/agents") {
+      lines.push("/agents - Show agent scorecards and routing hints");
+      continue;
+    }
+    if (cmd.name === "/overnight") {
+      lines.push("/overnight - Overnight window and latest summary");
+      lines.push("/overnight start --until 08:00 - Configure overnight run window");
+      continue;
+    }
     if (cmd.name === "/plan") {
       lines.push("/plan - Show autonomous plan and next action");
       continue;
@@ -39440,13 +39457,16 @@ var init_slash = __esm({
       { name: "/retry", description: "Retry a failed task", method: "project.task.retry" },
       { name: "/cancel", description: "Cancel a running task", method: "project.task.cancel", destructive: true },
       { name: "/dashboard", description: "Show multi-project dashboard", method: "supervisor.dashboard" },
+      { name: "/strategy", description: "Show current milestone objective", method: "project.strategy" },
+      { name: "/recoveries", description: "List pending recovery proposals", method: "project.recoveries" },
+      { name: "/overnight", description: "Overnight window and latest summary", method: "project.overnight" },
       { name: "/loop", description: "Autonomous loop status and run controls", method: "project.loop.status" },
       { name: "/plan", description: "Show autonomous plan and next action", method: "project.plan" },
       { name: "/scan", description: "Read-only project diagnostics", method: "project.scan" },
       { name: "/jump", description: "Resolve task, log, or worktree target", method: "project.jump" },
       { name: "/open", description: "Alias of /jump", method: "project.jump" },
       { name: "/logs", description: "Show recent logs", method: "project.logs" },
-      { name: "/agents", description: "List active agents", method: "project.agents" },
+      { name: "/agents", description: "Show agent scorecards and routing hints", method: "project.agents" },
       { name: "/pause", description: "Pause project scheduling", method: "project.pause" },
       { name: "/resume", description: "Resume project scheduling", method: "project.resume" },
       { name: "/stop", description: "Stop project at safe boundary", method: "project.stop", destructive: true },
@@ -39464,6 +39484,10 @@ var init_slash = __esm({
       "/approve",
       "/retry",
       "/dashboard",
+      "/strategy",
+      "/recoveries",
+      "/agents",
+      "/overnight",
       "/loop",
       "/plan",
       "/scan",
@@ -39767,12 +39791,36 @@ function buildSlashRpc(commandName, method, args) {
       displayMethod: "project.jump"
     };
   }
-  if (commandName === "/plan" || commandName === "/scan") {
+  if (commandName === "/plan" || commandName === "/scan" || commandName === "/strategy") {
     return {
       ok: true,
       method,
       params: {},
       displayMethod: method
+    };
+  }
+  if (commandName === "/recoveries") {
+    return {
+      ok: true,
+      method: "project.recoveries",
+      params: { status: "pending" },
+      displayMethod: "project.recoveries"
+    };
+  }
+  if (commandName === "/agents") {
+    return {
+      ok: true,
+      method: "project.agents",
+      params: {},
+      displayMethod: "project.agents"
+    };
+  }
+  if (commandName === "/overnight") {
+    return {
+      ok: true,
+      method: "project.overnight",
+      params: { args: args.trim() },
+      displayMethod: "project.overnight"
     };
   }
   if (commandName === "/loop") {
@@ -40031,7 +40079,9 @@ ${logText}`;
         ...projects.map((entry) => {
           const counts = entry.task_counts ?? {};
           const countText = Object.keys(counts).length ? Object.entries(counts).map(([k, v]) => `${k}=${v}`).join(", ") : "none";
-          return `- ${entry.project_id} goal=${entry.goal_status} workers=${entry.active_workers ?? 0} [${countText}]`;
+          const strategic = entry.strategic ?? {};
+          const strategicText = `milestones=${strategic.active_milestones ?? 0} recoveries=${strategic.pending_recoveries ?? 0} overnight=${strategic.overnight_summaries ?? 0}`;
+          return `- ${entry.project_id} goal=${entry.goal_status} workers=${entry.active_workers ?? 0} [${countText}] ${strategicText}`;
         })
       ].join("\n");
     }
@@ -40049,6 +40099,42 @@ ${tail}`;
     case "project.task.cancel": {
       const terminated = result.worker_terminated === true ? " (worker stopped)" : "";
       return `Task ${result.task_id} -> ${result.state}${terminated}`;
+    }
+    case "project.strategy": {
+      const milestone = result.current_milestone;
+      if (!milestone) {
+        return "Strategy \u2014 no active milestone";
+      }
+      return `Strategy \u2014 ${milestone.title} (priority ${milestone.priority ?? 0}); active=${result.active_milestone_count ?? 0}`;
+    }
+    case "project.recoveries": {
+      const proposals = result.proposals ?? [];
+      if (!proposals.length) {
+        return "Recoveries \u2014 none pending";
+      }
+      return [
+        "Recoveries:",
+        ...proposals.map(
+          (p) => `- ${p.task_id} [${p.proposal_type}] ${p.title}`
+        )
+      ].join("\n");
+    }
+    case "project.agents": {
+      const agents = result.agents ?? [];
+      if (!agents.length) {
+        return "Agents \u2014 (none configured)";
+      }
+      return [
+        "Agents:",
+        ...agents.map(
+          (a) => `- ${a.agent_id} [${a.role}] ok=${a.successes ?? 0} fail=${a.failures ?? 0} rank=${a.preferred_rank ?? "-"}`
+        )
+      ].join("\n");
+    }
+    case "project.overnight": {
+      const latest = result.latest_summary;
+      const latestText = latest ? `; last tasks_completed=${latest.tasks_completed ?? 0}` : "";
+      return `Overnight \u2014 quiet ${result.quiet_start}-${result.quiet_end}${latestText}`;
     }
     case "project.plan": {
       const goal = result.goal;

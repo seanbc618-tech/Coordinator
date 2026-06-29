@@ -129,9 +129,29 @@ input starts with `/`.
 | `/task <id>` | Show one task in detail (goal, verify commands, last event, attempt log) |
 | `/plan` | Show active goal, autonomous run, backlog, and next action |
 | `/scan` | Read-only diagnostics (git tree, verify commands, failed tasks, agents) |
+| `/strategy` | Show current milestone objective (`project.strategy`) |
+| `/recoveries` | List pending failure recovery proposals |
+| `/agents` | Show agent scorecards and routing preference |
+| `/overnight` | Quiet-hour window and latest overnight summary |
+| `/dashboard` | Multi-project counts (includes strategic metrics, no task titles) |
 | `/jump <target>` | Resolve a task, log, goal, worktree, or supervisor log path (hint only) |
 | `/open <target>` | Alias of `/jump` (does not launch an editor) |
 | `/logs` | Show recent logs |
+
+### Strategic autonomy commands (Phase 7)
+
+`/strategy`, `/recoveries`, `/agents`, and `/overnight` call Supervisor RPC
+methods. They never bypass the socket connection or read the database locally.
+
+- `/strategy` — highest-priority active milestone for the current project.
+- `/recoveries` — bounded repair/diagnostic proposals for failed terminal tasks.
+- `/agents` — per-agent successes, failures, cooldowns, and preferred rank.
+- `/overnight` — configured quiet window (`quiet_start`–`quiet_end`) and the
+  latest persisted overnight summary (task counts only; no prompts or secrets).
+- `/overnight start --until 08:00` — passes schedule args to `project.overnight`.
+
+`/dashboard` adds per-project strategic counts: active milestones, pending
+recoveries, and overnight summary count — still without cross-project task titles.
 
 ### Operability commands (Phase 6D)
 
@@ -150,7 +170,6 @@ input starts with `/`.
 Failed or cancelled tasks may include a worker-state snapshot reference in
 `/task <id>` detail (see [cli.md](cli.md#worker-state-snapshots-phase-6d)).
 | `/help` | List available commands (local; works offline) |
-| `/agents` | List active agents |
 | `/pause` | Pause scheduling for this project |
 | `/resume` | Resume scheduling |
 | `/stop` | Stop this project at the next safe boundary (**destructive**) |
