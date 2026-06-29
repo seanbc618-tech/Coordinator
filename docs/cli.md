@@ -1,8 +1,11 @@
 # Coordinator CLI Prompt Modes
 
-> **Phase 7 merged** — this file now covers strategic autonomy slash commands
-> (`/strategy`, `/recoveries`, `/agents`, `/overnight`), milestone-linked backlog,
-> bounded recovery proposals, agent scorecards, and overnight quiet-hour summaries.
+> **Phase 8 merged** — this file now covers evidence review slash commands
+> (`/evidence`, `/review`, `/risk`, `/merge-ready`), durable task evidence,
+> rules-v2 completion gates, risk assessment, and review packets v2.
+> Phase 7 covers strategic autonomy (`/strategy`, `/recoveries`, `/agents`,
+> `/overnight`), milestone-linked backlog, bounded recovery proposals, agent
+> scorecards, and overnight quiet-hour summaries.
 > Phase 6D covers machine-readable admin `--json` output, `coordinator init`,
 > `config explain`, permission modes, worker-state snapshots, event schema v2
 > replay, the mock-provider harness, and operability slash commands (`/plan`,
@@ -11,7 +14,7 @@
 > `/dashboard`, `/task <id> log`, and `/loop` autonomous loop commands.
 > See [troubleshooting](troubleshooting.md) for error codes,
 > [autonomous-loop](autonomous-loop.md) for loop configuration, and
-> [migration](migration.md) for schema changes (migrations 012–017).
+> [migration](migration.md) for schema changes (migrations 012–018).
 
 Phase 5.3 adds Pi-inspired headless entry points on top of the global Supervisor
 `chat.send` path. The Ink TUI remains the default interactive shell.
@@ -66,10 +69,15 @@ coordinator --print -p "/recoveries"
 coordinator --print -p "/agents"
 coordinator --print -p "/overnight"
 coordinator --print -p "/overnight start --until 08:00"
+coordinator --print -p "/evidence <task-id>"
+coordinator --print -p "/review <task-id>"
+coordinator --print -p "/risk <task-id>"
+coordinator --print -p "/merge-ready <task-id>"
 coordinator --print -p "/jump <task-id> log"
 coordinator --print -p "/open <task-id> log"
 coordinator --mode json -p "/plan"
 coordinator --mode json -p "/strategy"
+coordinator --mode json -p "/evidence <task-id>"
 ```
 
 Operability slash commands (`/plan`, `/scan`, `/jump`, `/open`) call Supervisor
@@ -340,6 +348,46 @@ enabled = false
 ```
 
 `/loop status` also reports `current_milestone` when an active milestone exists.
+
+## Evidence review gates (Phase 8)
+
+```bash
+coordinator --print -p "/evidence <task-id>"
+coordinator --print -p "/review <task-id>"
+coordinator --print -p "/risk <task-id>"
+coordinator --print -p "/merge-ready <task-id>"
+```
+
+All commands route through Supervisor RPC — never local DB shortcuts:
+
+| Slash | RPC | What you see |
+|---|---|---|
+| `/evidence` | `project.evidence` | Durable command, diff, and acceptance evidence rows |
+| `/review` | `project.review` | Completion gate status, blockers, risk, packet paths |
+| `/risk` | `project.risk` | Latest risk level, reasons, human-review flag |
+| `/merge-ready` | `project.merge_ready` | Merge readiness under repo `review_policy` and evidence |
+
+- **Evidence** is project-scoped. `/evidence` never returns another project's
+  command output or failure summaries.
+- **Failed commands** are stored with `status: failed` and block the completion
+  gate; they cannot be hidden from evidence listings.
+- **Code tasks** require durable changed-file evidence. No-op worker runs fail
+  the completion gate and are classified as risky.
+- **Acceptance criteria** must map to `acceptance` evidence (or rule-inferred
+  coverage from passing verification + changed files) before a task can reach
+  `done`.
+- **Reviewer verdicts** (`rules-v2`) are written by the server-side evaluator
+  only. Worker stdout cannot forge approve/reject verdicts.
+- **Review packets v2** are written under
+  `<repo>/.coordinator/review_packets_v2/<task-id>.{json,md}` with secret
+  redaction. Paths cannot escape the repo root.
+- **`/merge-ready`** respects existing repo policy. It does not expand
+  auto-merge; risky migrations, protected paths, or `review_policy` human-review
+  rules return `merge_ready: false` even when verification passed.
+
+After worker attempts, the engine records command and diff evidence automatically.
+The done transition runs `evaluate_completion_evidence` and `assess_task_risk`
+before marking a task `done` or routing it to `awaiting_human`.
 
 ## Autonomous loop (Phase 6 / 6B / 6C)
 

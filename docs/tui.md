@@ -130,6 +130,10 @@ input starts with `/`.
 | `/plan` | Show active goal, autonomous run, backlog, and next action |
 | `/scan` | Read-only diagnostics (git tree, verify commands, failed tasks, agents) |
 | `/strategy` | Show current milestone objective (`project.strategy`) |
+| `/evidence <id>` | Show durable task evidence (`project.evidence`) |
+| `/review <id>` | Show evidence review summary (`project.review`) |
+| `/risk <id>` | Show task risk assessment (`project.risk`) |
+| `/merge-ready <id>` | Check merge readiness under repo policy (`project.merge_ready`) |
 | `/recoveries` | List pending failure recovery proposals |
 | `/agents` | Show agent scorecards and routing preference |
 | `/overnight` | Quiet-hour window and latest overnight summary |
@@ -137,6 +141,24 @@ input starts with `/`.
 | `/jump <target>` | Resolve a task, log, goal, worktree, or supervisor log path (hint only) |
 | `/open <target>` | Alias of `/jump` (does not launch an editor) |
 | `/logs` | Show recent logs |
+
+### Evidence review commands (Phase 8)
+
+`/evidence`, `/review`, `/risk`, and `/merge-ready` call Supervisor RPC
+methods. They require a task id argument and never bypass the socket connection
+or read the database locally.
+
+- `/evidence <task-id>` — command, diff, and acceptance evidence rows for the
+  current project only.
+- `/review <task-id>` — completion gate (`completion_allowed`), blockers, risk
+  level, and review packet v2 paths when present.
+- `/risk <task-id>` — latest persisted risk assessment with human-review flag.
+- `/merge-ready <task-id>` — whether the task is merge-ready under repo
+  `review_policy` and durable evidence (does not force merge or expand
+  auto-merge policy).
+
+Review packets v2 live under `.coordinator/review_packets_v2/` inside the
+project repo. Credential-like strings are redacted in JSON and Markdown output.
 
 ### Strategic autonomy commands (Phase 7)
 
