@@ -38,12 +38,18 @@ Single global Supervisor preserved. No second daemon. No RPC bypass.
 | Reviewer | Verdict | Handoff |
 | --- | --- | --- |
 | Gemini (Tasks 1–8) | CONDITIONAL PASS | `docs/superpowers/handoffs/2026-06-29-phase7-gemini-review.md` |
-| Codex Gate G | Pending on this commit | This document |
+| Codex Gate G | PASS | This document |
 
 Gemini conditions addressed in Task 10:
 
 1. Documentation updated in `docs/cli.md`, `docs/tui.md`, `docs/troubleshooting.md`
 2. TUI bundle rebuilt and committed under `src/local_cli_coordinator/tui_bundle/`
+
+Codex independently verified on 2026-06-29 that Task 10 closes the Gemini
+documentation condition: `docs/cli.md`, `docs/tui.md`, and
+`docs/troubleshooting.md` now document `/strategy`, `/recoveries`, `/agents`,
+and `/overnight`. The Gemini review file remains the original conditional
+review artifact; this handoff records the post-Task-10 closure.
 
 ## Operator Quick Start
 
@@ -59,16 +65,33 @@ coordinator --print -p "/dashboard"
 
 ```bash
 git diff --check
+# PASS
+
 PYTHONPATH=src python3 -m unittest \
   tests.test_strategy tests.test_recovery tests.test_agent_scorecard \
   tests.test_overnight tests.test_phase7_strategic_autonomy_e2e -v
+# Ran 32 tests in 3.754s — OK
+
 PYTHONWARNINGS=error::ResourceWarning PYTHONPATH=src python3 -m unittest discover -s tests -q
+# Ran 1117 tests in 458.018s — OK
+
 npm run typecheck --prefix ui-tui
+# PASS
+
 npm run lint --prefix ui-tui
+# PASS
+
 npm test --prefix ui-tui -- --run
+# 154 tests / 16 files — PASS
+
 npm run build --prefix ui-tui
+# PASS, build_hash=fcd84b0b758859cc
+
 PYTHONPATH=src python3 -m unittest tests.test_tui_bundle tests.test_wheel_migrations -v
+# Ran 10 tests in 10.347s — OK
+
 python3 -m build
+# Successfully built local_cli_coordinator-0.1.0.tar.gz and local_cli_coordinator-0.1.0-py3-none-any.whl
 ```
 
 Clean-wheel smoke (no `PYTHONPATH`):
@@ -80,6 +103,7 @@ env -u PYTHONPATH /tmp/coord-phase7-venv/bin/coordinator init --dry-run --json
 env -u PYTHONPATH COORDINATOR_HOME=/tmp/coord-phase7-home /tmp/coord-phase7-venv/bin/coordinator init --yes --json
 env -u PYTHONPATH COORDINATOR_HOME=/tmp/coord-phase7-home /tmp/coord-phase7-venv/bin/coordinator config explain --json
 env -u PYTHONPATH COORDINATOR_HOME=/tmp/coord-phase7-home /tmp/coord-phase7-venv/bin/coordinator doctor --json
+# PASS: all commands returned ok=true JSON from the installed wheel.
 ```
 
 ## Safety Properties (verified by tests + Gemini review)
