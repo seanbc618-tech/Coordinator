@@ -57,6 +57,11 @@ from .verify import run_verification
 from .reporting import NULL_REPORTER, Reporter
 from .memory import LoopMemoryEntry, append_loop_memory, loop_memory_path
 from .review_inbox import write_review_packet
+from .evidence import (
+    record_diff_evidence,
+    record_no_change_evidence,
+    record_verification_evidence,
+)
 
 
 def _slug(text: str) -> str:
@@ -850,6 +855,7 @@ def _process_task(
     *,
     reporter: Reporter = NULL_REPORTER,
 ) -> bool:
+    project_id = str(task["project_id"])
     repo = config.repos.get(task["repo"])
     if repo is None:
         _finish_task(
@@ -1063,6 +1069,14 @@ def _process_task(
             task_id=task["id"],
         )
         add_artifact(conn, task["id"], "verifier_log", verification.log_path)
+        record_verification_evidence(
+            conn,
+            project_id=project_id,
+            task_id=task["id"],
+            verification=verification,
+            attempt_id=attempt_id,
+            commit=True,
+        )
         if verification.passed:
             _finish_task(
                 conn,
@@ -1090,6 +1104,13 @@ def _process_task(
             )
         return True
     if not changed_files:
+        record_no_change_evidence(
+            conn,
+            project_id=project_id,
+            task_id=task["id"],
+            attempt_id=attempt_id,
+            commit=True,
+        )
         _finish_task(
             conn,
             root,
@@ -1114,8 +1135,19 @@ def _process_task(
         return True
 
     patch_path = run_dir / "diff.patch"
-    patch_path.write_text(diff_patch(worktree, base_commit))
+    patch_text = diff_patch(worktree, base_commit)
+    patch_path.write_text(patch_text)
     add_artifact(conn, task["id"], "diff", patch_path)
+    record_diff_evidence(
+        conn,
+        project_id=project_id,
+        task_id=task["id"],
+        changed_files=changed_files,
+        patch_text=patch_text,
+        attempt_id=attempt_id,
+        artifact_path=str(patch_path),
+        commit=True,
+    )
 
     commands = [line for line in task["verification_commands"].splitlines() if line] or repo.verify_commands
     verification_passed = True
@@ -1133,6 +1165,14 @@ def _process_task(
         )
         verifier_log_path = verification.log_path
         add_artifact(conn, task["id"], "verifier_log", verification.log_path)
+        record_verification_evidence(
+            conn,
+            project_id=project_id,
+            task_id=task["id"],
+            verification=verification,
+            attempt_id=attempt_id,
+            commit=True,
+        )
         verification_passed = verification.passed
         verification_timed_out = verification.timed_out
         if not verification_passed:
