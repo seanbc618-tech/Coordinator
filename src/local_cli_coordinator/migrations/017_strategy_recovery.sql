@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS task_recovery_proposals (
     verification_commands_json TEXT NOT NULL DEFAULT '[]',
     dedupe_key TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    admitted_backlog_id INTEGER
+    admitted_backlog_id TEXT
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_recovery_open_dedupe

@@ -234,6 +234,15 @@ def run_autonomous_iteration(
             )
             record_task_evaluation(conn, evaluation)
             evaluated_count += 1
+            if evaluation.verdict in ("fail", "blocked"):
+                from .recovery import propose_recovery_for_failed_task
+
+                propose_recovery_for_failed_task(
+                    conn,
+                    project_id=project_id,
+                    task_id=evaluation.task_id,
+                    commit=False,
+                )
             if evaluation.next_action == "human_review":
                 human_review_required = True
 

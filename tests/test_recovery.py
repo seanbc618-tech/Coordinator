@@ -33,7 +33,7 @@ class RecoveryModuleTests(unittest.TestCase):
         self.assertTrue(callable(propose_recovery_for_failed_task))
         self.assertTrue(callable(list_recovery_proposals))
         self.assertTrue(callable(admit_recovery_to_backlog))
-        self.assertTrue(hasattr(RecoveryProposal, "id"))
+        self.assertIn("id", RecoveryProposal.__annotations__)
 
 
 class RecoveryProposalTests(unittest.TestCase):
