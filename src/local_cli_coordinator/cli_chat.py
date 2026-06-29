@@ -385,6 +385,13 @@ def _parse_task_slash(text: str) -> tuple[str | None, str | None]:
     return task_id, action
 
 
+def _parse_task_id_slash(text: str) -> str | None:
+    parts = text.strip().split()
+    if len(parts) < 2:
+        return None
+    return parts[1]
+
+
 def _orchestration_from_chat_result(result: dict[str, Any]) -> dict[str, Any]:
     raw = result.get("orchestration")
     if isinstance(raw, dict):
@@ -917,6 +924,52 @@ def _handle_slash(
             user_reply=reply,
             intent="status_question",
         )
+    if command in {"/evidence", "/review", "/risk", "/merge-ready"}:
+        task_id = _parse_task_id_slash(text)
+        if not task_id:
+            return _error_outcome(
+                "invalid_args",
+                f"usage: {command} <task-id>",
+            )
+        method = {
+            "/evidence": "project.evidence",
+            "/review": "project.review",
+            "/risk": "project.risk",
+            "/merge-ready": "project.merge_ready",
+        }[command]
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method=method,
+            params={"task_id": task_id},
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        if command == "/evidence":
+            items = result.get("evidence") or []
+            reply = f"Evidence for {task_id}: {len(items)} record(s)"
+        elif command == "/review":
+            reply = (
+                f"Review {task_id}: allowed={result.get('completion_allowed')} "
+                f"risk={result.get('risk_level')}"
+            )
+        elif command == "/risk":
+            reply = (
+                f"Risk {task_id}: {result.get('risk_level')} "
+                f"human={result.get('requires_human_review')}"
+            )
+        else:
+            reply = (
+                f"Merge-ready {task_id}: {result.get('merge_ready')} "
+                f"human={result.get('requires_human_review')}"
+            )
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=reply,
+            intent="status_question",
+        )
     if command == "/recoveries":
         result, err, _envelope = _send_rpc(
             paths,
@@ -1213,6 +1266,26 @@ def _rpc_slash(
             project_id=project_id,
             method="project.strategy",
             params={},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command in {"/evidence", "/review", "/risk", "/merge-ready"}:
+        task_id = _parse_task_id_slash(text)
+        if not task_id:
+            outcome = _error_outcome("invalid_args", f"usage: {command} <task-id>")
+            return _outcome_to_rpc(outcome), 1
+        method = {
+            "/evidence": "project.evidence",
+            "/review": "project.review",
+            "/risk": "project.risk",
+            "/merge-ready": "project.merge_ready",
+        }[command]
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method=method,
+            params={"task_id": task_id},
         )
         if envelope is not None:
             return envelope, 0 if envelope.ok else 1

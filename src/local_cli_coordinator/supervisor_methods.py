@@ -229,6 +229,10 @@ class SupervisorMethods:
             "project.loop.run.status": self._handle_project_loop_run_status,
             "project.plan": self._handle_project_plan,
             "project.strategy": self._handle_project_strategy,
+            "project.evidence": self._handle_project_evidence,
+            "project.review": self._handle_project_review,
+            "project.risk": self._handle_project_risk,
+            "project.merge_ready": self._handle_project_merge_ready,
             "project.recoveries": self._handle_project_recoveries,
             "project.agents": self._handle_project_agents,
             "project.overnight": self._handle_project_overnight,
@@ -972,6 +976,73 @@ class SupervisorMethods:
             request,
             build_strategy_summary(conn, project_id=project_id),
         )
+
+    def _handle_project_evidence(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .evidence_review import build_evidence_payload
+
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        try:
+            payload = build_evidence_payload(
+                conn, project_id=project_id, params=request.params
+            )
+        except ValueError as exc:
+            return self._error(request, str(exc))
+        return self._ok(request, payload)
+
+    def _handle_project_review(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .evidence_review import build_review_payload
+
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        try:
+            payload = build_review_payload(
+                conn, project_id=project_id, params=request.params
+            )
+        except ValueError as exc:
+            return self._error(request, str(exc))
+        return self._ok(request, payload)
+
+    def _handle_project_risk(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .evidence_review import build_risk_payload
+
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        try:
+            payload = build_risk_payload(
+                conn, project_id=project_id, params=request.params
+            )
+        except ValueError as exc:
+            return self._error(request, str(exc))
+        return self._ok(request, payload)
+
+    def _handle_project_merge_ready(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .evidence_review import build_merge_ready_payload
+
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        try:
+            payload = build_merge_ready_payload(
+                conn,
+                project_id=project_id,
+                params=request.params,
+                config=self._config,
+            )
+        except ValueError as exc:
+            return self._error(request, str(exc))
+        return self._ok(request, payload)
 
     def _handle_project_recoveries(
         self, conn: sqlite3.Connection, request: RequestEnvelope
