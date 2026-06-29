@@ -150,6 +150,29 @@ class DashboardRPCTests(unittest.TestCase):
         payload_text = json.dumps(envelope["result"])
         self.assertNotIn("Dashboard goal", payload_text)
 
+    def test_dashboard_includes_strategic_counts(self) -> None:
+        """Each project entry includes strategic autonomy counts without titles."""
+        from local_cli_coordinator.strategy import create_milestone
+
+        create_milestone(
+            self.conn,
+            project_id=self.project_id,
+            title="Secret milestone title",
+        )
+        self.conn.commit()
+        result = _run_cli_with_home(
+            self.home, "--mode", "rpc", "-p", "/dashboard",
+            cwd=self.repo,
+        )
+        self.assertEqual(result.returncode, 0)
+        envelope = json.loads(result.stdout.strip().splitlines()[0])
+        self.assertTrue(envelope["ok"])
+        projects = envelope["result"].get("projects", [])
+        self.assertTrue(projects)
+        strategic = projects[0].get("strategic") or {}
+        self.assertEqual(strategic.get("active_milestones"), 1)
+        self.assertNotIn("Secret milestone title", json.dumps(envelope["result"]))
+
     def test_dashboard_bounded_at_32_projects(self) -> None:
         """Dashboard returns at most 32 projects."""
         result = _run_cli_with_home(

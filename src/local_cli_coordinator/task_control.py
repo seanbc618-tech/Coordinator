@@ -406,6 +406,27 @@ def build_dashboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:
             """,
             (project_id,),
         ).fetchone()["cnt"]
+        from .recovery import list_recovery_proposals
+        from .strategy import list_milestones
+
+        pending_recoveries = len(
+            list_recovery_proposals(
+                conn,
+                project_id=project_id,
+                status="pending",
+            )
+        )
+        active_milestones = len(
+            list_milestones(conn, project_id=project_id, status="active")
+        )
+        overnight_summaries = conn.execute(
+            """
+            select count(*) as cnt
+            from overnight_summaries
+            where project_id = ?
+            """,
+            (project_id,),
+        ).fetchone()["cnt"]
         projects.append(
             {
                 "project_id": project_id,
@@ -413,6 +434,11 @@ def build_dashboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:
                 "task_counts": counts,
                 "active_workers": active_workers,
                 "last_tick_at": row["updated_at"],
+                "strategic": {
+                    "active_milestones": active_milestones,
+                    "pending_recoveries": pending_recoveries,
+                    "overnight_summaries": int(overnight_summaries),
+                },
             }
         )
     run_counts = {

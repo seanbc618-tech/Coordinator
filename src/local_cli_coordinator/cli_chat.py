@@ -676,9 +676,16 @@ def _handle_slash(
         for entry in projects:
             counts = entry.get("task_counts") or {}
             count_text = ", ".join(f"{k}={v}" for k, v in counts.items()) or "none"
+            strategic = entry.get("strategic") or {}
+            strategic_text = (
+                f"milestones={strategic.get('active_milestones', 0)} "
+                f"recoveries={strategic.get('pending_recoveries', 0)} "
+                f"overnight={strategic.get('overnight_summaries', 0)}"
+            )
             lines.append(
                 f"  {entry.get('project_id')} goal={entry.get('goal_status')} "
-                f"workers={entry.get('active_workers', 0)} tasks[{count_text}]"
+                f"workers={entry.get('active_workers', 0)} tasks[{count_text}] "
+                f"{strategic_text}"
             )
         return PromptOutcome(
             ok=True,
