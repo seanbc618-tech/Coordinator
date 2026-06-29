@@ -68,7 +68,7 @@ class ScorecardModuleTests(unittest.TestCase):
         self.assertTrue(callable(record_agent_outcome))
         self.assertTrue(callable(get_agent_scorecard))
         self.assertTrue(callable(rank_workers_for_capabilities))
-        self.assertTrue(hasattr(AgentScorecard, "agent_id"))
+        self.assertIn("agent_id", AgentScorecard.__annotations__)
 
 
 class ScorecardOutcomeTests(unittest.TestCase):

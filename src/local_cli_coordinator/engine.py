@@ -776,6 +776,21 @@ def run_worker_attempt(
             result_reason=classified.reason,
             log_path=str(agent_result.log_path),
         )
+        from .agent_scorecard import record_agent_outcome
+
+        if agent_result.timed_out:
+            outcome = "timeout"
+        elif classified.classification.value in {"success", "completed"}:
+            outcome = "success"
+        else:
+            outcome = "failure"
+        record_agent_outcome(
+            conn,
+            agent_id=agent.id,
+            role=agent.role,
+            outcome=outcome,
+            commit=False,
+        )
         record_post_attempt_snapshot(
             conn,
             project_id=project_id,
