@@ -73,7 +73,7 @@ class GitHubCliAdapterTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         logged = self.log_path.read_text(encoding="utf-8")
         self.assertIn(injection, logged)
-        self.assertNotIn("touch", logged.split("\n")[0])
+        self.assertFalse(Path("/tmp/pwned").exists())
 
     def test_github_cli_pr_view_parses_json(self) -> None:
         from local_cli_coordinator import github_cli
