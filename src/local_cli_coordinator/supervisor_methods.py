@@ -243,6 +243,12 @@ class SupervisorMethods:
             "project.overnight": self._handle_project_overnight,
             "project.scan": self._handle_project_scan,
             "project.jump": self._handle_project_jump,
+            "operator.inbox": self._handle_operator_inbox,
+            "operator.attention": self._handle_operator_attention,
+            "operator.summary": self._handle_operator_summary,
+            "operator.notify": self._handle_operator_notify,
+            "operator.decision": self._handle_operator_decision,
+            "operator.dismiss": self._handle_operator_dismiss,
             "events.subscribe": self._handle_events_subscribe,
             "events.replay": self._handle_events_replay,
             "events.v2.replay": self._handle_events_v2_replay,
@@ -1164,6 +1170,154 @@ class SupervisorMethods:
                 config=self._config,
             ),
         )
+
+    def _project_repo_root(
+        self, conn: sqlite3.Connection, project_id: str
+    ) -> Path:
+        row = get_project(conn, project_id)
+        if row is None:
+            raise ValueError(f"project {project_id!r} not registered")
+        return Path(str(row["canonical_path"]))
+
+    def _handle_operator_inbox(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .operator_inbox import build_inbox_payload
+
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        try:
+            payload = build_inbox_payload(
+                conn,
+                project_id=project_id,
+                config=self._config,
+                repo_root=self._project_repo_root(conn, project_id),
+            )
+        except ValueError as exc:
+            return self._error(request, str(exc))
+        return self._ok(request, payload)
+
+    def _handle_operator_attention(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .operator_inbox import build_attention_payload
+
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        payload = build_attention_payload(
+            conn,
+            project_id=project_id,
+            config=self._config,
+            repo_root=self._project_repo_root(conn, project_id),
+        )
+        return self._ok(request, payload)
+
+    def _handle_operator_summary(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .operator_summary import build_summary_payload
+
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        kind = str(request.params.get("kind") or request.params.get("args") or "current")
+        if "morning" in kind:
+            kind = "morning"
+        else:
+            kind = "current"
+        payload = build_summary_payload(conn, project_id=project_id, kind=kind)
+        return self._ok(request, payload)
+
+    def _handle_operator_notify(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .notification_policy import dispatch_project_notifications
+        from .operator_inbox import list_operator_items, refresh_operator_inbox
+
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        dry_run = bool(request.params.get("dry_run"))
+        args = str(request.params.get("args") or "")
+        if "--dry-run" in args:
+            dry_run = True
+        refresh_operator_inbox(
+            conn,
+            project_id=project_id,
+            config=self._config,
+            repo_root=self._project_repo_root(conn, project_id),
+            commit=True,
+        )
+        items = list_operator_items(conn, project_id=project_id)
+        state_dir = self._paths.state if self._paths is not None else Path("state")
+        payload = dispatch_project_notifications(
+            conn,
+            project_id=project_id,
+            config=self._config,
+            state_dir=state_dir,
+            items=items,
+            dry_run=dry_run,
+        )
+        return self._ok(request, payload)
+
+    def _handle_operator_decision(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .operator_inbox import build_operator_decision
+
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        item_id = request.params.get("item_id") or request.params.get("args")
+        if not isinstance(item_id, str) or not item_id.strip():
+            return self._error(request, "item_id is required")
+        dry_run = bool(request.params.get("dry_run"))
+        confirmed = bool(request.params.get("confirmed"))
+        try:
+            payload = build_operator_decision(
+                conn,
+                project_id=project_id,
+                item_id=item_id.strip().split()[0],
+                dry_run=dry_run,
+                confirmed=confirmed,
+            )
+        except ValueError as exc:
+            return self._error(request, str(exc))
+
+        if payload.get("executed") and not dry_run:
+            routed = RequestEnvelope(
+                protocol_version=request.protocol_version,
+                request_id=request.request_id,
+                project_id=project_id,
+                method=str(payload["routed_method"]),
+                params=dict(payload["routed_params"]),
+            )
+            return self.handle(conn, routed)
+
+        return self._ok(request, payload)
+
+    def _handle_operator_dismiss(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .operator_inbox import dismiss_operator_item
+
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        item_id = request.params.get("item_id") or request.params.get("args")
+        if not isinstance(item_id, str) or not item_id.strip():
+            return self._error(request, "item_id is required")
+        item = dismiss_operator_item(
+            conn,
+            item_id=item_id.strip().split()[0],
+            project_id=project_id,
+            commit=True,
+        )
+        if item is None:
+            return self._error(request, f"operator item {item_id!r} not found")
+        return self._ok(request, {"project_id": project_id, "item_id": item.id, "status": item.status})
 
     def _handle_project_recoveries(
         self, conn: sqlite3.Connection, request: RequestEnvelope
