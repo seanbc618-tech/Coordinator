@@ -226,6 +226,61 @@ export function formatSlashResponse(
       )
     }
 
+    case 'project.deliver': {
+      const blockers = (result.blockers as string[] | undefined) ?? []
+      const blockerText = blockers.length ? blockers.join('; ') : '(none)'
+      const delivery = result.delivery as Record<string, unknown> | null | undefined
+      const pr = delivery?.pr_url ?? '(no pr)'
+      return (
+        `Deliver — ${result.task_id}: allowed=${result.allowed} `
+        + `human=${result.requires_human_review}; blockers: ${blockerText}; pr=${pr}`
+      )
+    }
+
+    case 'project.prs': {
+      const prs = (result.prs as Array<Record<string, unknown>> | undefined) ?? []
+      if (!prs.length) {
+        return 'PRs — none'
+      }
+      return [
+        'PRs:',
+        ...prs.map(
+          p => `- ${p.task_id ?? '?'} #${p.pr_number ?? '?'} [${p.status}] ${p.last_check_state ?? ''}`,
+        ),
+      ].join('\n')
+    }
+
+    case 'project.ci': {
+      return `CI — ${result.task_id}: ${result.ci_state ?? 'unknown'}`
+    }
+
+    case 'project.delivery': {
+      const delivery = result.delivery as Record<string, unknown> | null | undefined
+      if (!delivery) {
+        return `Delivery — ${result.task_id}: (none)`
+      }
+      return (
+        `Delivery — ${result.task_id}: ${delivery.status} `
+        + `pr=#${delivery.pr_number ?? '?'} ci=${delivery.last_check_state ?? 'unknown'}`
+      )
+    }
+
+    case 'project.merge_policy': {
+      const repos = (result.repos as Array<Record<string, unknown>> | undefined) ?? []
+      if (!repos.length) {
+        return 'Merge policy — (no repos)'
+      }
+      return [
+        'Merge policy:',
+        ...repos.map(
+          r => (
+            `- ${r.repo_id}: allow_push=${r.allow_push} `
+            + `merge_policy=${r.merge_policy} review=${r.review_policy}`
+          ),
+        ),
+      ].join('\n')
+    }
+
     case 'project.recoveries': {
       const proposals = (result.proposals as Array<Record<string, unknown>> | undefined) ?? []
       if (!proposals.length) {
