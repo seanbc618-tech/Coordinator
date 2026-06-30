@@ -122,6 +122,20 @@ class Phase12RpcTests(unittest.TestCase):
         self.conn.commit()
         self.config = load_config_for_paths(self.paths)
         self.methods = SupervisorMethods(config=self.config, broker=EventBroker())
+        from local_cli_coordinator import github_delivery
+
+        self.delivery = github_delivery.create_delivery_record(
+            self.conn,
+            project_id=self.project_id,
+            task_id=self.task_id,
+            repo_id="test-repo",
+            branch_name="coord/heal-task",
+            base_branch="main",
+            status="open",
+            pr_number=88,
+            pr_url="https://github.com/example/coordinator/pull/88",
+        )
+        self.conn.commit()
 
     def tearDown(self) -> None:
         self.conn.close()
@@ -150,7 +164,7 @@ class Phase12RpcTests(unittest.TestCase):
             _request(
                 "project.pr.rebase",
                 self.project_id,
-                delivery_id=1,
+                delivery_id=self.delivery.id,
                 dry_run=True,
             ),
         )
@@ -170,7 +184,7 @@ class Phase12RpcTests(unittest.TestCase):
             _request(
                 "project.pr.update_evidence",
                 self.project_id,
-                delivery_id=1,
+                delivery_id=self.delivery.id,
                 dry_run=True,
             ),
         )
