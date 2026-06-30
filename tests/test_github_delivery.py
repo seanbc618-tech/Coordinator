@@ -36,6 +36,7 @@ def _base_config(repo_path: Path) -> CoordinatorConfig:
                 branch_prefix="coord/",
                 allow_push=True,
                 merge_policy="push_branch_only",
+                verify_commands=["true"],
                 review_policy="tests_only",
             )
         },
@@ -63,8 +64,8 @@ class DeliveryRecordTests(unittest.TestCase):
         init_db(self.conn)
         self.project_id = "proj-1"
         self.conn.execute(
-            "insert into projects(id, name, repo_root, created_at) values (?, ?, ?, datetime('now'))",
-            (self.project_id, "demo", str(self.repo)),
+            "insert into projects(id, canonical_path, repo_id) values (?, ?, ?)",
+            (self.project_id, str(self.repo.resolve()), "demo"),
         )
         self.task_id = create_task(
             self.conn,
