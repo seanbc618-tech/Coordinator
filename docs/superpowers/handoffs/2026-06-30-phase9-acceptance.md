@@ -2,7 +2,7 @@
 
 **Branch:** `phase9-github-delivery-loop` (based on `phase8-evidence-review`)  
 **Implementer:** Grok  
-**Status:** Ready for Codex Gate E / Gemini Gate F
+**Status:** Codex Gate G PASS (after overnight.enabled fix)
 
 ## Delivered
 
@@ -58,7 +58,12 @@ npm run lint --prefix ui-tui
 npm test --prefix ui-tui -- --run
 ```
 
-**Grok local result:** Phase 9 focused suite 25/25 OK; ui-tui typecheck/lint/test OK.
+**Gate G result (post-fix):** 1166 Python tests OK; Phase 9 suite 24/24 OK;
+ui-tui typecheck/lint/test/build OK; wheel + clean-wheel smoke OK.
+
+**Gate G blocker resolved:** `maybe_pause_for_quiet_hours()` now honors
+`config.overnight.enabled=False` (default), preventing time-dependent Phase 6C
+autonomous-run pauses during UTC 22:00–08:00.
 
 ## Stop points
 
