@@ -39412,6 +39412,26 @@ function formatHelpText() {
       lines.push("/merge-ready <task-id> - Check merge readiness under repo policy");
       continue;
     }
+    if (cmd.name === "/deliver") {
+      lines.push("/deliver <task-id> - Deliver task branch to GitHub under policy");
+      continue;
+    }
+    if (cmd.name === "/prs") {
+      lines.push("/prs - List project delivery PR records");
+      continue;
+    }
+    if (cmd.name === "/ci") {
+      lines.push("/ci <task-id> - Poll GitHub CI for a task delivery");
+      continue;
+    }
+    if (cmd.name === "/delivery") {
+      lines.push("/delivery <task-id> - Show delivery record for a task");
+      continue;
+    }
+    if (cmd.name === "/merge-policy") {
+      lines.push("/merge-policy - Show repo merge and push policy");
+      continue;
+    }
     if (cmd.name === "/recoveries") {
       lines.push("/recoveries - List pending recovery proposals");
       continue;
@@ -39478,6 +39498,11 @@ var init_slash = __esm({
       { name: "/review", description: "Show evidence review summary", method: "project.review" },
       { name: "/risk", description: "Show task risk assessment", method: "project.risk" },
       { name: "/merge-ready", description: "Check merge readiness under repo policy", method: "project.merge_ready" },
+      { name: "/deliver", description: "Deliver task branch to GitHub under policy", method: "project.deliver" },
+      { name: "/prs", description: "List project delivery PR records", method: "project.prs" },
+      { name: "/ci", description: "Poll GitHub CI for a task delivery", method: "project.ci" },
+      { name: "/delivery", description: "Show delivery record for a task", method: "project.delivery" },
+      { name: "/merge-policy", description: "Show repo merge and push policy", method: "project.merge_policy" },
       { name: "/recoveries", description: "List pending recovery proposals", method: "project.recoveries" },
       { name: "/overnight", description: "Overnight window and latest summary", method: "project.overnight" },
       { name: "/loop", description: "Autonomous loop status and run controls", method: "project.loop.status" },
@@ -39509,6 +39534,11 @@ var init_slash = __esm({
       "/review",
       "/risk",
       "/merge-ready",
+      "/deliver",
+      "/prs",
+      "/ci",
+      "/delivery",
+      "/merge-policy",
       "/recoveries",
       "/agents",
       "/overnight",
@@ -39815,7 +39845,7 @@ function buildSlashRpc(commandName, method, args) {
       displayMethod: "project.jump"
     };
   }
-  if (commandName === "/plan" || commandName === "/scan" || commandName === "/strategy") {
+  if (commandName === "/plan" || commandName === "/scan" || commandName === "/strategy" || commandName === "/prs" || commandName === "/merge-policy") {
     return {
       ok: true,
       method,
@@ -39823,7 +39853,7 @@ function buildSlashRpc(commandName, method, args) {
       displayMethod: method
     };
   }
-  if (commandName === "/evidence" || commandName === "/review" || commandName === "/risk" || commandName === "/merge-ready") {
+  if (commandName === "/evidence" || commandName === "/review" || commandName === "/risk" || commandName === "/merge-ready" || commandName === "/deliver" || commandName === "/ci" || commandName === "/delivery") {
     const taskId = args.trim().split(/\s+/)[0] ?? "";
     if (!taskId) {
       return { ok: false, error: `usage: ${commandName} <task-id>` };
@@ -40167,6 +40197,47 @@ ${tail}`;
       const blockers = result.blockers ?? [];
       const blockerText = blockers.length ? blockers.join("; ") : "(none)";
       return `Merge-ready \u2014 ${result.task_id}: ${result.merge_ready} human=${result.requires_human_review}; blockers: ${blockerText}`;
+    }
+    case "project.deliver": {
+      const blockers = result.blockers ?? [];
+      const blockerText = blockers.length ? blockers.join("; ") : "(none)";
+      const delivery = result.delivery;
+      const pr = delivery?.pr_url ?? "(no pr)";
+      return `Deliver \u2014 ${result.task_id}: allowed=${result.allowed} human=${result.requires_human_review}; blockers: ${blockerText}; pr=${pr}`;
+    }
+    case "project.prs": {
+      const prs = result.prs ?? [];
+      if (!prs.length) {
+        return "PRs \u2014 none";
+      }
+      return [
+        "PRs:",
+        ...prs.map(
+          (p) => `- ${p.task_id ?? "?"} #${p.pr_number ?? "?"} [${p.status}] ${p.last_check_state ?? ""}`
+        )
+      ].join("\n");
+    }
+    case "project.ci": {
+      return `CI \u2014 ${result.task_id}: ${result.ci_state ?? "unknown"}`;
+    }
+    case "project.delivery": {
+      const delivery = result.delivery;
+      if (!delivery) {
+        return `Delivery \u2014 ${result.task_id}: (none)`;
+      }
+      return `Delivery \u2014 ${result.task_id}: ${delivery.status} pr=#${delivery.pr_number ?? "?"} ci=${delivery.last_check_state ?? "unknown"}`;
+    }
+    case "project.merge_policy": {
+      const repos = result.repos ?? [];
+      if (!repos.length) {
+        return "Merge policy \u2014 (no repos)";
+      }
+      return [
+        "Merge policy:",
+        ...repos.map(
+          (r) => `- ${r.repo_id}: allow_push=${r.allow_push} merge_policy=${r.merge_policy} review=${r.review_policy}`
+        )
+      ].join("\n");
     }
     case "project.recoveries": {
       const proposals = result.proposals ?? [];
