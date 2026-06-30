@@ -100,11 +100,49 @@ export function buildSlashRpc(
     || commandName === '/merge-policy'
     || commandName === '/inbox'
     || commandName === '/attention'
+    || commandName === '/brain'
+    || commandName === '/map'
   ) {
     return {
       ok: true,
       method,
       params: {},
+      displayMethod: method,
+    }
+  }
+
+  if (commandName === '/where') {
+    const query = args.trim()
+    if (!query) {
+      return { ok: false, error: 'usage: /where <query>' }
+    }
+    return {
+      ok: true,
+      method,
+      params: { query },
+      displayMethod: method,
+    }
+  }
+
+  if (commandName === '/why' || commandName === '/impact') {
+    const pathArg = args.trim()
+    if (!pathArg) {
+      return { ok: false, error: `usage: ${commandName} <path>` }
+    }
+    return {
+      ok: true,
+      method,
+      params: { path: pathArg },
+      displayMethod: method,
+    }
+  }
+
+  if (commandName === '/context') {
+    const taskId = args.trim().split(/\s+/)[0] ?? ''
+    return {
+      ok: true,
+      method,
+      params: taskId ? { task_id: taskId } : {},
       displayMethod: method,
     }
   }

@@ -243,6 +243,12 @@ class SupervisorMethods:
             "project.overnight": self._handle_project_overnight,
             "project.scan": self._handle_project_scan,
             "project.jump": self._handle_project_jump,
+            "project.brain": self._handle_project_brain,
+            "project.map": self._handle_project_map,
+            "project.where": self._handle_project_where,
+            "project.why": self._handle_project_why,
+            "project.impact": self._handle_project_impact,
+            "project.context": self._handle_project_context,
             "operator.inbox": self._handle_operator_inbox,
             "operator.attention": self._handle_operator_attention,
             "operator.summary": self._handle_operator_summary,
@@ -1178,6 +1184,111 @@ class SupervisorMethods:
         if row is None:
             raise ValueError(f"project {project_id!r} not registered")
         return Path(str(row["canonical_path"]))
+
+    def _handle_project_brain(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .project_brain import build_brain_payload
+
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        repo_root = self._project_repo_root(conn, project_id)
+        payload = build_brain_payload(conn, project_id=project_id, repo_path=repo_root)
+        conn.commit()
+        return self._ok(request, payload)
+
+    def _handle_project_map(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .project_brain import build_map_payload
+
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        repo_root = self._project_repo_root(conn, project_id)
+        payload = build_map_payload(conn, project_id=project_id, repo_path=repo_root)
+        conn.commit()
+        return self._ok(request, payload)
+
+    def _handle_project_where(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .impact_analysis import analyze_where
+
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        query = str(request.params.get("query") or request.params.get("args") or "").strip()
+        if not query:
+            return self._error(request, "query is required")
+        repo_root = self._project_repo_root(conn, project_id)
+        payload = analyze_where(
+            conn, project_id=project_id, repo_path=repo_root, query=query
+        )
+        conn.commit()
+        return self._ok(request, payload)
+
+    def _handle_project_why(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .impact_analysis import analyze_impact
+
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        target = str(
+            request.params.get("path")
+            or request.params.get("target")
+            or request.params.get("args")
+            or ""
+        ).strip()
+        if not target:
+            return self._error(request, "path is required")
+        repo_root = self._project_repo_root(conn, project_id)
+        try:
+            payload = analyze_impact(
+                conn,
+                project_id=project_id,
+                repo_path=repo_root,
+                target_path=target,
+            )
+        except ValueError as exc:
+            return self._error(request, str(exc))
+        conn.commit()
+        return self._ok(request, payload)
+
+    def _handle_project_impact(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        return self._handle_project_why(conn, request)
+
+    def _handle_project_context(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .context_packets import build_and_persist_context_packet
+
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        task_id = request.params.get("task_id") or request.params.get("args")
+        task_id_str = str(task_id).strip().split()[0] if task_id else None
+        purpose = str(request.params.get("purpose") or "task_prompt")
+        token_budget = int(request.params.get("token_budget") or 4000)
+        repo_root = self._project_repo_root(conn, project_id)
+        packet, packet_id = build_and_persist_context_packet(
+            conn,
+            project_id=project_id,
+            purpose=purpose,
+            token_budget=token_budget,
+            repo_path=repo_root,
+            task_id=task_id_str,
+        )
+        conn.commit()
+        return self._ok(
+            request,
+            {"project_id": project_id, "packet_id": packet_id, "packet": packet},
+        )
 
     def _handle_operator_inbox(
         self, conn: sqlite3.Connection, request: RequestEnvelope

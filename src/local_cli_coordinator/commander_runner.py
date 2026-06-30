@@ -144,6 +144,29 @@ def build_commander_context(
     sections.append(f"- Max files per task: {config.policy.max_files_touched}")
     sections.append(f"- Max expected minutes: {config.policy.max_expected_minutes}")
 
+    project_id = str(goal["project_id"] if "project_id" in goal.keys() else "")
+    if project_id and project_id != "legacy-default":
+        repo_path = root
+        repo_ids = json.loads(goal["repo_ids"])
+        if repo_ids and repo_ids[0] in config.repos:
+            repo_path = config.repos[repo_ids[0]].path
+        try:
+            from .context_packets import build_and_persist_context_packet
+
+            packet, packet_id = build_and_persist_context_packet(
+                conn,
+                project_id=project_id,
+                purpose="commander_chat",
+                token_budget=4000,
+                repo_path=repo_path,
+                query=str(goal["objective"]),
+            )
+            sections.append("")
+            sections.append(f"## Project brain (packet {packet_id})")
+            sections.append(str(packet.get("summary", ""))[:2000])
+        except Exception:
+            pass
+
     # Roadmap files
     sections.append("")
     sections.append("## Roadmap context")

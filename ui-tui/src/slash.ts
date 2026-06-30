@@ -28,6 +28,12 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/ci', description: 'Poll GitHub CI for a task delivery', method: 'project.ci' },
   { name: '/delivery', description: 'Show delivery record for a task', method: 'project.delivery' },
   { name: '/merge-policy', description: 'Show repo merge and push policy', method: 'project.merge_policy' },
+  { name: '/brain', description: 'Show project brain snapshot', method: 'project.brain' },
+  { name: '/map', description: 'Show project structure map', method: 'project.map' },
+  { name: '/where', description: 'Find where to make a change', method: 'project.where' },
+  { name: '/why', description: 'Explain a file path', method: 'project.why' },
+  { name: '/impact', description: 'Show impact of changing a file', method: 'project.impact' },
+  { name: '/context', description: 'Show task context packet', method: 'project.context' },
   { name: '/inbox', description: 'Show operator inbox for this project', method: 'operator.inbox' },
   { name: '/attention', description: 'Show items needing human attention', method: 'operator.attention' },
   { name: '/summary', description: 'Show operator summary', method: 'operator.summary' },
@@ -109,6 +115,12 @@ const HELP_COMMAND_NAMES = new Set([
   '/ci',
   '/delivery',
   '/merge-policy',
+  '/brain',
+  '/map',
+  '/where',
+  '/why',
+  '/impact',
+  '/context',
   '/inbox',
   '/attention',
   '/summary',
@@ -199,6 +211,30 @@ export function formatHelpText(): string {
     }
     if (cmd.name === '/merge-policy') {
       lines.push('/merge-policy - Show repo merge and push policy')
+      continue
+    }
+    if (cmd.name === '/brain') {
+      lines.push('/brain - Show project brain snapshot')
+      continue
+    }
+    if (cmd.name === '/map') {
+      lines.push('/map - Show project structure map')
+      continue
+    }
+    if (cmd.name === '/where') {
+      lines.push('/where <query> - Find where to make a change')
+      continue
+    }
+    if (cmd.name === '/why') {
+      lines.push('/why <path> - Explain a file path')
+      continue
+    }
+    if (cmd.name === '/impact') {
+      lines.push('/impact <path> - Show impact of changing a file')
+      continue
+    }
+    if (cmd.name === '/context') {
+      lines.push('/context <task-id> - Show task context packet')
       continue
     }
     if (cmd.name === '/inbox') {

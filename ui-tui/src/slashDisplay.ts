@@ -281,6 +281,55 @@ export function formatSlashResponse(
       ].join('\n')
     }
 
+    case 'project.brain': {
+      const snap = (result.snapshot as Record<string, unknown> | undefined) ?? {}
+      return (
+        `Brain — ${snap.file_count ?? 0} files, `
+        + `head=${String(snap.git_head ?? '').slice(0, 8)}`
+        + `${snap.git_dirty ? ' (dirty)' : ''}`
+      )
+    }
+
+    case 'project.map': {
+      const cards = (result.cards as Array<Record<string, unknown>> | undefined) ?? []
+      if (!cards.length) {
+        return 'Map — (no cards)'
+      }
+      return [
+        'Project map:',
+        ...cards.map(c => `- [${c.card_type}] ${c.title}`),
+      ].join('\n')
+    }
+
+    case 'project.where': {
+      const matches = (result.matches as Array<Record<string, unknown>> | undefined) ?? []
+      if (!matches.length) {
+        return 'Where — no matches (heuristic)'
+      }
+      return [
+        'Where:',
+        ...matches.map(
+          m => `- ${m.path} (${m.confidence}) — ${m.reason}`,
+        ),
+      ].join('\n')
+    }
+
+    case 'project.why':
+    case 'project.impact': {
+      const related = (result.related as Array<Record<string, unknown>> | undefined) ?? []
+      if (!related.length) {
+        return 'Impact — no related paths (heuristic)'
+      }
+      return [
+        'Impact:',
+        ...related.map(r => `- ${r.path} — ${r.reason}`),
+      ].join('\n')
+    }
+
+    case 'project.context': {
+      return `Context packet — ${result.packet_id ?? '(none)'}`
+    }
+
     case 'operator.inbox':
     case 'operator.attention': {
       const items = (result.items as Array<Record<string, unknown>> | undefined) ?? []
