@@ -40,8 +40,11 @@ The coordinator implements a full loop pipeline:
 6. **Persistence** — memory, events, and artifacts are stored on disk.
 7. **Operator control tower** — `/inbox`, `/attention`, and `/summary` unify
    human attention across tasks, delivery, recovery, and autonomous runs.
-7. **Scheduling** — the daemon loop runs continuously or on demand.
-8. **Human review** — risky changes pause for human approval.
+8. **PR/CI self-healing** — `/heal`, `/stale`, `/ci failures`, `/reviews`,
+   `/pr update`, and `/rebase` keep delivered PRs healthy with safe dry-run
+   rebases, CI classification, and evidence refresh.
+9. **Scheduling** — the daemon loop runs continuously or on demand.
+10. **Human review** — risky changes pause for human approval.
 
 ## Quick Commands
 
