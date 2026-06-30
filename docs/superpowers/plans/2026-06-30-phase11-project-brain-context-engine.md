@@ -337,9 +337,13 @@ Clean-wheel smoke must install the built wheel without `PYTHONPATH` and run:
 coordinator init --dry-run --json
 coordinator init --yes --json
 coordinator doctor --json
+coordinator project add <repo-path> --yes
 coordinator --print -p "/brain"
 coordinator --print -p "/map"
 ```
+
+Slash commands require a registered project (same as Phase 6C/10). Run
+`project add` from the target repo directory or pass an absolute repo path.
 
 ---
 
