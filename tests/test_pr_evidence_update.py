@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -130,7 +131,8 @@ class PrEvidenceUpdateTests(unittest.TestCase):
             config=self.config,
             project_id=self.project_id,
             delivery_id=record.id,
-            gh_executable=str(_FAKE_GH_PATH),
+            gh_executable=sys.executable,
+            gh_prefix=[str(_FAKE_GH_PATH)],
             env=self.env,
             sections={"ci": "pass", "checks": ["unit: SUCCESS"]},
         )
@@ -148,7 +150,8 @@ class PrEvidenceUpdateTests(unittest.TestCase):
             config=self.config,
             project_id=self.project_id,
             delivery_id=record.id,
-            gh_executable=str(_FAKE_GH_PATH),
+            gh_executable=sys.executable,
+            gh_prefix=[str(_FAKE_GH_PATH)],
             env=self.env,
             sections={"ci": "pass", "checks": ["unit: SUCCESS"]},
         )
@@ -165,7 +168,8 @@ class PrEvidenceUpdateTests(unittest.TestCase):
             config=self.config,
             project_id=self.project_id,
             delivery_id=record.id,
-            gh_executable=str(_FAKE_GH_PATH),
+            gh_executable=sys.executable,
+            gh_prefix=[str(_FAKE_GH_PATH)],
             env=self.env,
             sections={"ci": "pass"},
         )
@@ -191,7 +195,8 @@ class PrEvidenceUpdateTests(unittest.TestCase):
                 config=self.config,
                 project_id="other-project",
                 delivery_id=record.id,
-                gh_executable=str(_FAKE_GH_PATH),
+                gh_executable=sys.executable,
+                gh_prefix=[str(_FAKE_GH_PATH)],
                 env=self.env,
                 sections={"ci": "pass"},
             )
