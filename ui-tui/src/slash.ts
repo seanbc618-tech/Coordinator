@@ -25,6 +25,12 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/merge-ready', description: 'Check merge readiness under repo policy', method: 'project.merge_ready' },
   { name: '/deliver', description: 'Deliver task branch to GitHub under policy', method: 'project.deliver' },
   { name: '/prs', description: 'List project delivery PR records', method: 'project.prs' },
+  { name: '/heal', description: 'Run bounded PR self-healing cycle (dry-run)', method: 'project.pr.heal' },
+  { name: '/stale', description: 'List stale delivery PRs', method: 'project.pr.health' },
+  { name: '/ci failures', description: 'List PRs with failed CI', method: 'project.pr.health' },
+  { name: '/reviews', description: 'Ingest unresolved PR review comments', method: 'project.pr.reviews' },
+  { name: '/pr update', description: 'Refresh PR evidence section (dry-run)', method: 'project.pr.update_evidence' },
+  { name: '/rebase', description: 'Dry-run rebase for a delivery PR', method: 'project.pr.rebase' },
   { name: '/ci', description: 'Poll GitHub CI for a task delivery', method: 'project.ci' },
   { name: '/delivery', description: 'Show delivery record for a task', method: 'project.delivery' },
   { name: '/merge-policy', description: 'Show repo merge and push policy', method: 'project.merge_policy' },
@@ -77,11 +83,23 @@ export interface ParsedUnknownCommand {
 
 export type Parsed = ParsedSlash | ParsedMessage | ParsedUnknownCommand
 
+const MULTI_WORD_COMMANDS = ['/ci failures', '/pr update'] as const
+
 export function parse(input: string): Parsed {
   const trimmed = input.trim()
 
   if (!trimmed.startsWith('/')) {
     return { type: 'message', text: trimmed }
+  }
+
+  const lowered = trimmed.toLowerCase()
+  for (const multi of MULTI_WORD_COMMANDS) {
+    if (lowered.startsWith(multi)) {
+      const command = SLASH_COMMANDS.find(c => c.name === multi)
+      if (command) {
+        return { type: 'command', command, args: trimmed.slice(multi.length).trim() }
+      }
+    }
   }
 
   const spaceIdx = trimmed.indexOf(' ')
@@ -112,6 +130,12 @@ const HELP_COMMAND_NAMES = new Set([
   '/merge-ready',
   '/deliver',
   '/prs',
+  '/heal',
+  '/stale',
+  '/ci failures',
+  '/reviews',
+  '/pr update',
+  '/rebase',
   '/ci',
   '/delivery',
   '/merge-policy',
@@ -199,6 +223,30 @@ export function formatHelpText(): string {
     }
     if (cmd.name === '/prs') {
       lines.push('/prs - List project delivery PR records')
+      continue
+    }
+    if (cmd.name === '/heal') {
+      lines.push('/heal - Run bounded PR self-healing cycle (dry-run)')
+      continue
+    }
+    if (cmd.name === '/stale') {
+      lines.push('/stale - List stale delivery PRs')
+      continue
+    }
+    if (cmd.name === '/ci failures') {
+      lines.push('/ci failures - List PRs with failed CI')
+      continue
+    }
+    if (cmd.name === '/reviews') {
+      lines.push('/reviews - Ingest unresolved PR review comments')
+      continue
+    }
+    if (cmd.name === '/pr update') {
+      lines.push('/pr update <delivery-id> - Refresh PR evidence (dry-run)')
+      continue
+    }
+    if (cmd.name === '/rebase') {
+      lines.push('/rebase <delivery-id> [--apply] - Dry-run or apply safe rebase')
       continue
     }
     if (cmd.name === '/ci') {
