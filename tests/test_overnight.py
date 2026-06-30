@@ -16,9 +16,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from local_cli_coordinator.config import (
+    AgentConfig,
     AutonomyConfig,
     CoordinatorConfig,
     DaemonPolicyConfig,
+    OvernightConfig,
     PolicyConfig,
     RepoConfig,
 )
@@ -212,6 +214,106 @@ class OvernightPauseTests(unittest.TestCase):
         )
         self.assertTrue(decision.should_pause)
         self.assertFalse(decision.kill_workers)
+
+    def _default_config(self, *, overnight_enabled: bool) -> CoordinatorConfig:
+        return CoordinatorConfig(
+            agents={
+                "worker": AgentConfig(
+                    id="worker",
+                    command="true",
+                    capabilities=["code"],
+                    max_concurrency=1,
+                )
+            },
+            repos={
+                "demo": RepoConfig(
+                    id="demo",
+                    path=self.repo,
+                    default_branch="main",
+                    remote="origin",
+                    branch_prefix="coord/",
+                    allow_push=False,
+                    merge_policy="no_push",
+                    verify_commands=["true"],
+                )
+            },
+            policy=PolicyConfig(
+                require_single_repo=False,
+                require_acceptance_criteria=False,
+                require_verification_commands=False,
+                require_handoff_summary=False,
+                max_files_touched=20,
+                max_expected_minutes=60,
+                max_attempts=3,
+                split_if_touches_multiple_subsystems=False,
+                split_if_research_and_code_are_mixed=False,
+            ),
+            overnight=OvernightConfig(
+                quiet_start="22:00",
+                quiet_end="08:00",
+                enabled=overnight_enabled,
+            ),
+        )
+
+    def test_maybe_pause_skips_when_overnight_disabled_during_quiet_hours(self) -> None:
+        from local_cli_coordinator.autonomous_runs import (
+            AutonomousRunOptions,
+            get_active_run_session,
+            start_run_session,
+        )
+        from local_cli_coordinator.overnight import maybe_pause_for_quiet_hours
+
+        start_run_session(
+            self.conn,
+            project_id=self.project_id,
+            goal_id=self.goal_id,
+            options=AutonomousRunOptions(max_iterations=3),
+        )
+        self.conn.commit()
+
+        quiet_night = datetime(2026, 6, 29, 23, 0, tzinfo=timezone.utc)
+        decision = maybe_pause_for_quiet_hours(
+            self.conn,
+            project_id=self.project_id,
+            config=self._default_config(overnight_enabled=False),
+            now=quiet_night,
+        )
+        self.assertFalse(decision.should_pause)
+
+        active = get_active_run_session(self.conn, project_id=self.project_id)
+        self.assertIsNotNone(active)
+        assert active is not None
+        self.assertEqual(active.status, "running")
+
+    def test_maybe_pause_pauses_when_overnight_enabled_during_quiet_hours(self) -> None:
+        from local_cli_coordinator.autonomous_runs import (
+            AutonomousRunOptions,
+            get_active_run_session,
+            start_run_session,
+        )
+        from local_cli_coordinator.overnight import maybe_pause_for_quiet_hours
+
+        start_run_session(
+            self.conn,
+            project_id=self.project_id,
+            goal_id=self.goal_id,
+            options=AutonomousRunOptions(max_iterations=3),
+        )
+        self.conn.commit()
+
+        quiet_night = datetime(2026, 6, 29, 23, 0, tzinfo=timezone.utc)
+        decision = maybe_pause_for_quiet_hours(
+            self.conn,
+            project_id=self.project_id,
+            config=self._default_config(overnight_enabled=True),
+            now=quiet_night,
+        )
+        self.assertTrue(decision.should_pause)
+
+        active = get_active_run_session(self.conn, project_id=self.project_id)
+        self.assertIsNotNone(active)
+        assert active is not None
+        self.assertEqual(active.status, "paused")
 
 
 if __name__ == "__main__":
