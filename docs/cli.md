@@ -1,6 +1,9 @@
 # Coordinator CLI Prompt Modes
 
-> **Phase 8 merged** — this file now covers evidence review slash commands
+> **Phase 9 merged** — this file now covers GitHub delivery slash commands
+> (`/deliver`, `/prs`, `/ci`, `/delivery`, `/merge-policy`), durable delivery
+> records, evidence-backed PR bodies, CI polling, and bounded CI recovery.
+> Phase 8 covers evidence review slash commands
 > (`/evidence`, `/review`, `/risk`, `/merge-ready`), durable task evidence,
 > rules-v2 completion gates, risk assessment, and review packets v2.
 > Phase 7 covers strategic autonomy (`/strategy`, `/recoveries`, `/agents`,
@@ -14,7 +17,7 @@
 > `/dashboard`, `/task <id> log`, and `/loop` autonomous loop commands.
 > See [troubleshooting](troubleshooting.md) for error codes,
 > [autonomous-loop](autonomous-loop.md) for loop configuration, and
-> [migration](migration.md) for schema changes (migrations 012–018).
+> [migration](migration.md) for schema changes (migrations 012–019).
 
 Phase 5.3 adds Pi-inspired headless entry points on top of the global Supervisor
 `chat.send` path. The Ink TUI remains the default interactive shell.
@@ -73,6 +76,11 @@ coordinator --print -p "/evidence <task-id>"
 coordinator --print -p "/review <task-id>"
 coordinator --print -p "/risk <task-id>"
 coordinator --print -p "/merge-ready <task-id>"
+coordinator --print -p "/deliver <task-id>"
+coordinator --print -p "/prs"
+coordinator --print -p "/ci <task-id>"
+coordinator --print -p "/delivery <task-id>"
+coordinator --print -p "/merge-policy"
 coordinator --print -p "/jump <task-id> log"
 coordinator --print -p "/open <task-id> log"
 coordinator --mode json -p "/plan"
@@ -388,6 +396,43 @@ All commands route through Supervisor RPC — never local DB shortcuts:
 After worker attempts, the engine records command and diff evidence automatically.
 The done transition runs `evaluate_completion_evidence` and `assess_task_risk`
 before marking a task `done` or routing it to `awaiting_human`.
+
+## GitHub delivery loop (Phase 9)
+
+Delivery sits **after** local merge-readiness. It does not bypass evidence gates,
+repo allowlists, `allow_push`, or human-review policy.
+
+```bash
+coordinator --print -p "/merge-ready <task-id>"
+coordinator --print -p "/deliver <task-id>"
+coordinator --print -p "/prs"
+coordinator --print -p "/ci <task-id>"
+coordinator --print -p "/delivery <task-id>"
+coordinator --print -p "/merge-policy"
+```
+
+| Slash | RPC | What you see |
+|---|---|---|
+| `/deliver` | `project.deliver` | Policy decision, blockers, PR URL when allowed |
+| `/prs` | `project.prs` | Project-scoped open delivery PR records |
+| `/ci` | `project.ci` | Poll GitHub checks for the task's delivery PR |
+| `/delivery` | `project.delivery` | Durable delivery record for one task |
+| `/merge-policy` | `project.merge_policy` | Per-repo `allow_push`, `merge_policy`, `review_policy` |
+
+- **`/deliver`** evaluates Phase 8 evidence and merge-readiness before calling
+  `gh`. When `allow_push=false` or human review is required, delivery is blocked
+  with explicit blockers — no push or PR is created.
+- **PR bodies** are built from server-side review packets and evidence summaries.
+  Worker stdout cannot forge reviewer verdicts in the PR description.
+- **CI state** is classified as pending, pass, fail, cancelled, or skipped from
+  `gh pr checks`. Failed CI creates at most one open `ci_repair` recovery
+  proposal per delivery record.
+- **Delivery records** and events are stored in SQLite (migration 019) and are
+  always scoped to the current project.
+
+For local testing, set `COORDINATOR_GH_EXECUTABLE` and `COORDINATOR_GH_PREFIX`
+to point at `tests/fixtures/fake_gh.py`. Production uses the real `gh` binary
+with argv-only invocation (no shell interpolation).
 
 ## Autonomous loop (Phase 6 / 6B / 6C)
 

@@ -578,6 +578,44 @@ Review the packet under `.coordinator/review_packets_v2/`, then `/approve
 <task-id>` when appropriate. Coordinator does not auto-merge beyond existing
 repo policy.
 
+## `/deliver` blocked despite green verification
+
+**Symptom:** `/merge-ready` or verification looks fine but `/deliver` reports
+`allowed: false`.
+
+**Cause:** Delivery enforces Phase 8 evidence gates, merge-readiness, repo
+allowlist, `allow_push`, `merge_policy`, and human-review policy. It does not
+push or open a PR when any blocker remains.
+
+**Fix:**
+
+```bash
+coordinator --print -p "/merge-ready <task-id>"
+coordinator --print -p "/merge-policy"
+coordinator --print -p "/delivery <task-id>"
+```
+
+Resolve blockers (evidence, human review, or `allow_push=false`) before retrying
+`/deliver`.
+
+## `/ci` reports fail after delivery
+
+**Symptom:** `/ci <task-id>` shows `ci_state: fail` and delivery status
+`ci_failed`.
+
+**Cause:** GitHub checks failed on the delivery PR. Coordinator records the
+failure and may create one bounded `ci_repair` recovery proposal.
+
+**Fix:**
+
+```bash
+coordinator --print -p "/delivery <task-id>"
+coordinator --print -p "/recoveries"
+```
+
+Fix the failing checks on GitHub, then `/retry` or admit the recovery backlog
+item. Coordinator does not infinite-retry CI automatically.
+
 ## `/recoveries` shows nothing after a failed task
 
 **Symptom:** A task failed but `/recoveries` reports none pending.
