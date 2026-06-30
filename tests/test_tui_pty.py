@@ -875,7 +875,7 @@ class TuiPtyTests(unittest.TestCase):
 
     def test_pty_help_shows_commands_without_rpc(self) -> None:
         """Type /help; assert local help text, no unsupported method error."""
-        pid, fd = _spawn_tui(self.socket_path, "proj-a", cols=100, rows=45)
+        pid, fd = _spawn_tui(self.socket_path, "proj-a", cols=100, rows=70)
         try:
             _wait_for_connection(fd)
             _read_available(fd, timeout=0.5)

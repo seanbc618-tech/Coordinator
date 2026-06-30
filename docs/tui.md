@@ -139,6 +139,12 @@ input starts with `/`.
 | `/ci <id>` | Poll GitHub CI for a task delivery (`project.ci`) |
 | `/delivery <id>` | Show delivery record for a task (`project.delivery`) |
 | `/merge-policy` | Show repo merge and push policy (`project.merge_policy`) |
+| `/inbox` | Show operator inbox (`operator.inbox`) |
+| `/attention` | Show items needing attention (`operator.attention`) |
+| `/summary` | Operator summary (`operator.summary`) |
+| `/notify` | Dispatch notifications (`operator.notify`, use `--dry-run`) |
+| `/decision` | Route safe action for inbox item (`operator.decision`) |
+| `/dismiss` | Dismiss inbox item (`operator.dismiss`) |
 | `/recoveries` | List pending failure recovery proposals |
 | `/agents` | Show agent scorecards and routing preference |
 | `/overnight` | Quiet-hour window and latest overnight summary |
@@ -146,6 +152,19 @@ input starts with `/`.
 | `/jump <target>` | Resolve a task, log, goal, worktree, or supervisor log path (hint only) |
 | `/open <target>` | Alias of `/jump` (does not launch an editor) |
 | `/logs` | Show recent logs |
+
+### Operator control tower (Phase 10)
+
+`/inbox`, `/attention`, `/summary`, `/notify`, `/decision`, and `/dismiss` call
+Supervisor RPC methods. Items are project-scoped; summaries and notifications
+are redacted.
+
+- `/inbox` — durable operator items from tasks, delivery, recovery, runs, and config.
+- `/attention` — warning, error, and critical items only.
+- `/summary` — counts and highlights; `/summary morning` adds overnight context.
+- `/notify --dry-run` — preview notification deliveries without side effects.
+- `/decision <item-id>` — returns routed RPC; destructive actions require confirmation.
+- `/dismiss <item-id>` — dismiss an open item without mutating source state.
 
 ### GitHub delivery commands (Phase 9)
 

@@ -1045,6 +1045,79 @@ def _handle_slash(
             user_reply=reply,
             intent="status_question",
         )
+    if command in {"/inbox", "/attention", "/summary", "/notify"}:
+        args_text = text.strip()[len(command) :].strip()
+        method = {
+            "/inbox": "operator.inbox",
+            "/attention": "operator.attention",
+            "/summary": "operator.summary",
+            "/notify": "operator.notify",
+        }[command]
+        params: dict[str, Any] = {}
+        if command == "/summary":
+            params["kind"] = "morning" if "morning" in args_text.lower() else "current"
+            params["args"] = args_text
+        if command == "/notify":
+            params["dry_run"] = "--dry-run" in args_text
+            params["args"] = args_text
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method=method,
+            params=params,
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        if command == "/inbox":
+            items = result.get("items") or []
+            reply = f"Inbox: {len(items)} item(s)"
+        elif command == "/attention":
+            items = result.get("items") or []
+            reply = f"Attention: {len(items)} item(s)"
+        elif command == "/summary":
+            counts = result.get("counts") or {}
+            reply = f"Summary ({result.get('summary_kind')}): total={counts.get('total', 0)}"
+        else:
+            deliveries = result.get("deliveries") or []
+            dry = " dry-run" if result.get("dry_run") else ""
+            reply = f"Notify{dry}: {len(deliveries)} delivery record(s)"
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=reply,
+            intent="status_question",
+        )
+    if command in {"/decision", "/dismiss"}:
+        item_id = _parse_task_id_slash(text)
+        if not item_id:
+            return _error_outcome("invalid_args", f"usage: {command} <item-id>")
+        method = {
+            "/decision": "operator.decision",
+            "/dismiss": "operator.dismiss",
+        }[command]
+        params = {"item_id": item_id}
+        if command == "/decision":
+            params["dry_run"] = True
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method=method,
+            params=params,
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        if command == "/decision":
+            reply = f"Decision: {result.get('routed_method')}"
+        else:
+            reply = f"Dismissed: {result.get('item_id')}"
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=reply,
+            intent="status_question",
+        )
     if command == "/recoveries":
         result, err, _envelope = _send_rpc(
             paths,
@@ -1400,6 +1473,51 @@ def _rpc_slash(
             project_id=project_id,
             method="project.merge_policy",
             params={},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command in {"/inbox", "/attention", "/summary", "/notify"}:
+        args_text = text.strip()[len(command) :].strip()
+        method = {
+            "/inbox": "operator.inbox",
+            "/attention": "operator.attention",
+            "/summary": "operator.summary",
+            "/notify": "operator.notify",
+        }[command]
+        params: dict[str, Any] = {}
+        if command == "/summary":
+            params["kind"] = "morning" if "morning" in args_text.lower() else "current"
+            params["args"] = args_text
+        if command == "/notify":
+            params["dry_run"] = "--dry-run" in args_text
+            params["args"] = args_text
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method=method,
+            params=params,
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command in {"/decision", "/dismiss"}:
+        item_id = _parse_task_id_slash(text)
+        if not item_id:
+            outcome = _error_outcome("invalid_args", f"usage: {command} <item-id>")
+            return _outcome_to_rpc(outcome), 1
+        method = {
+            "/decision": "operator.decision",
+            "/dismiss": "operator.dismiss",
+        }[command]
+        params: dict[str, Any] = {"item_id": item_id}
+        if command == "/decision":
+            params["dry_run"] = True
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method=method,
+            params=params,
         )
         if envelope is not None:
             return envelope, 0 if envelope.ok else 1

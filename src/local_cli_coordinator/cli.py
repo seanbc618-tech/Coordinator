@@ -77,6 +77,41 @@ def _move_to_accepted(root: Path, source_path: str) -> None:
     shutil.move(str(source), str(accepted))
 
 
+def _cmd_operator_summary(args: argparse.Namespace) -> int:
+    from .admin_json import emit_envelope, envelope
+    from .db import connect, init_db
+    from .operator_summary import build_global_summary, build_morning_summary
+    from .runtime_paths import resolve_runtime_paths
+
+    paths = resolve_runtime_paths()
+    paths.create()
+    conn = connect(paths.database)
+    init_db(conn)
+    try:
+        if getattr(args, "morning", False):
+            row = conn.execute("select id from projects limit 1").fetchone()
+            if row is None:
+                data = build_global_summary(conn)
+                data["summary_kind"] = "morning"
+            else:
+                data = build_morning_summary(conn, project_id=str(row["id"]))
+        else:
+            data = build_global_summary(conn)
+    finally:
+        conn.close()
+
+    if getattr(args, "json", False):
+        return emit_envelope(
+            envelope(command="operator.summary", ok=True, data=data),
+        )
+    counts = data.get("counts") or {}
+    print(
+        f"Operator summary ({data.get('summary_kind', 'current')}): "
+        f"total={counts.get('total', 0)}"
+    )
+    return 0
+
+
 def _cmd_doctor(args: argparse.Namespace) -> int:
     from .admin_json import emit_envelope, envelope
 
@@ -1360,6 +1395,13 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--json", action="store_true")
     init.add_argument("--yes", action="store_true")
 
+    operator = subparsers.add_parser("operator")
+    operator_subparsers = operator.add_subparsers(dest="operator_command")
+    operator_subparsers.required = True
+    operator_summary = operator_subparsers.add_parser("summary")
+    operator_summary.add_argument("--json", action="store_true")
+    operator_summary.add_argument("--morning", action="store_true")
+
     mock_provider = subparsers.add_parser("mock-provider")
     mock_provider_subparsers = mock_provider.add_subparsers(
         dest="mock_provider_command"
@@ -1475,6 +1517,8 @@ def main(argv: list[str] | None = None) -> int:
         from .init_project import run_init_command
 
         return run_init_command(args)
+    if args.command == "operator" and args.operator_command == "summary":
+        return _cmd_operator_summary(args)
     if args.command == "mock-provider" and args.mock_provider_command == "run":
         from .mock_provider import MockProviderError, run_mock_provider_cli
 

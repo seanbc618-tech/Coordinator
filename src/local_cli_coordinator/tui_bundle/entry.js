@@ -39432,6 +39432,31 @@ function formatHelpText() {
       lines.push("/merge-policy - Show repo merge and push policy");
       continue;
     }
+    if (cmd.name === "/inbox") {
+      lines.push("/inbox - Show operator inbox for this project");
+      continue;
+    }
+    if (cmd.name === "/attention") {
+      lines.push("/attention - Show items needing human attention");
+      continue;
+    }
+    if (cmd.name === "/summary") {
+      lines.push("/summary - Show operator summary");
+      lines.push("/summary morning - Morning summary from durable events");
+      continue;
+    }
+    if (cmd.name === "/notify") {
+      lines.push("/notify --dry-run - Preview notification delivery");
+      continue;
+    }
+    if (cmd.name === "/decision") {
+      lines.push("/decision <item-id> - Route safe action for an inbox item");
+      continue;
+    }
+    if (cmd.name === "/dismiss") {
+      lines.push("/dismiss <item-id> - Dismiss an operator inbox item");
+      continue;
+    }
     if (cmd.name === "/recoveries") {
       lines.push("/recoveries - List pending recovery proposals");
       continue;
@@ -39503,6 +39528,12 @@ var init_slash = __esm({
       { name: "/ci", description: "Poll GitHub CI for a task delivery", method: "project.ci" },
       { name: "/delivery", description: "Show delivery record for a task", method: "project.delivery" },
       { name: "/merge-policy", description: "Show repo merge and push policy", method: "project.merge_policy" },
+      { name: "/inbox", description: "Show operator inbox for this project", method: "operator.inbox" },
+      { name: "/attention", description: "Show items needing human attention", method: "operator.attention" },
+      { name: "/summary", description: "Show operator summary", method: "operator.summary" },
+      { name: "/notify", description: "Dispatch notifications (use --dry-run)", method: "operator.notify" },
+      { name: "/decision", description: "Route safe action for an inbox item", method: "operator.decision" },
+      { name: "/dismiss", description: "Dismiss an operator inbox item", method: "operator.dismiss" },
       { name: "/recoveries", description: "List pending recovery proposals", method: "project.recoveries" },
       { name: "/overnight", description: "Overnight window and latest summary", method: "project.overnight" },
       { name: "/loop", description: "Autonomous loop status and run controls", method: "project.loop.status" },
@@ -39539,6 +39570,12 @@ var init_slash = __esm({
       "/ci",
       "/delivery",
       "/merge-policy",
+      "/inbox",
+      "/attention",
+      "/summary",
+      "/notify",
+      "/decision",
+      "/dismiss",
       "/recoveries",
       "/agents",
       "/overnight",
@@ -39845,11 +39882,41 @@ function buildSlashRpc(commandName, method, args) {
       displayMethod: "project.jump"
     };
   }
-  if (commandName === "/plan" || commandName === "/scan" || commandName === "/strategy" || commandName === "/prs" || commandName === "/merge-policy") {
+  if (commandName === "/plan" || commandName === "/scan" || commandName === "/strategy" || commandName === "/prs" || commandName === "/merge-policy" || commandName === "/inbox" || commandName === "/attention") {
     return {
       ok: true,
       method,
       params: {},
+      displayMethod: method
+    };
+  }
+  if (commandName === "/summary") {
+    const kind = args.trim().toLowerCase().includes("morning") ? "morning" : "current";
+    return {
+      ok: true,
+      method,
+      params: { kind, args: args.trim() },
+      displayMethod: method
+    };
+  }
+  if (commandName === "/notify") {
+    const dryRun = args.includes("--dry-run");
+    return {
+      ok: true,
+      method,
+      params: { dry_run: dryRun, args: args.trim() },
+      displayMethod: method
+    };
+  }
+  if (commandName === "/decision" || commandName === "/dismiss") {
+    const itemId = args.trim().split(/\s+/)[0] ?? "";
+    if (!itemId) {
+      return { ok: false, error: `usage: ${commandName} <item-id>` };
+    }
+    return {
+      ok: true,
+      method,
+      params: { item_id: itemId, args: args.trim() },
       displayMethod: method
     };
   }
@@ -40238,6 +40305,37 @@ ${tail}`;
           (r) => `- ${r.repo_id}: allow_push=${r.allow_push} merge_policy=${r.merge_policy} review=${r.review_policy}`
         )
       ].join("\n");
+    }
+    case "operator.inbox":
+    case "operator.attention": {
+      const items = result.items ?? [];
+      if (!items.length) {
+        return "Operator inbox \u2014 (empty)";
+      }
+      return [
+        "Operator inbox:",
+        ...items.map(
+          (i) => `- [${i.severity}] ${i.title} (${i.source_type}/${i.source_id})`
+        )
+      ].join("\n");
+    }
+    case "operator.summary": {
+      const counts = result.counts ?? {};
+      return `Summary \u2014 ${result.summary_kind ?? "current"}: total=${counts.total ?? 0} critical=${counts.critical ?? 0}`;
+    }
+    case "operator.notify": {
+      const deliveries = result.deliveries ?? [];
+      const dry = result.dry_run ? " (dry-run)" : "";
+      return `Notify${dry}: ${deliveries.length} delivery record(s)`;
+    }
+    case "operator.decision": {
+      if (result.requires_confirmation) {
+        return `Decision \u2014 confirmation required for ${result.routed_method}`;
+      }
+      return `Decision \u2014 routed to ${result.routed_method}`;
+    }
+    case "operator.dismiss": {
+      return `Dismissed \u2014 ${result.item_id} -> ${result.status}`;
     }
     case "project.recoveries": {
       const proposals = result.proposals ?? [];
