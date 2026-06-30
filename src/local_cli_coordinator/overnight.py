@@ -39,6 +39,13 @@ def _parse_hhmm(value: str) -> time:
     return time(hour=int(hour_text), minute=int(minute_text))
 
 
+def overnight_enabled_from_config(config: CoordinatorConfig) -> bool:
+    overnight = getattr(config, "overnight", None)
+    if overnight is None:
+        return False
+    return bool(getattr(overnight, "enabled", False))
+
+
 def overnight_window_from_config(config: CoordinatorConfig) -> OvernightWindow:
     overnight = getattr(config, "overnight", None)
     if overnight is None:
@@ -210,6 +217,9 @@ def maybe_pause_for_quiet_hours(
 ) -> QuietHoursDecision:
     """Pause an active autonomous run during quiet hours and persist summary."""
     from .autonomous_runs import get_active_run_session, pause_run_session
+
+    if not overnight_enabled_from_config(config):
+        return QuietHoursDecision(should_pause=False, kill_workers=False)
 
     window = overnight_window_from_config(config)
     decision = should_pause_for_quiet_hours(

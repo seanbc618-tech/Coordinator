@@ -134,6 +134,11 @@ input starts with `/`.
 | `/review <id>` | Show evidence review summary (`project.review`) |
 | `/risk <id>` | Show task risk assessment (`project.risk`) |
 | `/merge-ready <id>` | Check merge readiness under repo policy (`project.merge_ready`) |
+| `/deliver <id>` | Deliver task branch to GitHub under policy (`project.deliver`) |
+| `/prs` | List project delivery PR records (`project.prs`) |
+| `/ci <id>` | Poll GitHub CI for a task delivery (`project.ci`) |
+| `/delivery <id>` | Show delivery record for a task (`project.delivery`) |
+| `/merge-policy` | Show repo merge and push policy (`project.merge_policy`) |
 | `/recoveries` | List pending failure recovery proposals |
 | `/agents` | Show agent scorecards and routing preference |
 | `/overnight` | Quiet-hour window and latest overnight summary |
@@ -141,6 +146,21 @@ input starts with `/`.
 | `/jump <target>` | Resolve a task, log, goal, worktree, or supervisor log path (hint only) |
 | `/open <target>` | Alias of `/jump` (does not launch an editor) |
 | `/logs` | Show recent logs |
+
+### GitHub delivery commands (Phase 9)
+
+`/deliver`, `/prs`, `/ci`, `/delivery`, and `/merge-policy` call Supervisor RPC
+methods. They never bypass the socket connection or read delivery tables locally.
+
+- `/deliver <task-id>` — evaluate policy, create or update an evidence-backed PR,
+  poll CI, and record delivery status. Blocked when merge-readiness or repo
+  policy forbids push.
+- `/prs` — open delivery records with PR numbers for the **current project only**.
+- `/ci <task-id>` — refresh check state for the task's delivery PR.
+- `/delivery <task-id>` — durable delivery status, PR URL, CI state, and
+  evidence packet path.
+- `/merge-policy` — configured `allow_push`, `merge_policy`, and `review_policy`
+  per repo (does not imply auto-merge).
 
 ### Evidence review commands (Phase 8)
 

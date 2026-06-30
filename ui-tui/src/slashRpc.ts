@@ -92,7 +92,13 @@ export function buildSlashRpc(
     }
   }
 
-  if (commandName === '/plan' || commandName === '/scan' || commandName === '/strategy') {
+  if (
+    commandName === '/plan'
+    || commandName === '/scan'
+    || commandName === '/strategy'
+    || commandName === '/prs'
+    || commandName === '/merge-policy'
+  ) {
     return {
       ok: true,
       method,
@@ -106,6 +112,9 @@ export function buildSlashRpc(
     || commandName === '/review'
     || commandName === '/risk'
     || commandName === '/merge-ready'
+    || commandName === '/deliver'
+    || commandName === '/ci'
+    || commandName === '/delivery'
   ) {
     const taskId = args.trim().split(/\s+/)[0] ?? ''
     if (!taskId) {

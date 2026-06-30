@@ -970,6 +970,81 @@ def _handle_slash(
             user_reply=reply,
             intent="status_question",
         )
+    if command in {"/deliver", "/ci", "/delivery"}:
+        task_id = _parse_task_id_slash(text)
+        if not task_id:
+            return _error_outcome(
+                "invalid_args",
+                f"usage: {command} <task-id>",
+            )
+        method = {
+            "/deliver": "project.deliver",
+            "/ci": "project.ci",
+            "/delivery": "project.delivery",
+        }[command]
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method=method,
+            params={"task_id": task_id},
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        if command == "/deliver":
+            reply = (
+                f"Deliver {task_id}: allowed={result.get('allowed')} "
+                f"human={result.get('requires_human_review')}"
+            )
+        elif command == "/ci":
+            reply = f"CI {task_id}: {result.get('ci_state')}"
+        else:
+            delivery = result.get("delivery")
+            reply = (
+                f"Delivery {task_id}: {delivery.get('status') if delivery else 'none'}"
+            )
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=reply,
+            intent="status_question",
+        )
+    if command == "/prs":
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="project.prs",
+            params={},
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        prs = result.get("prs") or []
+        reply = f"PRs: {len(prs)} open delivery record(s)"
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=reply,
+            intent="status_question",
+        )
+    if command == "/merge-policy":
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="project.merge_policy",
+            params={},
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        repos = result.get("repos") or []
+        reply = f"Merge policy: {len(repos)} repo(s) configured"
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=reply,
+            intent="status_question",
+        )
     if command == "/recoveries":
         result, err, _envelope = _send_rpc(
             paths,
@@ -1286,6 +1361,45 @@ def _rpc_slash(
             project_id=project_id,
             method=method,
             params={"task_id": task_id},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command in {"/deliver", "/ci", "/delivery"}:
+        task_id = _parse_task_id_slash(text)
+        if not task_id:
+            outcome = _error_outcome("invalid_args", f"usage: {command} <task-id>")
+            return _outcome_to_rpc(outcome), 1
+        method = {
+            "/deliver": "project.deliver",
+            "/ci": "project.ci",
+            "/delivery": "project.delivery",
+        }[command]
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method=method,
+            params={"task_id": task_id},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/prs":
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="project.prs",
+            params={},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/merge-policy":
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="project.merge_policy",
+            params={},
         )
         if envelope is not None:
             return envelope, 0 if envelope.ok else 1

@@ -23,6 +23,11 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/review', description: 'Show evidence review summary', method: 'project.review' },
   { name: '/risk', description: 'Show task risk assessment', method: 'project.risk' },
   { name: '/merge-ready', description: 'Check merge readiness under repo policy', method: 'project.merge_ready' },
+  { name: '/deliver', description: 'Deliver task branch to GitHub under policy', method: 'project.deliver' },
+  { name: '/prs', description: 'List project delivery PR records', method: 'project.prs' },
+  { name: '/ci', description: 'Poll GitHub CI for a task delivery', method: 'project.ci' },
+  { name: '/delivery', description: 'Show delivery record for a task', method: 'project.delivery' },
+  { name: '/merge-policy', description: 'Show repo merge and push policy', method: 'project.merge_policy' },
   { name: '/recoveries', description: 'List pending recovery proposals', method: 'project.recoveries' },
   { name: '/overnight', description: 'Overnight window and latest summary', method: 'project.overnight' },
   { name: '/loop', description: 'Autonomous loop status and run controls', method: 'project.loop.status' },
@@ -93,6 +98,11 @@ const HELP_COMMAND_NAMES = new Set([
   '/review',
   '/risk',
   '/merge-ready',
+  '/deliver',
+  '/prs',
+  '/ci',
+  '/delivery',
+  '/merge-policy',
   '/recoveries',
   '/agents',
   '/overnight',
@@ -157,6 +167,26 @@ export function formatHelpText(): string {
     }
     if (cmd.name === '/merge-ready') {
       lines.push('/merge-ready <task-id> - Check merge readiness under repo policy')
+      continue
+    }
+    if (cmd.name === '/deliver') {
+      lines.push('/deliver <task-id> - Deliver task branch to GitHub under policy')
+      continue
+    }
+    if (cmd.name === '/prs') {
+      lines.push('/prs - List project delivery PR records')
+      continue
+    }
+    if (cmd.name === '/ci') {
+      lines.push('/ci <task-id> - Poll GitHub CI for a task delivery')
+      continue
+    }
+    if (cmd.name === '/delivery') {
+      lines.push('/delivery <task-id> - Show delivery record for a task')
+      continue
+    }
+    if (cmd.name === '/merge-policy') {
+      lines.push('/merge-policy - Show repo merge and push policy')
       continue
     }
     if (cmd.name === '/recoveries') {
