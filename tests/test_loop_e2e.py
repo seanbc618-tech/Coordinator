@@ -63,7 +63,7 @@ def loop_config(repo_path: Path, *, discovery_command: str) -> CoordinatorConfig
                     f'{sys.executable} -c "from pathlib import Path; '
                     "assert Path('feature.txt').read_text() == 'done'\""
                 ],
-                review_policy="full_review",
+                review_policy="tests_only",
             )
         },
         policy=PolicyConfig(
@@ -199,7 +199,7 @@ class LoopE2ETests(unittest.TestCase):
                 allow_push = false
                 merge_policy = "no_push"
                 verify_commands = ['''{verify_cmd}''']
-                review_policy = "full_review"
+                review_policy = "tests_only"
             """).strip())
             (config_dir / "policy.toml").write_text(textwrap.dedent("""
                 [task_policy]
@@ -326,7 +326,7 @@ class LoopE2ETests(unittest.TestCase):
 
                 ## Acceptance Criteria
 
-                - Output is captured.
+                - Verify output is captured.
             """).strip())
 
             output = StringIO()

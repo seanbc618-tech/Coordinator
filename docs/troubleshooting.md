@@ -515,6 +515,69 @@ coordinator doctor --json
 Migration `017_strategy_recovery.sql` is byte-identical in both migration roots
 and ships in the installed wheel.
 
+## Evidence review tables missing (Phase 8)
+
+**Symptom:** `/evidence`, `/review`, `/risk`, or `/merge-ready` return RPC errors
+mentioning `task_evidence`, `task_review_verdicts`, `task_risk_assessments`, or
+`review_packets_v2`.
+
+**Cause:** Database predates migration 018.
+
+**Fix:**
+
+```bash
+coordinator migrate
+coordinator doctor --json
+```
+
+Migration `018_evidence_review_gates.sql` is byte-identical in both migration
+roots and ships in the installed wheel.
+
+## Task blocked at completion evidence gate
+
+**Symptom:** Task stays `failed` or `awaiting_human` with note mentioning
+`completion evidence gate` or `missing acceptance evidence`.
+
+**Cause:** Phase 8 requires durable evidence before `done`:
+
+- verification commands must be recorded (failed commands block completion)
+- code tasks need changed-file diff evidence
+- acceptance criteria must be covered by `acceptance` evidence or rule-inferred
+  coverage from passing verification + matching changed files
+- risky changes (migrations, protected paths, secret-looking diffs) require human
+  review per repo `review_policy`
+
+**Fix:**
+
+```bash
+coordinator --print -p "/evidence <task-id>"
+coordinator --print -p "/review <task-id>"
+coordinator --print -p "/risk <task-id>"
+```
+
+Inspect blockers, fix verification or code changes, then `/retry <task-id>`.
+
+## `/merge-ready` returns false despite green verification
+
+**Symptom:** Verification passed but `/merge-ready` reports `merge_ready: false`
+and `requires_human_review: true`.
+
+**Cause:** Merge readiness respects repo policy and risk assessment — not
+verification alone. Migration files, dependency manifests, protected paths, large
+diffs, and `review_policy` values such as `risky_human` or `full_review` require
+human review even when commands passed.
+
+**Fix:**
+
+```bash
+coordinator --print -p "/risk <task-id>"
+coordinator --print -p "/review <task-id>"
+```
+
+Review the packet under `.coordinator/review_packets_v2/`, then `/approve
+<task-id>` when appropriate. Coordinator does not auto-merge beyond existing
+repo policy.
+
 ## `/recoveries` shows nothing after a failed task
 
 **Symptom:** A task failed but `/recoveries` reports none pending.

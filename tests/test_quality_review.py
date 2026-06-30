@@ -59,6 +59,7 @@ def reviewer_config(
                 verify_commands=[
                     f"{sys.executable} -c \"from pathlib import Path; assert Path('feature.txt').read_text() == 'done'\""
                 ],
+                review_policy="tests_only",
             )
         },
         policy=PolicyConfig(
