@@ -1,6 +1,10 @@
 # Coordinator CLI Prompt Modes
 
-> **Phase 9 merged** — this file now covers GitHub delivery slash commands
+> **Phase 10 merged** — this file now covers the operator control tower
+> (`/inbox`, `/attention`, `/summary`, `/notify`, `/decision`, `/dismiss`),
+> durable operator items, notification policy with local sinks, and safe
+> decision routing through existing RPCs.
+> Phase 9 covers GitHub delivery slash commands
 > (`/deliver`, `/prs`, `/ci`, `/delivery`, `/merge-policy`), durable delivery
 > records, evidence-backed PR bodies, CI polling, and bounded CI recovery.
 > Phase 8 covers evidence review slash commands
@@ -17,7 +21,7 @@
 > `/dashboard`, `/task <id> log`, and `/loop` autonomous loop commands.
 > See [troubleshooting](troubleshooting.md) for error codes,
 > [autonomous-loop](autonomous-loop.md) for loop configuration, and
-> [migration](migration.md) for schema changes (migrations 012–019).
+> [migration](migration.md) for schema changes (migrations 012–020).
 
 Phase 5.3 adds Pi-inspired headless entry points on top of the global Supervisor
 `chat.send` path. The Ink TUI remains the default interactive shell.
@@ -81,6 +85,14 @@ coordinator --print -p "/prs"
 coordinator --print -p "/ci <task-id>"
 coordinator --print -p "/delivery <task-id>"
 coordinator --print -p "/merge-policy"
+coordinator --print -p "/inbox"
+coordinator --print -p "/attention"
+coordinator --print -p "/summary"
+coordinator --print -p "/summary morning"
+coordinator --print -p "/notify --dry-run"
+coordinator --print -p "/decision <item-id>"
+coordinator --print -p "/dismiss <item-id>"
+coordinator operator summary --json
 coordinator --print -p "/jump <task-id> log"
 coordinator --print -p "/open <task-id> log"
 coordinator --mode json -p "/plan"
@@ -433,6 +445,40 @@ coordinator --print -p "/merge-policy"
 For local testing, set `COORDINATOR_GH_EXECUTABLE` and `COORDINATOR_GH_PREFIX`
 to point at `tests/fixtures/fake_gh.py`. Production uses the real `gh` binary
 with argv-only invocation (no shell interpolation).
+
+## Operator control tower (Phase 10)
+
+One project-scoped command center for human attention, delivery state, recovery,
+and autonomous run health.
+
+```bash
+coordinator --print -p "/inbox"
+coordinator --print -p "/attention"
+coordinator --print -p "/summary"
+coordinator --print -p "/summary morning"
+coordinator --print -p "/notify --dry-run"
+coordinator --print -p "/decision <item-id>"
+coordinator --print -p "/dismiss <item-id>"
+coordinator operator summary --json
+```
+
+| Slash | RPC | What you see |
+|---|---|---|
+| `/inbox` | `operator.inbox` | All open operator items for the current project |
+| `/attention` | `operator.attention` | Warning/error/critical items only |
+| `/summary` | `operator.summary` | Counts and redacted highlights |
+| `/notify` | `operator.notify` | Durable notification deliveries (`--dry-run` previews) |
+| `/decision` | `operator.decision` | Routes to existing safe RPC (dry-run by default in print mode) |
+| `/dismiss` | `operator.dismiss` | Marks an item dismissed |
+
+- **Inbox items** are durable, deduped, and project-scoped (migration 020).
+- **`operator.decision`** never mutates tables directly; it routes through
+  `project.task.approve`, `project.task.retry`, `project.task.cancel`,
+  `project.deliver`, or read-only RPCs.
+- **Notifications** use local `file`/`stdout` sinks by default; the `command`
+  sink requires `policy.notifications.allow_command_sink = true` and receives
+  JSON on stdin (no shell interpolation).
+- **Summaries** are deterministic and redacted — no raw prompts, tokens, or log bodies.
 
 ## Autonomous loop (Phase 6 / 6B / 6C)
 

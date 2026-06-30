@@ -578,6 +578,34 @@ Review the packet under `.coordinator/review_packets_v2/`, then `/approve
 <task-id>` when appropriate. Coordinator does not auto-merge beyond existing
 repo policy.
 
+## `/inbox` is empty but tasks need attention
+
+**Symptom:** Tasks are `awaiting_human` or delivery failed but `/inbox` shows nothing.
+
+**Cause:** Inbox collectors run on RPC; stale items resolve when source state clears.
+The project context must match the registered project for the current git root.
+
+**Fix:**
+
+```bash
+coordinator --print -p "/inbox"
+coordinator --print -p "/attention"
+coordinator --print -p "/scan"
+```
+
+Refresh by re-running `/inbox` after task or delivery state changes.
+
+## `/notify` does not send external email or Slack
+
+**Symptom:** `/notify` completes but no external message arrives.
+
+**Cause:** Phase 10 uses local sinks only (`file`, `stdout`, optional `command`).
+There is no live email/Discord/Slack integration.
+
+**Fix:** Check `state/notifications.jsonl` under `COORDINATOR_HOME`, or run
+`/notify --dry-run` to preview deliveries. Enable `command` sink only with
+`policy.notifications.allow_command_sink = true` in `policy.toml`.
+
 ## `/deliver` blocked despite green verification
 
 **Symptom:** `/merge-ready` or verification looks fine but `/deliver` reports
