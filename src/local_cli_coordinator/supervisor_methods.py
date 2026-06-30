@@ -233,6 +233,11 @@ class SupervisorMethods:
             "project.review": self._handle_project_review,
             "project.risk": self._handle_project_risk,
             "project.merge_ready": self._handle_project_merge_ready,
+            "project.deliver": self._handle_project_deliver,
+            "project.prs": self._handle_project_prs,
+            "project.ci": self._handle_project_ci,
+            "project.delivery": self._handle_project_delivery,
+            "project.merge_policy": self._handle_project_merge_policy,
             "project.recoveries": self._handle_project_recoveries,
             "project.agents": self._handle_project_agents,
             "project.overnight": self._handle_project_overnight,
@@ -1043,6 +1048,122 @@ class SupervisorMethods:
         except ValueError as exc:
             return self._error(request, str(exc))
         return self._ok(request, payload)
+
+    def _gh_delivery_settings(self) -> tuple[str, list[str] | None, dict[str, str]]:
+        import os
+
+        executable = os.environ.get("COORDINATOR_GH_EXECUTABLE", "gh")
+        prefix_raw = os.environ.get("COORDINATOR_GH_PREFIX", "").strip()
+        prefix = [prefix_raw] if prefix_raw else None
+        env = {
+            key: value
+            for key, value in os.environ.items()
+            if key.startswith("GH_FAKE_")
+        }
+        return executable, prefix, env
+
+    def _handle_project_deliver(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .github_delivery import deliver_task
+
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        task_id = request.params.get("task_id") or request.params.get("args")
+        if not isinstance(task_id, str) or not task_id.strip():
+            return self._error(request, "task_id is required")
+        gh_executable, gh_prefix, gh_env = self._gh_delivery_settings()
+        try:
+            payload = deliver_task(
+                conn,
+                config=self._config,
+                project_id=project_id,
+                task_id=task_id.strip().split()[0],
+                gh_executable=gh_executable,
+                gh_prefix=gh_prefix,
+                env=gh_env or None,
+            )
+        except ValueError as exc:
+            return self._error(request, str(exc))
+        return self._ok(request, payload)
+
+    def _handle_project_prs(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .github_delivery import build_prs_payload
+
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        return self._ok(
+            request,
+            build_prs_payload(conn, project_id=project_id),
+        )
+
+    def _handle_project_ci(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .github_delivery import build_ci_payload
+
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        task_id = request.params.get("task_id") or request.params.get("args")
+        if not isinstance(task_id, str) or not task_id.strip():
+            return self._error(request, "task_id is required")
+        gh_executable, gh_prefix, gh_env = self._gh_delivery_settings()
+        try:
+            payload = build_ci_payload(
+                conn,
+                project_id=project_id,
+                task_id=task_id.strip().split()[0],
+                config=self._config,
+                gh_executable=gh_executable,
+                gh_prefix=gh_prefix,
+                env=gh_env or None,
+            )
+        except ValueError as exc:
+            return self._error(request, str(exc))
+        return self._ok(request, payload)
+
+    def _handle_project_delivery(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .github_delivery import build_delivery_payload
+
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        task_id = request.params.get("task_id") or request.params.get("args")
+        if not isinstance(task_id, str) or not task_id.strip():
+            return self._error(request, "task_id is required")
+        try:
+            payload = build_delivery_payload(
+                conn,
+                project_id=project_id,
+                task_id=task_id.strip().split()[0],
+            )
+        except ValueError as exc:
+            return self._error(request, str(exc))
+        return self._ok(request, payload)
+
+    def _handle_project_merge_policy(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .github_delivery import build_merge_policy_payload
+
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        return self._ok(
+            request,
+            build_merge_policy_payload(
+                conn,
+                project_id=project_id,
+                config=self._config,
+            ),
+        )
 
     def _handle_project_recoveries(
         self, conn: sqlite3.Connection, request: RequestEnvelope
