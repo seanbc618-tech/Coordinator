@@ -281,6 +281,45 @@ export function formatSlashResponse(
       ].join('\n')
     }
 
+    case 'operator.inbox':
+    case 'operator.attention': {
+      const items = (result.items as Array<Record<string, unknown>> | undefined) ?? []
+      if (!items.length) {
+        return 'Operator inbox — (empty)'
+      }
+      return [
+        'Operator inbox:',
+        ...items.map(
+          i => `- [${i.severity}] ${i.title} (${i.source_type}/${i.source_id})`,
+        ),
+      ].join('\n')
+    }
+
+    case 'operator.summary': {
+      const counts = (result.counts as Record<string, number> | undefined) ?? {}
+      return (
+        `Summary — ${result.summary_kind ?? 'current'}: `
+        + `total=${counts.total ?? 0} critical=${counts.critical ?? 0}`
+      )
+    }
+
+    case 'operator.notify': {
+      const deliveries = (result.deliveries as Array<Record<string, unknown>> | undefined) ?? []
+      const dry = result.dry_run ? ' (dry-run)' : ''
+      return `Notify${dry}: ${deliveries.length} delivery record(s)`
+    }
+
+    case 'operator.decision': {
+      if (result.requires_confirmation) {
+        return `Decision — confirmation required for ${result.routed_method}`
+      }
+      return `Decision — routed to ${result.routed_method}`
+    }
+
+    case 'operator.dismiss': {
+      return `Dismissed — ${result.item_id} -> ${result.status}`
+    }
+
     case 'project.recoveries': {
       const proposals = (result.proposals as Array<Record<string, unknown>> | undefined) ?? []
       if (!proposals.length) {

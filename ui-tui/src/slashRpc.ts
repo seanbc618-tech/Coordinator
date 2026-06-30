@@ -98,11 +98,46 @@ export function buildSlashRpc(
     || commandName === '/strategy'
     || commandName === '/prs'
     || commandName === '/merge-policy'
+    || commandName === '/inbox'
+    || commandName === '/attention'
   ) {
     return {
       ok: true,
       method,
       params: {},
+      displayMethod: method,
+    }
+  }
+
+  if (commandName === '/summary') {
+    const kind = args.trim().toLowerCase().includes('morning') ? 'morning' : 'current'
+    return {
+      ok: true,
+      method,
+      params: { kind, args: args.trim() },
+      displayMethod: method,
+    }
+  }
+
+  if (commandName === '/notify') {
+    const dryRun = args.includes('--dry-run')
+    return {
+      ok: true,
+      method,
+      params: { dry_run: dryRun, args: args.trim() },
+      displayMethod: method,
+    }
+  }
+
+  if (commandName === '/decision' || commandName === '/dismiss') {
+    const itemId = args.trim().split(/\s+/)[0] ?? ''
+    if (!itemId) {
+      return { ok: false, error: `usage: ${commandName} <item-id>` }
+    }
+    return {
+      ok: true,
+      method,
+      params: { item_id: itemId, args: args.trim() },
       displayMethod: method,
     }
   }

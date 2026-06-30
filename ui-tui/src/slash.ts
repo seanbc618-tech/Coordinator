@@ -28,6 +28,12 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/ci', description: 'Poll GitHub CI for a task delivery', method: 'project.ci' },
   { name: '/delivery', description: 'Show delivery record for a task', method: 'project.delivery' },
   { name: '/merge-policy', description: 'Show repo merge and push policy', method: 'project.merge_policy' },
+  { name: '/inbox', description: 'Show operator inbox for this project', method: 'operator.inbox' },
+  { name: '/attention', description: 'Show items needing human attention', method: 'operator.attention' },
+  { name: '/summary', description: 'Show operator summary', method: 'operator.summary' },
+  { name: '/notify', description: 'Dispatch notifications (use --dry-run)', method: 'operator.notify' },
+  { name: '/decision', description: 'Route safe action for an inbox item', method: 'operator.decision' },
+  { name: '/dismiss', description: 'Dismiss an operator inbox item', method: 'operator.dismiss' },
   { name: '/recoveries', description: 'List pending recovery proposals', method: 'project.recoveries' },
   { name: '/overnight', description: 'Overnight window and latest summary', method: 'project.overnight' },
   { name: '/loop', description: 'Autonomous loop status and run controls', method: 'project.loop.status' },
@@ -103,6 +109,12 @@ const HELP_COMMAND_NAMES = new Set([
   '/ci',
   '/delivery',
   '/merge-policy',
+  '/inbox',
+  '/attention',
+  '/summary',
+  '/notify',
+  '/decision',
+  '/dismiss',
   '/recoveries',
   '/agents',
   '/overnight',
@@ -187,6 +199,31 @@ export function formatHelpText(): string {
     }
     if (cmd.name === '/merge-policy') {
       lines.push('/merge-policy - Show repo merge and push policy')
+      continue
+    }
+    if (cmd.name === '/inbox') {
+      lines.push('/inbox - Show operator inbox for this project')
+      continue
+    }
+    if (cmd.name === '/attention') {
+      lines.push('/attention - Show items needing human attention')
+      continue
+    }
+    if (cmd.name === '/summary') {
+      lines.push('/summary - Show operator summary')
+      lines.push('/summary morning - Morning summary from durable events')
+      continue
+    }
+    if (cmd.name === '/notify') {
+      lines.push('/notify --dry-run - Preview notification delivery')
+      continue
+    }
+    if (cmd.name === '/decision') {
+      lines.push('/decision <item-id> - Route safe action for an inbox item')
+      continue
+    }
+    if (cmd.name === '/dismiss') {
+      lines.push('/dismiss <item-id> - Dismiss an operator inbox item')
       continue
     }
     if (cmd.name === '/recoveries') {
