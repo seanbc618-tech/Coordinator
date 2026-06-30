@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -138,7 +139,8 @@ class ReviewCommentIngestTests(unittest.TestCase):
             config=self.config,
             project_id=self.project_id,
             delivery_id=record.id,
-            gh_executable=str(_FAKE_GH_PATH),
+            gh_executable=sys.executable,
+            gh_prefix=[str(_FAKE_GH_PATH)],
             env=self.env,
         )
         self.assertEqual(result.unresolved_count, 2)
@@ -156,7 +158,8 @@ class ReviewCommentIngestTests(unittest.TestCase):
             config=self.config,
             project_id=self.project_id,
             delivery_id=record.id,
-            gh_executable=str(_FAKE_GH_PATH),
+            gh_executable=sys.executable,
+            gh_prefix=[str(_FAKE_GH_PATH)],
             env=self.env,
         )
         text = Path(result.evidence_path).read_text(encoding="utf-8")
@@ -174,7 +177,8 @@ class ReviewCommentIngestTests(unittest.TestCase):
             config=self.config,
             project_id=self.project_id,
             delivery_id=record.id,
-            gh_executable=str(_FAKE_GH_PATH),
+            gh_executable=sys.executable,
+            gh_prefix=[str(_FAKE_GH_PATH)],
             env=self.env,
         )
         items = list_operator_items(self.conn, project_id=self.project_id)
@@ -190,7 +194,8 @@ class ReviewCommentIngestTests(unittest.TestCase):
             config=self.config,
             project_id=self.project_id,
             delivery_id=record.id,
-            gh_executable=str(_FAKE_GH_PATH),
+            gh_executable=sys.executable,
+            gh_prefix=[str(_FAKE_GH_PATH)],
             env=self.env,
         )
         row = self.conn.execute(
@@ -213,7 +218,8 @@ class ReviewCommentIngestTests(unittest.TestCase):
                 config=self.config,
                 project_id="other-project",
                 delivery_id=record.id,
-                gh_executable=str(_FAKE_GH_PATH),
+                gh_executable=sys.executable,
+                gh_prefix=[str(_FAKE_GH_PATH)],
                 env=self.env,
             )
 
