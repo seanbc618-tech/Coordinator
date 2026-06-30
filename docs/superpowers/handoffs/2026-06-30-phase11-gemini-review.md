@@ -67,6 +67,47 @@ We authorize Grok to proceed with Tasks 1-9 under the following strict **Safety 
 
 ---
 
+## Grok Task Mandates (Tasks 1–9)
+
+These overrides are **binding**. Codex Gate C/E/G and Gemini Gate B/D/F will reject implementation that skips them.
+
+| Task | Mandatory behavior |
+| --- | --- |
+| **1** | Migration 021 only; add `project_brain_memories.status` (`active` / `inactive` / `resolved`) or equivalent filter column. Never store raw file bodies in snapshots. |
+| **2** | `index_repository(repo_root)` must canonicalize under registered root; honor `.gitignore`; skip `.env*`, `*.pem`, `*.key`, `id_rsa`, `credentials`; apply `_redact_text` at ingest — **no secrets in SQLite**. |
+| **3** | Card summaries/titles redacted before `upsert_brain_card`; citations are paths only (no file content). Trigger lazy re-index when `git_head` changes. |
+| **4** | `build_context_packet`: (a) compare live git head/dirty vs snapshot; prepend stale warning when mismatched; (b) prune low-priority cards/memories before error; (c) raise `ContextPacketBudgetError` only when core context still exceeds budget; (d) emit `redactions` report. |
+| **5** | Commander prompts attach packet by ID; use redacted manifest in logs, never raw card bodies. |
+| **6** | Worker `task_prompt` packets persisted with `packet_id`; prompt cites packet ID for audit. |
+| **7** | `learn_from_task_outcome`: upsert memories with dedupe; mark `failure`/`review_blocker` **inactive** when a later successful task touches same module/path; default context queries exclude inactive memories. |
+| **8** | All `project.brain|map|where|why|impact|context` handlers call `_require_registered_project`; never accept cross-project `project_id` params that disagree with request envelope. |
+| **9** | Slash routes must call Supervisor RPCs (no local DB reads in TUI). Display redacted summaries only. |
+
+---
+
+## Test Contract Amendments (post–Task 0)
+
+Red tests were updated to match these mandates:
+
+- **Budget**: prefer prioritized pruning; `ContextPacketBudgetError` only when core context cannot fit.
+- **Staleness**: packets must include `stale_warning` when git head/dirty disagrees with snapshot.
+- **Memories**: inactive failure memories excluded from default `task_prompt` packets.
+- **Indexer**: gitignored paths and ingestion-time redaction verified before DB insert.
+
+---
+
+## Gate Verification Matrix
+
+| Gate | Owner | Must prove |
+| --- | --- | --- |
+| **B** | Gemini | No `.env`/keys in cards; `.gitignore` honored; path canonicalization; migration 021 mirrored |
+| **C** | Codex | Commander/worker packets bounded, persisted, redacted; pruning works; stale warnings present |
+| **D** | Gemini | Failure memories go inactive after fix; no unbounded duplicate memories; no stale blockers in default packets |
+| **F** | Gemini | Full checklist above + docs/slash consistency |
+| **G** | Codex | Full suite + clean-wheel `/brain` `/map` |
+
+---
+
 ## Verdict
 
 - [ ] PASS

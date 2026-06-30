@@ -137,6 +137,40 @@ class ProjectBrainPersistenceTests(unittest.TestCase):
         self.assertIn("db layer", titles)
         self.assertNotIn("other", titles)
 
+    def test_inactive_failure_memories_excluded_from_default_context(self) -> None:
+        from local_cli_coordinator.project_brain import (
+            list_memories_for_context,
+            upsert_brain_memory,
+        )
+
+        upsert_brain_memory(
+            self.conn,
+            project_id=self.project_a,
+            source_type="task",
+            source_id="task-old",
+            memory_type="failure",
+            title="pytest import error",
+            summary="db.py ImportError",
+            status="inactive",
+        )
+        upsert_brain_memory(
+            self.conn,
+            project_id=self.project_a,
+            source_type="task",
+            source_id="task-new",
+            memory_type="verification",
+            title="db tests pass",
+            summary="fixed in later commit",
+            status="active",
+        )
+        self.conn.commit()
+        active = list_memories_for_context(
+            self.conn, project_id=self.project_a, purpose="task_prompt"
+        )
+        titles = {m.title for m in active}
+        self.assertIn("db tests pass", titles)
+        self.assertNotIn("pytest import error", titles)
+
     def test_persist_context_packet_round_trip(self) -> None:
         from local_cli_coordinator.project_brain import persist_context_packet
 

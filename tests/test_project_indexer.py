@@ -28,6 +28,18 @@ class ProjectIndexerSafetyTests(unittest.TestCase):
 
         shutil.rmtree(self.tmp, ignore_errors=True)
 
+    def test_index_honors_gitignore(self) -> None:
+        from local_cli_coordinator.project_indexer import index_repository
+
+        (self.repo / ".gitignore").write_text("ignored/\n")
+        (self.repo / "ignored").mkdir()
+        (self.repo / "ignored" / "secret.py").write_text("TOKEN=abc\n")
+        run("git", "add", ".gitignore", cwd=self.repo)
+        run("git", "commit", "-m", "gitignore", cwd=self.repo)
+        result = index_repository(self.repo)
+        paths = {entry.path for entry in result.entries}
+        self.assertNotIn("ignored/secret.py", paths)
+
     def test_index_ignores_env_and_vendor_dirs(self) -> None:
         from local_cli_coordinator.project_indexer import index_repository
 
@@ -46,7 +58,7 @@ class ProjectIndexerSafetyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             index_repository(outside)
 
-    def test_index_redacts_secret_like_content_in_metadata(self) -> None:
+    def test_index_redacts_secret_like_content_at_ingest(self) -> None:
         from local_cli_coordinator.project_indexer import index_repository
 
         (self.repo / "config.toml").write_text("token = leaked-value\n")
@@ -56,6 +68,41 @@ class ProjectIndexerSafetyTests(unittest.TestCase):
         blob = result.model_dump_json() if hasattr(result, "model_dump_json") else str(result)
         self.assertNotIn("leaked-value", blob)
         self.assertNotIn("super-secret-value", blob)
+
+    def test_brain_card_persists_redacted_summary_not_raw_secret(self) -> None:
+        import tempfile as tf
+
+        from local_cli_coordinator.db import connect, init_db
+        from local_cli_coordinator.project_brain import (
+            create_brain_snapshot,
+            upsert_brain_card,
+        )
+
+        tmp = Path(tf.mkdtemp())
+        conn = connect(tmp / "d.db")
+        init_db(conn)
+        conn.execute(
+            "insert into projects(id, canonical_path, repo_id) values ('proj-x', ?, 'd')",
+            (str(self.repo.resolve()),),
+        )
+        snap = create_brain_snapshot(conn, project_id="proj-x", repo_path=self.repo)
+        card = upsert_brain_card(
+            conn,
+            project_id="proj-x",
+            snapshot_id=snap.id,
+            card_type="config",
+            title="auth",
+            summary="api_key=raw-secret-value",
+            citations=[{"path": "config.toml"}],
+        )
+        conn.commit()
+        row = conn.execute(
+            "select summary from project_brain_cards where id = ?",
+            (card.id,),
+        ).fetchone()
+        conn.close()
+        self.assertNotIn("raw-secret-value", row["summary"])
+        self.assertIn("[REDACTED]", row["summary"])
 
     def test_index_captures_git_head_and_dirty_flag(self) -> None:
         from local_cli_coordinator.project_indexer import index_repository
