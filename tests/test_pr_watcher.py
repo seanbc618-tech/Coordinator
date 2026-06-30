@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -133,7 +134,8 @@ class PrWatcherTests(unittest.TestCase):
             config=self.config,
             project_id=self.project_id,
             delivery_id=record.id,
-            gh_executable=str(_FAKE_GH_PATH),
+            gh_executable=sys.executable,
+            gh_prefix=[str(_FAKE_GH_PATH)],
             env=self.env,
         )
         self.assertEqual(health.project_id, self.project_id)
@@ -144,10 +146,12 @@ class PrWatcherTests(unittest.TestCase):
     def test_watch_marks_stale_when_base_advanced(self) -> None:
         from local_cli_coordinator.pr_watcher import watch_delivery_pr_health
 
+        run = __import__("subprocess").run
+        run(["git", "checkout", "-b", "coord/task-1"], cwd=self.repo, check=True)
+        run(["git", "checkout", "main"], cwd=self.repo, check=True)
         record = self._delivery()
         self.conn.commit()
         (self.repo / "README.md").write_text("main advanced\n")
-        run = __import__("subprocess").run
         run(["git", "add", "README.md"], cwd=self.repo, check=True)
         run(["git", "commit", "-m", "advance main"], cwd=self.repo, check=True)
         health = watch_delivery_pr_health(
@@ -155,7 +159,8 @@ class PrWatcherTests(unittest.TestCase):
             config=self.config,
             project_id=self.project_id,
             delivery_id=record.id,
-            gh_executable=str(_FAKE_GH_PATH),
+            gh_executable=sys.executable,
+            gh_prefix=[str(_FAKE_GH_PATH)],
             env=self.env,
         )
         self.assertTrue(health.stale)
@@ -171,7 +176,8 @@ class PrWatcherTests(unittest.TestCase):
             config=self.config,
             project_id=self.project_id,
             delivery_id=record.id,
-            gh_executable=str(_FAKE_GH_PATH),
+            gh_executable=sys.executable,
+            gh_prefix=[str(_FAKE_GH_PATH)],
             env=self.env,
         )
         row = self.conn.execute(
@@ -200,7 +206,8 @@ class PrWatcherTests(unittest.TestCase):
             config=self.config,
             project_id=self.project_id,
             delivery_id=record.id,
-            gh_executable=str(_FAKE_GH_PATH),
+            gh_executable=sys.executable,
+            gh_prefix=[str(_FAKE_GH_PATH)],
             env=broken_env,
         )
         self.assertEqual(health.status, "observed")
@@ -218,7 +225,8 @@ class PrWatcherTests(unittest.TestCase):
                 config=self.config,
                 project_id="other-project",
                 delivery_id=record.id,
-                gh_executable=str(_FAKE_GH_PATH),
+                gh_executable=sys.executable,
+                gh_prefix=[str(_FAKE_GH_PATH)],
                 env=self.env,
             )
 
