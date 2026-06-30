@@ -26,8 +26,11 @@ def _config(repo_path: Path, *, allow_push: bool = True) -> CoordinatorConfig:
                 id="demo",
                 path=repo_path,
                 default_branch="main",
+                remote="origin",
+                branch_prefix="coord/",
                 allow_push=allow_push,
                 merge_policy="push_branch_only" if allow_push else "no_push",
+                verify_commands=["true"],
                 review_policy="tests_only",
             )
         },
@@ -54,8 +57,8 @@ class DeliveryPolicyTests(unittest.TestCase):
         init_db(self.conn)
         self.project_id = "proj-1"
         self.conn.execute(
-            "insert into projects(id, name, repo_root, created_at) values (?, ?, ?, datetime('now'))",
-            (self.project_id, "demo", str(self.repo)),
+            "insert into projects(id, canonical_path, repo_id) values (?, ?, ?)",
+            (self.project_id, str(self.repo.resolve()), "demo"),
         )
         self.task_id = create_task(
             self.conn,
@@ -159,6 +162,15 @@ class DeliveryPolicyTests(unittest.TestCase):
             status="covered",
             summary="done",
             data={"criterion": "done"},
+        )
+        record_evidence(
+            self.conn,
+            project_id=self.project_id,
+            task_id=self.task_id,
+            evidence_type="diff",
+            status="present",
+            summary="changed",
+            data={"changed_files": ["src/a.py"]},
         )
         self.conn.commit()
         decision = evaluate_delivery_policy(
