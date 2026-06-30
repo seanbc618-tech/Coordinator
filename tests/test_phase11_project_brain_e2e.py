@@ -49,6 +49,11 @@ def _write_config(config_dir: Path, repo_path: Path) -> None:
         max_files_touched = 20
         max_expected_minutes = 60
         max_attempts = 3
+        split_if_touches_multiple_subsystems = false
+        split_if_research_and_code_are_mixed = false
+
+        [notifications]
+        allow_command_sink = false
     """).strip())
 
 
@@ -159,8 +164,8 @@ class ProjectBrainRpcTests(unittest.TestCase):
             verification_commands=["false"],
             project_id=self.project_id,
         )
-        transition_task(self.conn, task_id, "running")
-        transition_task(self.conn, task_id, "failed")
+        transition_task(self.conn, task_id, "running", "start")
+        transition_task(self.conn, task_id, "failed", "boom")
         self.conn.commit()
         learn_from_task_outcome(self.conn, project_id=self.project_id, task_id=task_id)
         self.conn.commit()

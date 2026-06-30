@@ -39432,6 +39432,30 @@ function formatHelpText() {
       lines.push("/merge-policy - Show repo merge and push policy");
       continue;
     }
+    if (cmd.name === "/brain") {
+      lines.push("/brain - Show project brain snapshot");
+      continue;
+    }
+    if (cmd.name === "/map") {
+      lines.push("/map - Show project structure map");
+      continue;
+    }
+    if (cmd.name === "/where") {
+      lines.push("/where <query> - Find where to make a change");
+      continue;
+    }
+    if (cmd.name === "/why") {
+      lines.push("/why <path> - Explain a file path");
+      continue;
+    }
+    if (cmd.name === "/impact") {
+      lines.push("/impact <path> - Show impact of changing a file");
+      continue;
+    }
+    if (cmd.name === "/context") {
+      lines.push("/context <task-id> - Show task context packet");
+      continue;
+    }
     if (cmd.name === "/inbox") {
       lines.push("/inbox - Show operator inbox for this project");
       continue;
@@ -39528,6 +39552,12 @@ var init_slash = __esm({
       { name: "/ci", description: "Poll GitHub CI for a task delivery", method: "project.ci" },
       { name: "/delivery", description: "Show delivery record for a task", method: "project.delivery" },
       { name: "/merge-policy", description: "Show repo merge and push policy", method: "project.merge_policy" },
+      { name: "/brain", description: "Show project brain snapshot", method: "project.brain" },
+      { name: "/map", description: "Show project structure map", method: "project.map" },
+      { name: "/where", description: "Find where to make a change", method: "project.where" },
+      { name: "/why", description: "Explain a file path", method: "project.why" },
+      { name: "/impact", description: "Show impact of changing a file", method: "project.impact" },
+      { name: "/context", description: "Show task context packet", method: "project.context" },
       { name: "/inbox", description: "Show operator inbox for this project", method: "operator.inbox" },
       { name: "/attention", description: "Show items needing human attention", method: "operator.attention" },
       { name: "/summary", description: "Show operator summary", method: "operator.summary" },
@@ -39570,6 +39600,12 @@ var init_slash = __esm({
       "/ci",
       "/delivery",
       "/merge-policy",
+      "/brain",
+      "/map",
+      "/where",
+      "/why",
+      "/impact",
+      "/context",
       "/inbox",
       "/attention",
       "/summary",
@@ -39882,11 +39918,44 @@ function buildSlashRpc(commandName, method, args) {
       displayMethod: "project.jump"
     };
   }
-  if (commandName === "/plan" || commandName === "/scan" || commandName === "/strategy" || commandName === "/prs" || commandName === "/merge-policy" || commandName === "/inbox" || commandName === "/attention") {
+  if (commandName === "/plan" || commandName === "/scan" || commandName === "/strategy" || commandName === "/prs" || commandName === "/merge-policy" || commandName === "/inbox" || commandName === "/attention" || commandName === "/brain" || commandName === "/map") {
     return {
       ok: true,
       method,
       params: {},
+      displayMethod: method
+    };
+  }
+  if (commandName === "/where") {
+    const query = args.trim();
+    if (!query) {
+      return { ok: false, error: "usage: /where <query>" };
+    }
+    return {
+      ok: true,
+      method,
+      params: { query },
+      displayMethod: method
+    };
+  }
+  if (commandName === "/why" || commandName === "/impact") {
+    const pathArg = args.trim();
+    if (!pathArg) {
+      return { ok: false, error: `usage: ${commandName} <path>` };
+    }
+    return {
+      ok: true,
+      method,
+      params: { path: pathArg },
+      displayMethod: method
+    };
+  }
+  if (commandName === "/context") {
+    const taskId = args.trim().split(/\s+/)[0] ?? "";
+    return {
+      ok: true,
+      method,
+      params: taskId ? { task_id: taskId } : {},
       displayMethod: method
     };
   }
@@ -40305,6 +40374,46 @@ ${tail}`;
           (r) => `- ${r.repo_id}: allow_push=${r.allow_push} merge_policy=${r.merge_policy} review=${r.review_policy}`
         )
       ].join("\n");
+    }
+    case "project.brain": {
+      const snap = result.snapshot ?? {};
+      return `Brain \u2014 ${snap.file_count ?? 0} files, head=${String(snap.git_head ?? "").slice(0, 8)}${snap.git_dirty ? " (dirty)" : ""}`;
+    }
+    case "project.map": {
+      const cards = result.cards ?? [];
+      if (!cards.length) {
+        return "Map \u2014 (no cards)";
+      }
+      return [
+        "Project map:",
+        ...cards.map((c) => `- [${c.card_type}] ${c.title}`)
+      ].join("\n");
+    }
+    case "project.where": {
+      const matches = result.matches ?? [];
+      if (!matches.length) {
+        return "Where \u2014 no matches (heuristic)";
+      }
+      return [
+        "Where:",
+        ...matches.map(
+          (m) => `- ${m.path} (${m.confidence}) \u2014 ${m.reason}`
+        )
+      ].join("\n");
+    }
+    case "project.why":
+    case "project.impact": {
+      const related = result.related ?? [];
+      if (!related.length) {
+        return "Impact \u2014 no related paths (heuristic)";
+      }
+      return [
+        "Impact:",
+        ...related.map((r) => `- ${r.path} \u2014 ${r.reason}`)
+      ].join("\n");
+    }
+    case "project.context": {
+      return `Context packet \u2014 ${result.packet_id ?? "(none)"}`;
     }
     case "operator.inbox":
     case "operator.attention": {

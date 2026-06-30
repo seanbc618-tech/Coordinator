@@ -1118,6 +1118,60 @@ def _handle_slash(
             user_reply=reply,
             intent="status_question",
         )
+    if command in {"/brain", "/map", "/where", "/why", "/impact", "/context"}:
+        args_text = text.strip()[len(command) :].strip()
+        method = {
+            "/brain": "project.brain",
+            "/map": "project.map",
+            "/where": "project.where",
+            "/why": "project.why",
+            "/impact": "project.impact",
+            "/context": "project.context",
+        }[command]
+        params: dict[str, Any] = {}
+        if command == "/where":
+            if not args_text:
+                return _error_outcome("invalid_args", "usage: /where <query>")
+            params["query"] = args_text
+        elif command in {"/why", "/impact"}:
+            if not args_text:
+                return _error_outcome("invalid_args", f"usage: {command} <path>")
+            params["path"] = args_text
+        elif command == "/context":
+            if args_text:
+                params["task_id"] = args_text.split()[0]
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method=method,
+            params=params,
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        if command == "/brain":
+            snap = result.get("snapshot") or {}
+            reply = (
+                f"Brain: {snap.get('file_count', 0)} files, "
+                f"head={str(snap.get('git_head', ''))[:8]}"
+            )
+        elif command == "/map":
+            cards = result.get("cards") or []
+            reply = f"Map: {len(cards)} card(s)"
+        elif command == "/where":
+            matches = result.get("matches") or []
+            reply = f"Where: {len(matches)} match(es)"
+        elif command in {"/why", "/impact"}:
+            related = result.get("related") or []
+            reply = f"Impact: {len(related)} related path(s)"
+        else:
+            reply = f"Context packet: {result.get('packet_id')}"
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=reply,
+            intent="status_question",
+        )
     if command == "/recoveries":
         result, err, _envelope = _send_rpc(
             paths,
@@ -1473,6 +1527,38 @@ def _rpc_slash(
             project_id=project_id,
             method="project.merge_policy",
             params={},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command in {"/brain", "/map", "/where", "/why", "/impact", "/context"}:
+        args_text = text.strip()[len(command) :].strip()
+        method = {
+            "/brain": "project.brain",
+            "/map": "project.map",
+            "/where": "project.where",
+            "/why": "project.why",
+            "/impact": "project.impact",
+            "/context": "project.context",
+        }[command]
+        params: dict[str, Any] = {}
+        if command == "/where":
+            if not args_text:
+                outcome = _error_outcome("invalid_args", "usage: /where <query>")
+                return _outcome_to_rpc(outcome), 1
+            params["query"] = args_text
+        elif command in {"/why", "/impact"}:
+            if not args_text:
+                outcome = _error_outcome("invalid_args", f"usage: {command} <path>")
+                return _outcome_to_rpc(outcome), 1
+            params["path"] = args_text
+        elif command == "/context" and args_text:
+            params["task_id"] = args_text.split()[0]
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method=method,
+            params=params,
         )
         if envelope is not None:
             return envelope, 0 if envelope.ok else 1

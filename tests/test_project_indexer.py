@@ -17,10 +17,11 @@ class ProjectIndexerSafetyTests(unittest.TestCase):
         (self.repo / "src").mkdir()
         (self.repo / "src" / "app.py").write_text("def main():\n    return 1\n")
         (self.repo / "pyproject.toml").write_text("[project]\nname = 'demo'\n")
+        (self.repo / ".gitignore").write_text(".env\nnode_modules/\n")
         (self.repo / ".env").write_text("API_KEY=super-secret-value\n")
         (self.repo / "node_modules").mkdir()
         (self.repo / "node_modules" / "pkg.js").write_text("module.exports = {}")
-        run("git", "add", "src", "pyproject.toml", cwd=self.repo)
+        run("git", "add", "src", "pyproject.toml", ".gitignore", cwd=self.repo)
         run("git", "commit", "-m", "add sources", cwd=self.repo)
 
     def tearDown(self) -> None:

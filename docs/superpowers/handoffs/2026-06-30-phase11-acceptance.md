@@ -2,7 +2,7 @@
 
 **Branch:** `phase11-project-brain-context-engine`  
 **Implementer:** Grok  
-**Status:** Task 0 red tests landed — Gemini **CONDITIONAL PASS** (design-time audit)
+**Status:** Grok Tasks 1–9 complete — ready for Codex Gate G / Gemini Gate F
 
 ## Gemini mandates (binding for Tasks 1–9)
 

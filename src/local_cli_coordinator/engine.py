@@ -167,7 +167,13 @@ def _resolve_memory_path(root: Path, path: Path) -> Path:
     return path if path.is_absolute() else root / path
 
 
-def _write_prompt(task, run_dir: Path, root: Path, repo: RepoConfig) -> Path:
+def _write_prompt(
+    conn: sqlite3.Connection,
+    task,
+    run_dir: Path,
+    root: Path,
+    repo: RepoConfig,
+) -> Path:
     run_dir.mkdir(parents=True, exist_ok=True)
     verification_commands = [
         line for line in task["verification_commands"].splitlines() if line
@@ -195,6 +201,26 @@ def _write_prompt(task, run_dir: Path, root: Path, repo: RepoConfig) -> Path:
     if policy_is_restrictive(policy_json):
         policy = ExecutionPolicy.from_json(policy_json)
         sections.append(format_policy_prompt_section(policy) + "\n")
+    project_id = str(task.get("project_id") or "")
+    if project_id and project_id != "legacy-default":
+        try:
+            from .context_packets import build_and_persist_context_packet
+
+            packet, packet_id = build_and_persist_context_packet(
+                conn,
+                project_id=project_id,
+                purpose="task_prompt",
+                token_budget=4000,
+                repo_path=repo.path,
+                task_id=str(task["id"]),
+                query=str(task.get("title") or ""),
+            )
+            sections.append(
+                f"## Project brain context (packet {packet_id})\n\n"
+                f"{packet.get('summary', '')}\n"
+            )
+        except Exception:
+            pass
     prompt = run_dir / "prompt.md"
     prompt.write_text("\n".join(sections))
     return prompt
@@ -212,6 +238,19 @@ def _finish_task(
 ) -> None:
     transition_task(conn, task_id, state, note)
     task = get_task(conn, task_id)
+    project_id = str(task.get("project_id") or "")
+    if project_id and project_id != "legacy-default" and state in {
+        "failed",
+        "done",
+        "verified",
+    }:
+        try:
+            from .project_brain import learn_from_task_outcome
+
+            learn_from_task_outcome(conn, project_id=project_id, task_id=task_id)
+            conn.commit()
+        except Exception:
+            pass
     append_loop_memory(
         root,
         LoopMemoryEntry(
@@ -1091,7 +1130,7 @@ def _process_task(
             next_action="inspect worktree branch history and retry",
         )
         return True
-    prompt = _write_prompt(task, run_dir, root, repo)
+    prompt = _write_prompt(conn, task, run_dir, root, repo)
     worktree_prompt = _worktree_prompt_path(worktree, task["id"], prompt)
     add_artifact(conn, task["id"], "worktree_prompt", worktree_prompt)
     agent_result, classified, attempt_id = run_worker_attempt(

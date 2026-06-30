@@ -480,6 +480,33 @@ coordinator operator summary --json
   JSON on stdin (no shell interpolation).
 - **Summaries** are deterministic and redacted — no raw prompts, tokens, or log bodies.
 
+## Project brain (Phase 11)
+
+Per-project indexing, knowledge cards, bounded context packets, and durable
+memories from task outcomes.
+
+```bash
+coordinator --print -p "/brain"
+coordinator --print -p "/map"
+coordinator --print -p "/where add retry policy"
+coordinator --print -p "/why src/local_cli_coordinator/db.py"
+coordinator --print -p "/impact src/local_cli_coordinator/db.py"
+coordinator --print -p "/context task-abc"
+```
+
+| Slash | RPC | Notes |
+|---|---|---|
+| `/brain` | `project.brain` | Latest snapshot (git head, file count) |
+| `/map` | `project.map` | Knowledge cards with citations |
+| `/where` | `project.where` | Heuristic path matches for a query |
+| `/why` | `project.why` | Related paths for a target file |
+| `/impact` | `project.impact` | Alias of `/why` |
+| `/context` | `project.context` | Bounded, redacted context packet for a task |
+
+- Indexer honors `.gitignore`, skips secrets/vendor dirs, redacts at ingest.
+- Context packets prune low-priority cards before failing on budget.
+- Commander and worker prompts cite persisted `packet_id` for audit.
+
 ## Autonomous loop (Phase 6 / 6B / 6C)
 
 ```bash
