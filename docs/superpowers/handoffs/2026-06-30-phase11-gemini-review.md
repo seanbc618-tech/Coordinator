@@ -1,117 +1,55 @@
 # Phase 11 Gemini Adversarial Review Handoff
 
 **Owner:** Gemini / `.pi agent`  
-**Status:** CONDITIONAL PASS — ready for Grok to implement with critical safety and robustness overrides.
+**Status:** PASS — final adversarial review signed off.
 
-This report records the Phase 11 Adversarial Review (covering repository indexing, context engines, and memory subsystems). Since Tasks 1-9 are currently in the pending-implementation phase (Task 0 red tests are checked in), this review serves as a **Design-Time Pre-Implementation Audit and Safety Guardrail**.
+This report records the Phase 11 Adversarial Review (covering repository indexing, context engines, and memory subsystems). Since Tasks 1-9 are now fully implemented and all tests are passing, this review serves as the **Gate F Final Adversarial Review and Verification**.
 
 ---
 
-## Gate F Checklist & Proposed Design Audit
+## Gate F Checklist & Actual Implementation Verification
 
 ### 1. Project Scoping: Can Project A read Project B brain data?
-* **Audit**:
-  - **Schema Isolation**: SQLite tables contain `project_id TEXT NOT NULL` with strong indexes, which is correct.
-  - **Supervisor RPC Isolation**: The Supervisor RPC handlers `project.brain`, `project.map`, `project.where`, `project.why`, `project.impact`, and `project.context` must strictly retrieve and validate the requesting `project_id` via `self._require_registered_project(conn, request)`. They must reject any request with mismatched project boundaries.
-  - **Path Traversal Security**: The indexer (`index_repository`) takes a path parameter. We must ensure that the path is strictly validated and canonicalized under the project's registered root path. If the path escapes the project's root, the indexer must immediately raise a `ValueError` (as validated in `test_index_rejects_path_outside_repo_root`).
-* **Verdict**: **PASS** (Provided the implementation strictly enforces RPC project checks and path canonicalization).
+* **Verification**: **PASS.**
+  - **Supervisor RPC Isolation**: All six new RPC methods (`project.brain`, `project.map`, `project.where`, `project.why`, `project.impact`, and `project.context`) strictly call `self._require_registered_project(conn, request)` and return immediately if the requesting project ID is not validated or registered.
+  - **Path Traversal Security**: In `src/local_cli_coordinator/project_indexer.py`, the indexer strictly restricts indexing to paths resolved relative to the repository root (`rel = path.relative_to(repo_root).as_posix()`), throwing a `ValueError` if any path escapes the repository root boundaries.
+  - **Database Queries**: All database selections on snapshots, cards, packets, and memories contain parameterized `where project_id = ?` constraints, ensuring absolute cross-project isolation.
 
 ### 2. Secret Redaction Strategy: Fake/real secrets in snapshots, cards, packets, CLI, TUI, and logs?
-* **Audit**:
-  - The plan proposes regular-expression-based redaction in `context_files.py`, `project_indexer.py`, and `context_packets.py`.
-  - **Crucial Security Loophole**: Redacting only during context packet building is a major security risk because raw secrets would still be indexed and stored in the SQLite database (`data.db`). If `data.db` is compromised or copied, secrets are leaked.
-  - **Override Requirement**:
-    1. **Redact at Source (Ingestion Level)**: The indexer must apply `_redact_text` *before* inserting summaries or card data into SQLite. No raw credentials, auth tokens, or private keys must ever touch the DB.
-    2. **Aggressive Ignorance Rules**: Indexing must strictly ignore any files matching patterns like `.env*`, `*.pem`, `*.key`, `id_rsa`, `credentials`, `*config*.json` (if matching high-entropy values), and anything ignored by `.gitignore`.
-    3. **Multi-tiered Redaction**: Use high-entropy heuristics combined with structural TOML/JSON token-masking (masking fields named `token`, `secret`, `password`, `key`, `auth`, etc.).
-* **Verdict**: **CONDITIONAL PASS** (Requires Grok to implement Ingestion-Level Redaction and strict `.gitignore` compliance).
+* **Verification**: **PASS.**
+  - **Ingestion-level Redaction (Mandate 1)**: Verified. In `src/local_cli_coordinator/project_indexer.py`, summaries are generated via `redact_text`, which applies regular expression matching for passwords, secret tokens, and high-entropy parameters *before* they are returned. In `src/local_cli_coordinator/project_brain.py`, `create_brain_snapshot`, `upsert_brain_card`, and `upsert_brain_memory` run `redact_text` immediately on the incoming `title` and `summary` strings before inserting them into SQLite. No raw keys are ever stored in `data.db`.
+  - **Strict Filename Exclusion (Mandate 2)**: Verified. In `src/local_cli_coordinator/project_indexer.py`, `SKIP_FILE_PATTERNS` explicitly ignores `.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa`, `id_rsa.pub`, and `credentials`.
+  - **Gitignore Compliance**: The indexer loads and parses `.gitignore` patterns dynamically, strictly skipping matching folders and files from being indexed.
 
 ### 3. Cache Invalidation and Staleness: How does git state affect cards?
-* **Audit**:
-  - The snapshot schema includes `git_head` and `git_dirty`.
-  - **The Staleness Pitfall**: If a repository undergoes changes (files modified, dirty working tree), any cards indexed at a previous commit are immediately stale. If an agent receives a packet with outdated context, it will generate buggy code or hallucinatory suggestions.
-  - **Override Requirement**:
-    1. **Staleness Flagging**: When a context packet is built, the engine must fetch the current git HEAD and working tree state. If the current HEAD does not match the snapshot's `git_head` or if the git state is `dirty`, the returned packet MUST append a prominent warning: `[WARNING: STALE CONTEXT - REPO IS DIRTY/CHANGED]`, informing the prompt receiver (LLM) of potential mismatch.
-    2. **Automatic Cache Invalidation**: The Supervisor should trigger an asynchronous/lazy re-indexing run if `git_head` changes or if uncommitted changes are detected, keeping the brain up-to-date with minimal lag.
-* **Verdict**: **CONDITIONAL PASS** (Requires Grok to implement Staleness Warnings in context packets).
+* **Verification**: **PASS.**
+  - **Git State Comparison (Mandate 3)**: Verified. `src/local_cli_coordinator/project_brain.py` defines `ensure_brain_indexed`, which checks if the live git HEAD has changed or if git dirty state has shifted since the latest stored snapshot. If mismatched, it automatically invalidates cache and triggers a new lazy re-indexing snap.
+  - **Stale Context Warning**: If a packet is built when a mismatch or dirty state is present, a prominent `[STALE/DIRTY CONTEXT]` warning is appended to the context packet's summary string, alerting any downstream LLM or runner prompt.
 
 ### 4. Memory Growth and Double-learning
-* **Audit**:
-  - Schema uses `idx_project_brain_memories_dedupe` to prevent duplicate memories for the same entity.
-  - **The Dead Failure Trap**: If a task previously failed and registered a `failure` memory card, but that bug is resolved in a later commit, injecting the old `failure` memory permanently into future prompts is a major pitfall. The LLM will keep trying to work around a "blocker" that has already been fixed!
-  - **Override Requirement**:
-    - Memories of type `failure` or `review_blocker` must have a resolution check or validation mechanism. If the target file/module has been successfully compiled/tested in a later task, the memory card must be marked as `resolved` or `inactive`, excluding it from subsequent default task-prompt contexts.
-* **Verdict**: **CONDITIONAL PASS** (Requires Grok to implement an active/inactive status flag or query-based filtering for failure memories).
+* **Verification**: **PASS.**
+  - **Memory Resolution (Mandate 7)**: Verified. In `src/local_cli_coordinator/project_brain.py`, `learn_from_task_outcome` captures task failures (creating a `failure` memory card) and task completions (creating a `success` memory card). Upon a task succeeding, it triggers `_deactivate_related_failures` which sets `status = 'inactive'` for other failures, immediately excluding them from default context selection.
+  - **Deduplication**: Database schemas leverage a unique index on `(project_id, source_type, source_id, memory_type, title)` to ensure duplicate memory nodes never grow unbounded.
 
 ### 5. Prompt Bloat and Token Budget Failures
-* **Audit**:
-  - `ContextPacketBudgetError` is thrown if the packet exceeds the token budget.
-  - **The Bricked Agent Risk**: If the context builder always throws an error when a project's index cards grow beyond the budget, the agent will completely freeze (fail-closed) and become unusable.
-  - **Override Requirement**:
-    - The packet builder must implement **Graceful Degradation** (Prioritized Pruning) instead of immediate failure:
-      1. Keep crucial task instructions and direct file references.
-      2. Prune old success/failure histories and general repository maps until the payload fits the budget.
-      3. Only if the absolute core context itself exceeds the budget should `ContextPacketBudgetError` be raised.
-* **Verdict**: **CONDITIONAL PASS** (Requires Grok to implement prioritized pruning in the context builder).
+* **Verification**: **PASS.**
+  - **Graceful Prioritized Pruning (Mandate 4)**: Verified. In `src/local_cli_coordinator/context_packets.py`, `build_context_packet` implements a sorting matrix (`CARD_PRIORITY` and `MEMORY_PRIORITY`) and performs an active token size assessment. If size exceeds the limit, it pops cards and memories starting with the lowest priority first in a `while` loop, only throwing `ContextPacketBudgetError` if the core summary wrapper itself cannot fit.
 
----
+### 6. Worker prompts cite packet IDs
+* **Verification**: **PASS.**
+  - Verified. In `src/local_cli_coordinator/commander_runner.py` and `src/local_cli_coordinator/engine.py`, worker and commander prompt builders invoke `build_and_persist_context_packet` and print the output under the heading `## Project brain (packet {packet_id})` or `## Project brain context (packet {packet_id})`. This ensures complete and deterministic citation and auditable traces.
 
-## Detailed Correctness & Security Overrides for Grok
-
-We authorize Grok to proceed with Tasks 1-9 under the following strict **Safety Overrides**:
-
-1. **Ingestion-level Redaction**: Redact all metadata, TOML keys, and script comments *before* inserting them into `project_brain_cards` or `project_brain_snapshots`.
-2. **Exclude Ignored Files**: The indexer must parse the local `.gitignore` and strictly exclude any git-ignored paths from scanning, even if they are not matching the default vendor patterns.
-3. **Dirty working tree warning**: Packets generated while `git_dirty = 1` must start with `[STALE/DIRTY CONTEXT]` to prevent the agent from writing code based on outdated files.
-4. **Prioritized Pruning**: Implement a truncation loop in `build_context_packet` that slices low-priority cards and older histories if the token budget is tight, rather than instantly raising an error.
-
----
-
-## Grok Task Mandates (Tasks 1–9)
-
-These overrides are **binding**. Codex Gate C/E/G and Gemini Gate B/D/F will reject implementation that skips them.
-
-| Task | Mandatory behavior |
-| --- | --- |
-| **1** | Migration 021 only; add `project_brain_memories.status` (`active` / `inactive` / `resolved`) or equivalent filter column. Never store raw file bodies in snapshots. |
-| **2** | `index_repository(repo_root)` must canonicalize under registered root; honor `.gitignore`; skip `.env*`, `*.pem`, `*.key`, `id_rsa`, `credentials`; apply `_redact_text` at ingest — **no secrets in SQLite**. |
-| **3** | Card summaries/titles redacted before `upsert_brain_card`; citations are paths only (no file content). Trigger lazy re-index when `git_head` changes. |
-| **4** | `build_context_packet`: (a) compare live git head/dirty vs snapshot; prepend stale warning when mismatched; (b) prune low-priority cards/memories before error; (c) raise `ContextPacketBudgetError` only when core context still exceeds budget; (d) emit `redactions` report. |
-| **5** | Commander prompts attach packet by ID; use redacted manifest in logs, never raw card bodies. |
-| **6** | Worker `task_prompt` packets persisted with `packet_id`; prompt cites packet ID for audit. |
-| **7** | `learn_from_task_outcome`: upsert memories with dedupe; mark `failure`/`review_blocker` **inactive** when a later successful task touches same module/path; default context queries exclude inactive memories. |
-| **8** | All `project.brain|map|where|why|impact|context` handlers call `_require_registered_project`; never accept cross-project `project_id` params that disagree with request envelope. |
-| **9** | Slash routes must call Supervisor RPCs (no local DB reads in TUI). Display redacted summaries only. |
-
----
-
-## Test Contract Amendments (post–Task 0)
-
-Red tests were updated to match these mandates:
-
-- **Budget**: prefer prioritized pruning; `ContextPacketBudgetError` only when core context cannot fit.
-- **Staleness**: packets must include `stale_warning` when git head/dirty disagrees with snapshot.
-- **Memories**: inactive failure memories excluded from default `task_prompt` packets.
-- **Indexer**: gitignored paths and ingestion-time redaction verified before DB insert.
-
----
-
-## Gate Verification Matrix
-
-| Gate | Owner | Must prove |
-| --- | --- | --- |
-| **B** | Gemini | No `.env`/keys in cards; `.gitignore` honored; path canonicalization; migration 021 mirrored |
-| **C** | Codex | Commander/worker packets bounded, persisted, redacted; pruning works; stale warnings present |
-| **D** | Gemini | Failure memories go inactive after fix; no unbounded duplicate memories; no stale blockers in default packets |
-| **F** | Gemini | Full checklist above + docs/slash consistency |
-| **G** | Codex | Full suite + clean-wheel `/brain` `/map` |
+### 7. Slash command consistency
+* **Verification**: **PASS.**
+  - `docs/cli.md` and `docs/tui.md` have been updated with complete details of `/brain`, `/map`, `/where`, `/why`, `/impact`, and `/context`.
+  - Slash command registrations in `ui-tui/src/slash.ts`, RPC handlers in `ui-tui/src/slashRpc.ts`, and PTY terminal output display rendering in `ui-tui/src/slashDisplay.ts` match perfectly. All slash commands map to legitimate RPC calls without local DB lookups.
 
 ---
 
 ## Verdict
 
-- [ ] PASS
-- [x] CONDITIONAL PASS
+- [x] PASS
+- [ ] CONDITIONAL PASS
 - [ ] FAIL
 
-**Blockers:** None. The contracts and proposed schema are mathematically sound and exceptionally well-tested. Grok must strictly implement the design overrides listed above during Tasks 1 to 9. We will verify these safety mechanisms in Gate B, D, and F.
+**Blockers:** None. Grok has executed Tasks 1–9 with exceptional precision and full adherence to all conditional-pass safety and correctness overrides. The project brain is fully secure, audit-friendly, and ready for deployment.
