@@ -595,3 +595,51 @@ class EngineTests(unittest.TestCase):
             prompt_path = captured[0]
             self.assertIn(".coordinator", str(prompt_path))
             self.assertTrue(prompt_path.name == "prompt.md")
+
+
+class FinishTaskRowCompatTests(unittest.TestCase):
+    def test_finish_task_reads_project_id_from_sqlite_row(self) -> None:
+        from local_cli_coordinator.engine import _finish_task, _task_field
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            init_git_repo(repo)
+            conn = connect(root / "coordinator.db")
+            init_db(conn)
+            self.addCleanup(conn.close)
+            project_id = "proj-engine-row"
+            conn.execute(
+                "insert into projects(id, canonical_path, repo_id) values (?, ?, ?)",
+                (project_id, str(repo.resolve()), "demo"),
+            )
+            task_id = create_task(
+                conn,
+                title="Row compat",
+                repo="demo",
+                source_path="tasks/inbox/row.md",
+                priority="normal",
+                capabilities=["code"],
+                goal="finish without Row.get crash",
+                acceptance_criteria=["done"],
+                verification_commands=[],
+                project_id=project_id,
+            )
+            transition_task(conn, task_id, "running", "start")
+            row = get_task(conn, task_id)
+            self.assertEqual(_task_field(row, "project_id"), project_id)
+            _finish_task(
+                conn,
+                root,
+                task_id,
+                "failed",
+                "regression",
+                verifier_result="not run",
+                next_action="retry",
+            )
+            self.assertEqual(get_task(conn, task_id)["state"], "failed")
+            memory_count = conn.execute(
+                "select count(*) as c from project_brain_memories where project_id = ?",
+                (project_id,),
+            ).fetchone()["c"]
+            self.assertGreaterEqual(int(memory_count), 1)

@@ -1,10 +1,12 @@
 import json
 import shutil
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 import re
 import sqlite3
+from typing import Any
 
 from .agent import run_agent
 from .agent_result import AgentResultClass, classify_agent_output
@@ -71,6 +73,23 @@ def _slug(text: str) -> str:
     return cleaned[:40] or "task"
 
 
+def _task_field(
+    task: sqlite3.Row | Mapping[str, Any],
+    key: str,
+    default: str = "",
+) -> str:
+    """Read a task column from sqlite3.Row or dict without using Row.get()."""
+    if isinstance(task, dict):
+        value = task.get(key, default)
+    elif key in task.keys():
+        value = task[key]
+    else:
+        value = default
+    if value is None:
+        return default
+    return str(value)
+
+
 def _select_agent(
     config: CoordinatorConfig,
     capabilities: list[str],
@@ -100,16 +119,16 @@ def _read_optional_text(path: Path) -> str | None:
     return text or None
 
 
-def _is_report_only_task(task: dict) -> bool:
+def _is_report_only_task(task: sqlite3.Row | Mapping[str, Any]) -> bool:
     capabilities = {
         part.strip()
-        for part in str(task.get("capabilities", "")).split(",")
+        for part in _task_field(task, "capabilities").split(",")
         if part.strip()
     }
     text = " ".join([
-        str(task.get("title", "")),
-        str(task.get("goal", "")),
-        str(task.get("acceptance_criteria", "")),
+        _task_field(task, "title"),
+        _task_field(task, "goal"),
+        _task_field(task, "acceptance_criteria"),
     ]).lower()
     edit_caps = {"code", "implementation", "frontend", "backend"}
     markers = (
@@ -197,11 +216,11 @@ def _write_prompt(
         repo_memory = _read_optional_text(_resolve_memory_path(root, repo.memory_path))
         if repo_memory is not None:
             sections.append(f"## Repo Memory\n\n{repo_memory}\n")
-    policy_json = str(task.get("execution_policy") or "{}")
+    policy_json = _task_field(task, "execution_policy", "{}")
     if policy_is_restrictive(policy_json):
         policy = ExecutionPolicy.from_json(policy_json)
         sections.append(format_policy_prompt_section(policy) + "\n")
-    project_id = str(task.get("project_id") or "")
+    project_id = _task_field(task, "project_id")
     if project_id and project_id != "legacy-default":
         try:
             from .context_packets import build_and_persist_context_packet
@@ -213,7 +232,7 @@ def _write_prompt(
                 token_budget=4000,
                 repo_path=repo.path,
                 task_id=str(task["id"]),
-                query=str(task.get("title") or ""),
+                query=_task_field(task, "title"),
             )
             sections.append(
                 f"## Project brain context (packet {packet_id})\n\n"
@@ -238,7 +257,7 @@ def _finish_task(
 ) -> None:
     transition_task(conn, task_id, state, note)
     task = get_task(conn, task_id)
-    project_id = str(task.get("project_id") or "")
+    project_id = _task_field(task, "project_id")
     if project_id and project_id != "legacy-default" and state in {
         "failed",
         "done",
@@ -536,8 +555,8 @@ def _claim_next_ready_task(
         raise
 
 
-def _task_execution_policy(task: dict) -> str:
-    return str(task.get("execution_policy") or "{}")
+def _task_execution_policy(task: sqlite3.Row | Mapping[str, Any]) -> str:
+    return _task_field(task, "execution_policy", "{}")
 
 
 def _policy_allows(
