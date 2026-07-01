@@ -39387,6 +39387,7 @@ function formatHelpText() {
     }
     if (cmd.name === "/approve") {
       lines.push("/approve <task-id> - Unblock awaiting_human task");
+      lines.push("/approve token <token> - Approve external approval token");
       continue;
     }
     if (cmd.name === "/retry") {
@@ -39506,6 +39507,22 @@ function formatHelpText() {
       lines.push("/notify --dry-run - Preview notification delivery");
       continue;
     }
+    if (cmd.name === "/notify test") {
+      lines.push("/notify test - Dry-run notification delivery test");
+      continue;
+    }
+    if (cmd.name === "/approvals") {
+      lines.push("/approvals - List pending external approval requests");
+      continue;
+    }
+    if (cmd.name === "/channels") {
+      lines.push("/channels - Show external approval channel configs");
+      continue;
+    }
+    if (cmd.name === "/reject") {
+      lines.push("/reject <token> - Reject an external approval token");
+      continue;
+    }
     if (cmd.name === "/decision") {
       lines.push("/decision <item-id> - Route safe action for an inbox item");
       continue;
@@ -39601,6 +39618,10 @@ var init_slash = __esm({
       { name: "/attention", description: "Show items needing human attention", method: "operator.attention" },
       { name: "/summary", description: "Show operator summary", method: "operator.summary" },
       { name: "/notify", description: "Dispatch notifications (use --dry-run)", method: "operator.notify" },
+      { name: "/notify test", description: "Dry-run notification delivery test", method: "operator.notify" },
+      { name: "/approvals", description: "List pending external approval requests", method: "operator.approvals" },
+      { name: "/channels", description: "Show external approval channel configs", method: "operator.channels" },
+      { name: "/reject", description: "Reject an external approval token", method: "operator.approval.reject" },
       { name: "/decision", description: "Route safe action for an inbox item", method: "operator.decision" },
       { name: "/dismiss", description: "Dismiss an operator inbox item", method: "operator.dismiss" },
       { name: "/recoveries", description: "List pending recovery proposals", method: "project.recoveries" },
@@ -39621,7 +39642,7 @@ var init_slash = __esm({
       { name: "/help", description: "Show available commands", method: "local.help" },
       { name: "/quit", description: "Detach the TUI", method: "system.quit" }
     ];
-    MULTI_WORD_COMMANDS = ["/ci failures", "/pr update"];
+    MULTI_WORD_COMMANDS = ["/ci failures", "/pr update", "/notify test"];
     HELP_COMMAND_NAMES = /* @__PURE__ */ new Set([
       "/status",
       "/goal",
@@ -39656,6 +39677,10 @@ var init_slash = __esm({
       "/attention",
       "/summary",
       "/notify",
+      "/notify test",
+      "/approvals",
+      "/channels",
+      "/reject",
       "/decision",
       "/dismiss",
       "/recoveries",
@@ -40185,7 +40210,68 @@ function buildSlashRpc(commandName, method, args) {
       displayMethod: "project.pr.rebase"
     };
   }
-  if (method === "project.task.approve" || method === "project.task.retry" || method === "project.task.cancel") {
+  if (commandName === "/notify test") {
+    return {
+      ok: true,
+      method: "operator.notify",
+      params: { dry_run: true, args: "test" },
+      displayMethod: "operator.notify"
+    };
+  }
+  if (commandName === "/approvals") {
+    return {
+      ok: true,
+      method: "operator.approvals",
+      params: {},
+      displayMethod: "operator.approvals"
+    };
+  }
+  if (commandName === "/channels") {
+    return {
+      ok: true,
+      method: "operator.channels",
+      params: {},
+      displayMethod: "operator.channels"
+    };
+  }
+  if (commandName === "/reject") {
+    const token = args.trim().split(/\s+/)[0];
+    if (!token || !token.startsWith("coord-appr-")) {
+      return { ok: false, error: "usage: /reject <approval-token>" };
+    }
+    return {
+      ok: true,
+      method: "operator.approval.reject",
+      params: { token },
+      displayMethod: "operator.approval.reject"
+    };
+  }
+  if (commandName === "/approve") {
+    const parts = args.trim().split(/\s+/).filter(Boolean);
+    if (parts[0]?.toLowerCase() === "token") {
+      const token = parts[1];
+      if (!token || !token.startsWith("coord-appr-")) {
+        return { ok: false, error: "usage: /approve token <approval-token>" };
+      }
+      return {
+        ok: true,
+        method: "operator.approval.approve",
+        params: { token, confirmed: true },
+        displayMethod: "operator.approval.approve"
+      };
+    }
+    const taskId = args.trim();
+    if (!taskId) {
+      return { ok: false, error: "usage: /approve <task-id> or /approve token <approval-token>" };
+    }
+    return {
+      ok: true,
+      method: "project.task.approve",
+      params: { task_id: taskId },
+      displayMethod: "project.task.approve"
+    };
+  }
+  if (method === "project.task.retry" || method === "project.task.cancel") {
     const taskId = args.trim();
     if (!taskId) {
       return { ok: false, error: `usage: ${commandName} <task-id>` };
@@ -40565,6 +40651,31 @@ ${tail}`;
       const deliveries = result.deliveries ?? [];
       const dry = result.dry_run ? " (dry-run)" : "";
       return `Notify${dry}: ${deliveries.length} delivery record(s)`;
+    }
+    case "operator.approvals": {
+      const requests = result.requests ?? [];
+      if (!requests.length) {
+        return "Approvals \u2014 none pending";
+      }
+      return [
+        "Approvals:",
+        ...requests.map(
+          (r) => `- ${r.action_method} [${r.status}] hint=\u2026${r.token_hint ?? ""}`
+        )
+      ].join("\n");
+    }
+    case "operator.channels": {
+      const channels = result.channels ?? [];
+      return [
+        "Channels:",
+        ...channels.map(
+          (c) => `- ${c.channel_type}: ${c.enabled ? "enabled" : "disabled"}`
+        )
+      ].join("\n");
+    }
+    case "operator.approval.approve":
+    case "operator.approval.reject": {
+      return `Approval \u2014 ${result.status ?? "updated"}`;
     }
     case "operator.decision": {
       if (result.requires_confirmation) {
