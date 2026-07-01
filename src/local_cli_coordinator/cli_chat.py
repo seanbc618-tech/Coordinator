@@ -682,6 +682,15 @@ def _parse_why_slash(args_text: str) -> tuple[str, dict[str, Any]] | None:
     return "project.why", {"path": target}
 
 
+def _parse_onboard_slash(args_text: str) -> tuple[str, dict[str, Any]]:
+    parts = args_text.strip().split()
+    path = str(Path.cwd())
+    if parts and parts[0].lower() == "apply":
+        preset = parts[1] if len(parts) > 1 else "observe"
+        return "project.onboard.apply", {"path": path, "preset": preset}
+    return "project.onboard.plan", {"path": path, "preset": "observe"}
+
+
 def _parse_slash_command(text: str) -> tuple[str, str]:
     stripped = text.strip()
     lowered = stripped.lower()
@@ -691,6 +700,7 @@ def _parse_slash_command(text: str) -> tuple[str, str]:
         "/notify test",
         "/pause all",
         "/resume all",
+        "/rollback-onboard",
     ):
         if lowered.startswith(multi):
             return multi, stripped[len(multi) :].strip()
@@ -1612,6 +1622,96 @@ def _handle_slash(
             user_reply=format_jump_text(result),
             intent="status_question",
         )
+    if command == "/profile":
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="project.profile",
+            params={},
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=(
+                f"Profile: {result.get('detected_profile', 'unknown')} "
+                f"preset={result.get('recommended_preset', 'observe')}"
+            ),
+            intent="status_question",
+        )
+    if command == "/onboard":
+        method, params = _parse_onboard_slash(args_text)
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method=method,
+            params=params,
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=f"Onboarding {method.split('.')[-1]} preset={params.get('preset', 'observe')}",
+            intent="status_question",
+        )
+    if command == "/simulate":
+        preset = args_text.strip().split()[0] if args_text.strip() else "overnight"
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="project.onboard.simulate",
+            params={"preset": preset, "path": str(Path.cwd())},
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=f"Simulated {preset}: autonomy={result.get('autonomy_enabled')}",
+            intent="status_question",
+        )
+    if command == "/fleet":
+        root = args_text.strip() or str(Path.cwd())
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="fleet.scan",
+            params={"root": root},
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        repos = result.get("repos") or []
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=f"Fleet scan: {len(repos)} repo(s)",
+            intent="status_question",
+        )
+    if command == "/rollback-onboard":
+        snapshot_id = args_text.strip().split()[0] if args_text.strip() else ""
+        if not snapshot_id:
+            return _error_outcome("invalid_args", "usage: /rollback-onboard <snapshot-id>")
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="project.onboard.rollback",
+            params={"snapshot_id": snapshot_id},
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=f"Rollback restored snapshot {snapshot_id}",
+            intent="status_question",
+        )
     return _error_outcome("unknown_slash", f"Unknown command: {command}. Use /help.")
 
 
@@ -2181,6 +2281,63 @@ def _rpc_slash(
             project_id=project_id,
             method="project.jump",
             params=_parse_jump_slash(text),
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/profile":
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="project.profile",
+            params={},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/onboard":
+        method, params = _parse_onboard_slash(args_text)
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method=method,
+            params=params,
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/simulate":
+        preset = args_text.strip().split()[0] if args_text.strip() else "overnight"
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="project.onboard.simulate",
+            params={"preset": preset, "path": str(Path.cwd())},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/fleet":
+        root = args_text.strip() or str(Path.cwd())
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="fleet.scan",
+            params={"root": root},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/rollback-onboard":
+        snapshot_id = args_text.strip().split()[0] if args_text.strip() else ""
+        if not snapshot_id:
+            outcome = _error_outcome("invalid_args", "usage: /rollback-onboard <snapshot-id>")
+            return _outcome_to_rpc(outcome), 1
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="project.onboard.rollback",
+            params={"snapshot_id": snapshot_id},
         )
         if envelope is not None:
             return envelope, 0 if envelope.ok else 1

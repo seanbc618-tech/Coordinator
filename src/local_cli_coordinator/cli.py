@@ -1210,18 +1210,9 @@ def _cmd_supervisor_stop(args: argparse.Namespace) -> int:
 
 
 def _cmd_project_inspect(args: argparse.Namespace) -> int:
-    from .projects import inspect_project
-    path = Path(args.path).resolve()
-    try:
-        draft = inspect_project(path)
-    except ValueError as exc:
-        print(f"error: {exc}")
-        return 1
-    print(f"canonical_path: {draft.canonical_path}")
-    print(f"repo_id: {draft.repo_id}")
-    print(f"default_branch: {draft.default_branch}")
-    print(f"branch_prefix: {draft.branch_prefix}")
-    return 0
+    from .onboarding_commands import run_project_inspect_command
+
+    return run_project_inspect_command(args)
 
 
 def _cmd_project_add(args: argparse.Namespace) -> int:
@@ -1301,6 +1292,8 @@ _ADMIN_COMMANDS = frozenset({
     "supervisor",
     "project",
     "migrate",
+    "onboard",
+    "fleet",
     "config",
     "loop",
     "init",
@@ -1543,7 +1536,11 @@ def build_parser() -> argparse.ArgumentParser:
     project = subparsers.add_parser("project")
     project_subparsers = project.add_subparsers(dest="project_command")
     project_subparsers.required = True
-    project_subparsers.add_parser("inspect").add_argument("path")
+    project_inspect = project_subparsers.add_parser("inspect")
+    project_inspect.add_argument("path")
+    project_inspect.add_argument("--json", action="store_true")
+    project_inspect.add_argument("--record", action="store_true")
+    project_inspect.add_argument("--allow-non-git", action="store_true")
     project_add = project_subparsers.add_parser("add")
     project_add.add_argument("path")
     project_add.add_argument("--yes", action="store_true")
@@ -1568,6 +1565,41 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--dry-run", action="store_true")
     init.add_argument("--json", action="store_true")
     init.add_argument("--yes", action="store_true")
+
+    onboard = subparsers.add_parser("onboard")
+    onboard.add_argument("path")
+    onboard.add_argument("--dry-run", action="store_true")
+    onboard.add_argument("--apply", action="store_true")
+    onboard.add_argument(
+        "--preset",
+        choices=("observe", "assist", "managed", "overnight", "delivery"),
+        default="observe",
+    )
+    onboard.add_argument("--enable-autonomy", action="store_true")
+    onboard.add_argument("--allow-delivery-policy-change", action="store_true")
+    onboard.add_argument("--json", action="store_true")
+    onboard_subparsers = onboard.add_subparsers(dest="onboard_command")
+    onboard_rollback = onboard_subparsers.add_parser("rollback")
+    onboard_rollback.add_argument("snapshot_id")
+    onboard_rollback.add_argument("--json", action="store_true")
+
+    fleet = subparsers.add_parser("fleet")
+    fleet_subparsers = fleet.add_subparsers(dest="fleet_command")
+    fleet_subparsers.required = True
+    fleet_scan = fleet_subparsers.add_parser("scan")
+    fleet_scan.add_argument("root")
+    fleet_scan.add_argument("--json", action="store_true")
+    fleet_scan.add_argument("--max-depth", type=int, default=3)
+    fleet_apply = fleet_subparsers.add_parser("apply")
+    fleet_apply.add_argument("root")
+    fleet_apply.add_argument("--select", default="")
+    fleet_apply.add_argument(
+        "--preset",
+        choices=("observe", "assist", "managed", "overnight", "delivery"),
+        default="observe",
+    )
+    fleet_apply.add_argument("--enable-autonomy", action="store_true")
+    fleet_apply.add_argument("--json", action="store_true")
 
     operator = subparsers.add_parser("operator")
     operator_subparsers = operator.add_subparsers(dest="operator_command")
@@ -1714,6 +1746,19 @@ def main(argv: list[str] | None = None) -> int:
         from .init_project import run_init_command
 
         return run_init_command(args)
+    if args.command == "onboard":
+        from .onboarding_commands import (
+            run_onboard_command,
+            run_onboard_rollback_command,
+        )
+
+        if getattr(args, "onboard_command", None) == "rollback":
+            return run_onboard_rollback_command(args)
+        return run_onboard_command(args)
+    if args.command == "fleet":
+        from .onboarding_commands import run_fleet_command
+
+        return run_fleet_command(args)
     if args.command == "operator" and args.operator_command == "summary":
         return _cmd_operator_summary(args)
     if args.command == "approve":

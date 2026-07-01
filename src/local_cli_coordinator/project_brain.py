@@ -29,6 +29,7 @@ VALID_MEMORY_TYPES = frozenset({
     "hazard",
     "decision",
     "verification",
+    "onboarding",
 })
 VALID_MEMORY_STATUS = frozenset({"active", "inactive", "resolved"})
 VALID_PURPOSES = frozenset({

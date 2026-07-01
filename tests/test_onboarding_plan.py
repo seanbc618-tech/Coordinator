@@ -150,7 +150,7 @@ class OnboardingPlanTests(unittest.TestCase):
         )
         self.assertIn("snapshot_id", result)
         snapshot = self.conn.execute(
-            "select scope, config_dir from config_snapshots where id = ?",
+            "select scope, config_dir, files_json from config_snapshots where id = ?",
             (result["snapshot_id"],),
         ).fetchone()
         self.assertIsNotNone(snapshot)

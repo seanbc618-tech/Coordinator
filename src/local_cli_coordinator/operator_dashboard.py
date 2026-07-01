@@ -48,6 +48,51 @@ def _count_pr_ci_attention(conn: sqlite3.Connection) -> int:
         return 0
 
 
+def _onboarding_status(conn: sqlite3.Connection) -> dict[str, Any]:
+    try:
+        profile_count_row = conn.execute(
+            "select count(*) as cnt from project_profile_runs"
+        ).fetchone()
+        latest_profile = conn.execute(
+            """
+            select detected_profile, recommended_preset, created_at
+            from project_profile_runs
+            order by created_at desc
+            limit 1
+            """
+        ).fetchone()
+        latest_onboarding = conn.execute(
+            """
+            select preset_name, status, mode, created_at
+            from onboarding_runs
+            order by created_at desc
+            limit 1
+            """
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return {
+            "profile_runs": 0,
+            "latest_profile": None,
+            "latest_preset": "observe",
+            "latest_onboarding_status": None,
+        }
+    return {
+        "profile_runs": int(profile_count_row["cnt"]) if profile_count_row else 0,
+        "latest_profile": (
+            str(latest_profile["detected_profile"]) if latest_profile else None
+        ),
+        "latest_preset": (
+            str(latest_profile["recommended_preset"]) if latest_profile else "observe"
+        ),
+        "latest_onboarding_status": (
+            str(latest_onboarding["status"]) if latest_onboarding else None
+        ),
+        "latest_onboarding_mode": (
+            str(latest_onboarding["mode"]) if latest_onboarding else None
+        ),
+    }
+
+
 def _count_unhealthy_agents(conn: sqlite3.Connection) -> int:
     rows = conn.execute(
         """
@@ -117,6 +162,7 @@ def build_daily_dashboard(
     unhealthy_agent_count = _count_unhealthy_agents(conn)
     latest_handoff = get_latest_morning_handoff(conn, scope="global")
     morning_handoff_at = latest_handoff["created_at"] if latest_handoff else None
+    onboarding_status = _onboarding_status(conn)
 
     redacted_projects = []
     for entry in base.get("projects") or []:
@@ -139,6 +185,7 @@ def build_daily_dashboard(
         "pr_ci_attention_count": pr_ci_attention_count,
         "unhealthy_agent_count": unhealthy_agent_count,
         "morning_handoff_at": morning_handoff_at,
+        "onboarding_status": onboarding_status,
         "next_actions": _build_next_actions(
             conn,
             paths=paths,

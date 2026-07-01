@@ -502,9 +502,70 @@ export function buildSlashRpc(
     return { ok: true, method, params: { task_id: taskId }, displayMethod: method }
   }
 
+  if (commandName === '/onboard') {
+    const parts = args.trim().split(/\s+/).filter(Boolean)
+    if (parts[0]?.toLowerCase() === 'apply') {
+      const preset = parts[1] ?? 'observe'
+      return {
+        ok: true,
+        method: 'project.onboard.apply',
+        params: { path: '.', preset },
+        displayMethod: 'project.onboard.apply',
+      }
+    }
+    return {
+      ok: true,
+      method: 'project.onboard.plan',
+      params: { path: '.', preset: 'observe' },
+      displayMethod: 'project.onboard.plan',
+    }
+  }
+
+  if (commandName === '/simulate') {
+    const preset = args.trim().split(/\s+/)[0] ?? 'overnight'
+    return {
+      ok: true,
+      method: 'project.onboard.simulate',
+      params: { preset, path: '.' },
+      displayMethod: 'project.onboard.simulate',
+    }
+  }
+
+  if (commandName === '/fleet') {
+    const root = args.trim() || '.'
+    return {
+      ok: true,
+      method: 'fleet.scan',
+      params: { root },
+      displayMethod: 'fleet.scan',
+    }
+  }
+
+  if (commandName === '/rollback-onboard') {
+    const snapshotId = args.trim().split(/\s+/)[0] ?? ''
+    if (!snapshotId) {
+      return { ok: false, error: 'usage: /rollback-onboard <snapshot-id>' }
+    }
+    return {
+      ok: true,
+      method: 'project.onboard.rollback',
+      params: { snapshot_id: snapshotId },
+      displayMethod: 'project.onboard.rollback',
+    }
+  }
+
+  if (commandName === '/profile') {
+    return {
+      ok: true,
+      method: 'project.profile',
+      params: {},
+      displayMethod: 'project.profile',
+    }
+  }
+
   return { ok: true, method, params: { args }, displayMethod: method }
 }
 
 export function isDestructiveRpc(method: string): boolean {
-  return method === 'project.task.cancel'
+  return method === 'project.task.cancel' || method === 'project.onboard.rollback'
 }

@@ -39612,6 +39612,11 @@ var init_slash = __esm({
       { name: "/map", description: "Show project structure map", method: "project.map" },
       { name: "/where", description: "Find where to make a change", method: "project.where" },
       { name: "/why", description: "Explain task failure or file path", method: "operator.explain_failure" },
+      { name: "/profile", description: "Show current project profile and preset", method: "project.profile" },
+      { name: "/onboard", description: "Preview onboarding plan for current repo", method: "project.onboard.plan" },
+      { name: "/simulate", description: "Simulate preset autonomy without enabling it", method: "project.onboard.simulate" },
+      { name: "/fleet", description: "Scan a directory for Git repos to onboard", method: "fleet.scan" },
+      { name: "/rollback-onboard", description: "Rollback onboarding config snapshot", method: "project.onboard.rollback", destructive: true },
       { name: "/doctor", description: "Run doctor repair dry-run", method: "operator.doctor" },
       { name: "/repair", description: "Plan or apply safe repairs (dry-run default)", method: "operator.repair" },
       { name: "/health", description: "Show agent health from durable state", method: "operator.health" },
@@ -39653,7 +39658,8 @@ var init_slash = __esm({
       "/pr update",
       "/notify test",
       "/pause all",
-      "/resume all"
+      "/resume all",
+      "/rollback-onboard"
     ];
     HELP_COMMAND_NAMES = /* @__PURE__ */ new Set([
       "/status",
@@ -40359,10 +40365,66 @@ function buildSlashRpc(commandName, method, args) {
     }
     return { ok: true, method, params: { task_id: taskId }, displayMethod: method };
   }
+  if (commandName === "/onboard") {
+    const parts = args.trim().split(/\s+/).filter(Boolean);
+    if (parts[0]?.toLowerCase() === "apply") {
+      const preset = parts[1] ?? "observe";
+      return {
+        ok: true,
+        method: "project.onboard.apply",
+        params: { path: ".", preset },
+        displayMethod: "project.onboard.apply"
+      };
+    }
+    return {
+      ok: true,
+      method: "project.onboard.plan",
+      params: { path: ".", preset: "observe" },
+      displayMethod: "project.onboard.plan"
+    };
+  }
+  if (commandName === "/simulate") {
+    const preset = args.trim().split(/\s+/)[0] ?? "overnight";
+    return {
+      ok: true,
+      method: "project.onboard.simulate",
+      params: { preset, path: "." },
+      displayMethod: "project.onboard.simulate"
+    };
+  }
+  if (commandName === "/fleet") {
+    const root = args.trim() || ".";
+    return {
+      ok: true,
+      method: "fleet.scan",
+      params: { root },
+      displayMethod: "fleet.scan"
+    };
+  }
+  if (commandName === "/rollback-onboard") {
+    const snapshotId = args.trim().split(/\s+/)[0] ?? "";
+    if (!snapshotId) {
+      return { ok: false, error: "usage: /rollback-onboard <snapshot-id>" };
+    }
+    return {
+      ok: true,
+      method: "project.onboard.rollback",
+      params: { snapshot_id: snapshotId },
+      displayMethod: "project.onboard.rollback"
+    };
+  }
+  if (commandName === "/profile") {
+    return {
+      ok: true,
+      method: "project.profile",
+      params: {},
+      displayMethod: "project.profile"
+    };
+  }
   return { ok: true, method, params: { args }, displayMethod: method };
 }
 function isDestructiveRpc(method) {
-  return method === "project.task.cancel";
+  return method === "project.task.cancel" || method === "project.onboard.rollback";
 }
 var init_slashRpc = __esm({
   "src/slashRpc.ts"() {

@@ -272,6 +272,12 @@ class SupervisorMethods:
             "operator.morning": self._handle_operator_morning,
             "global.pause": self._handle_global_pause,
             "global.resume": self._handle_global_resume,
+            "project.profile": self._handle_project_profile,
+            "project.onboard.plan": self._handle_project_onboard_plan,
+            "project.onboard.apply": self._handle_project_onboard_apply,
+            "project.onboard.simulate": self._handle_project_onboard_simulate,
+            "project.onboard.rollback": self._handle_project_onboard_rollback,
+            "fleet.scan": self._handle_fleet_scan,
             "events.subscribe": self._handle_events_subscribe,
             "events.replay": self._handle_events_replay,
             "events.v2.replay": self._handle_events_v2_replay,
@@ -1759,6 +1765,167 @@ class SupervisorMethods:
             include_manual=bool(request.params.get("include_manual")),
         )
         return self._ok(request, payload)
+
+    def _handle_project_profile(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        row = conn.execute(
+            """
+            select detected_profile, recommended_preset, verify_commands_json, created_at
+            from project_profile_runs
+            where project_id = ?
+            order by created_at desc
+            limit 1
+            """,
+            (project_id,),
+        ).fetchone()
+        if row is None:
+            return self._ok(
+                request,
+                {
+                    "project_id": project_id,
+                    "detected_profile": "unknown",
+                    "recommended_preset": "observe",
+                    "verify_commands": [],
+                },
+            )
+        import json
+
+        return self._ok(
+            request,
+            {
+                "project_id": project_id,
+                "detected_profile": row["detected_profile"],
+                "recommended_preset": row["recommended_preset"],
+                "verify_commands": json.loads(row["verify_commands_json"] or "[]"),
+                "recorded_at": row["created_at"],
+            },
+        )
+
+    def _handle_project_onboard_plan(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .onboarding_plan import build_onboarding_plan
+
+        if self._paths is None:
+            return self._error(request, "runtime paths not configured")
+        path = request.params.get("path")
+        if not isinstance(path, str) or not path.strip():
+            return self._error(request, "path is required")
+        preset = str(request.params.get("preset") or "observe")
+        try:
+            plan = build_onboarding_plan(
+                self._paths,
+                conn,
+                Path(path),
+                preset=preset,
+                dry_run=True,
+                enable_autonomy=bool(request.params.get("enable_autonomy")),
+            )
+        except ValueError as exc:
+            return self._error(request, str(exc))
+        conn.commit()
+        return self._ok(request, plan)
+
+    def _handle_project_onboard_apply(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .onboarding_plan import apply_onboarding_plan
+
+        if self._paths is None:
+            return self._error(request, "runtime paths not configured")
+        path = request.params.get("path")
+        if not isinstance(path, str) or not path.strip():
+            return self._error(request, "path is required")
+        preset = str(request.params.get("preset") or "observe")
+        try:
+            result = apply_onboarding_plan(
+                self._paths,
+                conn,
+                Path(path),
+                preset=preset,
+                enable_autonomy=bool(request.params.get("enable_autonomy")),
+                allow_delivery_policy_change=bool(
+                    request.params.get("allow_delivery_policy_change")
+                ),
+            )
+        except ValueError as exc:
+            return self._error(request, str(exc))
+        conn.commit()
+        return self._ok(request, result)
+
+    def _handle_project_onboard_simulate(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .onboarding_plan import build_onboarding_plan
+        from .onboarding_profiles import preset_policy_delta, resolve_autonomy_enabled
+
+        if self._paths is None:
+            return self._error(request, "runtime paths not configured")
+        path = request.params.get("path")
+        if not isinstance(path, str) or not path.strip():
+            path = "."
+        preset = str(request.params.get("preset") or request.params.get("args") or "overnight")
+        if isinstance(request.params.get("args"), str):
+            parts = request.params["args"].strip().split()
+            if parts:
+                preset = parts[0]
+        try:
+            plan = build_onboarding_plan(
+                self._paths,
+                conn,
+                Path(path),
+                preset=preset,
+                dry_run=True,
+                enable_autonomy=False,
+            )
+        except ValueError as exc:
+            return self._error(request, str(exc))
+        conn.commit()
+        return self._ok(
+            request,
+            {
+                "preset": preset,
+                "simulated": True,
+                "autonomy_enabled": resolve_autonomy_enabled(preset, enable_autonomy=False),
+                "policy_delta": preset_policy_delta(preset),
+                "plan": plan,
+            },
+        )
+
+    def _handle_project_onboard_rollback(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .config_snapshots import rollback_config_snapshot
+
+        if self._paths is None:
+            return self._error(request, "runtime paths not configured")
+        snapshot_id = request.params.get("snapshot_id")
+        if not isinstance(snapshot_id, str) or not snapshot_id.strip():
+            return self._error(request, "snapshot_id is required")
+        try:
+            result = rollback_config_snapshot(self._paths, conn, snapshot_id)
+        except ValueError as exc:
+            return self._error(request, str(exc))
+        conn.commit()
+        return self._ok(request, result)
+
+    def _handle_fleet_scan(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .fleet_rollout import scan_fleet
+
+        root = request.params.get("root")
+        if not isinstance(root, str) or not root.strip():
+            return self._error(request, "root is required")
+        max_depth = int(request.params.get("max_depth") or 3)
+        return self._ok(
+            request,
+            scan_fleet(Path(root), conn=conn, max_depth=max_depth),
+        )
 
     def _handle_operator_approval_create(
         self, conn: sqlite3.Connection, request: RequestEnvelope

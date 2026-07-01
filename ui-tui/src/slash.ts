@@ -38,6 +38,11 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/map', description: 'Show project structure map', method: 'project.map' },
   { name: '/where', description: 'Find where to make a change', method: 'project.where' },
   { name: '/why', description: 'Explain task failure or file path', method: 'operator.explain_failure' },
+  { name: '/profile', description: 'Show current project profile and preset', method: 'project.profile' },
+  { name: '/onboard', description: 'Preview onboarding plan for current repo', method: 'project.onboard.plan' },
+  { name: '/simulate', description: 'Simulate preset autonomy without enabling it', method: 'project.onboard.simulate' },
+  { name: '/fleet', description: 'Scan a directory for Git repos to onboard', method: 'fleet.scan' },
+  { name: '/rollback-onboard', description: 'Rollback onboarding config snapshot', method: 'project.onboard.rollback', destructive: true },
   { name: '/doctor', description: 'Run doctor repair dry-run', method: 'operator.doctor' },
   { name: '/repair', description: 'Plan or apply safe repairs (dry-run default)', method: 'operator.repair' },
   { name: '/health', description: 'Show agent health from durable state', method: 'operator.health' },
@@ -99,6 +104,7 @@ const MULTI_WORD_COMMANDS = [
   '/notify test',
   '/pause all',
   '/resume all',
+  '/rollback-onboard',
 ] as const
 
 export function parse(input: string): Parsed {
