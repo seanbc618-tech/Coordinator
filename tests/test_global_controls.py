@@ -167,6 +167,45 @@ class GlobalControlsTests(unittest.TestCase):
         ).fetchone()
         self.assertEqual(row["status"], "active")
 
+    def test_resume_all_only_restores_whitelisted_projects(self) -> None:
+        from local_cli_coordinator.global_controls import pause_all, resume_all
+
+        second_repo = self.tmp / "repo2"
+        init_git_repo(second_repo)
+        second = inspect_project(second_repo)
+        register_project(self.conn, second, confirmed=True)
+        self.conn.commit()
+        second_id = self.conn.execute(
+            "select id from projects where id != ? limit 1",
+            (self.project_id,),
+        ).fetchone()["id"]
+        self.conn.execute(
+            "update projects set status = 'paused', pause_reason = 'manual' where id = ?",
+            (second_id,),
+        )
+        self.conn.commit()
+
+        pause_result = pause_all(self.conn, paths=self.paths, reason="global pause")
+        whitelist = set(pause_result.get("affected_projects") or [])
+        self.assertIn(self.project_id, whitelist)
+        self.assertNotIn(second_id, whitelist)
+
+        resume_result = resume_all(self.conn, paths=self.paths)
+        resumed = set(resume_result.get("resumed_projects") or [])
+        self.assertEqual(resumed, whitelist)
+
+        active_row = self.conn.execute(
+            "select status from projects where id = ?",
+            (self.project_id,),
+        ).fetchone()
+        manual_row = self.conn.execute(
+            "select status, pause_reason from projects where id = ?",
+            (second_id,),
+        ).fetchone()
+        self.assertEqual(active_row["status"], "active")
+        self.assertEqual(manual_row["status"], "paused")
+        self.assertEqual(manual_row["pause_reason"], "manual")
+
 
 class GlobalControlsCliTests(unittest.TestCase):
     def setUp(self) -> None:

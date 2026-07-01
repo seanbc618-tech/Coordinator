@@ -164,6 +164,134 @@ class DoctorRepairPlannerTests(unittest.TestCase):
                 [{"repair_key": "rewrite-git-remote", "mode": "repair_apply"}],
             )
 
+    def test_stale_lock_skips_symlink_outside_coordinator_home(self) -> None:
+        from local_cli_coordinator.doctor_repair import apply_repairs, plan_repairs
+
+        external = self.tmp / "external-lock"
+        external.write_text('{"pid": 99999, "acquired_at": "2026-01-01T00:00:00Z"}\n')
+        self.paths.state_dir.mkdir(parents=True, exist_ok=True)
+        symlink = self.paths.lock
+        symlink.symlink_to(external)
+        repairs = plan_repairs(
+            [{"finding_key": "stale-lock", "path": str(symlink), "pid": 99999}]
+        )
+        result = apply_repairs(self.conn, self.paths, repairs)
+        self.assertTrue(symlink.is_symlink())
+        self.assertTrue(external.exists())
+        statuses = {item.get("status") for item in result}
+        self.assertIn("skipped", statuses)
+
+    def test_stale_socket_skips_symlink_outside_coordinator_home(self) -> None:
+        from local_cli_coordinator.doctor_repair import apply_repairs, plan_repairs
+
+        external = self.tmp / "external.sock"
+        external.touch()
+        self.paths.state_dir.mkdir(parents=True, exist_ok=True)
+        symlink = self.paths.socket
+        symlink.symlink_to(external)
+        repairs = plan_repairs(
+            [{"finding_key": "stale-socket", "path": str(symlink)}]
+        )
+        result = apply_repairs(self.conn, self.paths, repairs)
+        self.assertTrue(symlink.is_symlink())
+        self.assertTrue(external.exists())
+        statuses = {item.get("status") for item in result}
+        self.assertIn("skipped", statuses)
+
+    def test_stale_lock_requires_absent_pid_before_removal(self) -> None:
+        from local_cli_coordinator.doctor_repair import apply_repairs, plan_repairs
+
+        self.paths.state_dir.mkdir(parents=True, exist_ok=True)
+        lock_path = self.paths.lock
+        lock_path.write_text(
+            f'{{"pid": {os.getpid()}, "acquired_at": "2026-01-01T00:00:00Z"}}\n',
+            encoding="utf-8",
+        )
+        repairs = plan_repairs(
+            [{"finding_key": "stale-lock", "path": str(lock_path), "pid": os.getpid()}]
+        )
+        result = apply_repairs(self.conn, self.paths, repairs)
+        self.assertTrue(lock_path.exists())
+        statuses = {item.get("status") for item in result}
+        self.assertIn("skipped", statuses)
+
+    def test_stale_lock_removes_only_when_pid_is_absent(self) -> None:
+        from local_cli_coordinator.doctor_repair import apply_repairs, plan_repairs
+
+        self.paths.state_dir.mkdir(parents=True, exist_ok=True)
+        lock_path = self.paths.lock
+        stale_pid = 424242
+        lock_path.write_text(
+            f'{{"pid": {stale_pid}, "acquired_at": "2026-01-01T00:00:00Z"}}\n',
+            encoding="utf-8",
+        )
+        repairs = plan_repairs(
+            [{"finding_key": "stale-lock", "path": str(lock_path), "pid": stale_pid}]
+        )
+        result = apply_repairs(self.conn, self.paths, repairs)
+        self.assertFalse(lock_path.exists())
+        applied = [item for item in result if item.get("status") == "applied"]
+        self.assertTrue(applied)
+
+
+class DoctorRepairPersistenceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.conn = connect(Path(self.tmp) / "data" / "coordinator.db")
+        init_db(self.conn)
+
+    def tearDown(self) -> None:
+        self.conn.close()
+        import shutil
+
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_record_diagnostic_run_persists_row(self) -> None:
+        from local_cli_coordinator.operator_hardening import record_diagnostic_run
+
+        run_id = record_diagnostic_run(
+            self.conn,
+            scope="global",
+            mode="repair_dry_run",
+            status="warn",
+            findings=[{"name": "missing-state-dir"}],
+            repairs=[{"repair_key": "missing-state-dir", "status": "planned"}],
+            commit=True,
+        )
+        row = self.conn.execute(
+            "select id, scope, mode, status from diagnostic_runs where id = ?",
+            (run_id,),
+        ).fetchone()
+        self.assertIsNotNone(row)
+        self.assertEqual(row["scope"], "global")
+        self.assertEqual(row["mode"], "repair_dry_run")
+
+    def test_record_global_control_event_validates_enums(self) -> None:
+        from local_cli_coordinator.operator_hardening import record_global_control_event
+
+        with self.assertRaises(ValueError):
+            record_global_control_event(
+                self.conn,
+                action="invalid-action",
+                scope="global",
+                status="completed",
+            )
+        event_id = record_global_control_event(
+            self.conn,
+            action="pause",
+            scope="global",
+            status="completed",
+            affected_projects=["proj-1"],
+            reason="gate smoke",
+            commit=True,
+        )
+        row = self.conn.execute(
+            "select action, affected_json from global_control_events where id = ?",
+            (event_id,),
+        ).fetchone()
+        self.assertIsNotNone(row)
+        self.assertEqual(json.loads(row["affected_json"]), ["proj-1"])
+
 
 class DoctorRepairCliTests(unittest.TestCase):
     def setUp(self) -> None:
