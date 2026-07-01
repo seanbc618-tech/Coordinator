@@ -101,7 +101,7 @@ def artifact_kinds(conn, task_id: str) -> list[str]:
     return [
         row["kind"]
         for row in conn.execute(
-            "select kind from artifacts where task_id = ? order by id",
+            "select kind from task_artifacts where task_id = ? order by id",
             (task_id,),
         ).fetchall()
     ]

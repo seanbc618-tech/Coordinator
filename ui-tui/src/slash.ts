@@ -161,6 +161,9 @@ const HELP_COMMAND_NAMES = new Set([
   '/dashboard',
   '/strategy',
   '/evidence',
+  '/artifacts',
+  '/export evidence',
+  '/retention',
   '/review',
   '/risk',
   '/merge-ready',
@@ -246,7 +249,19 @@ export function formatHelpText(): string {
       continue
     }
     if (cmd.name === '/evidence') {
-      lines.push('/evidence <task-id> - Show durable task evidence')
+      lines.push('/evidence [search [type]] | /evidence <task-id> - Warehouse search or task evidence')
+      continue
+    }
+    if (cmd.name === '/artifacts') {
+      lines.push('/artifacts - List registered warehouse artifacts')
+      continue
+    }
+    if (cmd.name === '/export evidence') {
+      lines.push('/export evidence [task-id] - Export redacted evidence bundle')
+      continue
+    }
+    if (cmd.name === '/retention') {
+      lines.push('/retention [apply] - Plan evidence retention (dry-run default)')
       continue
     }
     if (cmd.name === '/review') {

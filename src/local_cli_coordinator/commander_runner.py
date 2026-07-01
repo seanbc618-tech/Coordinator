@@ -464,6 +464,36 @@ def run_commander(
             context_files=context_files,
         )
 
+    from .artifact_registry import (
+        ArtifactRegistryError,
+        register_artifact,
+        resolve_warehouse_paths,
+    )
+
+    paths = resolve_warehouse_paths()
+    if paths is not None:
+        goal = get_goal(conn, goal_id)
+        project_id = str(goal["project_id"])
+        for artifact_path, artifact_type in (
+            (raw_output_path, "command_output"),
+            (stderr_log_path, "log"),
+            (prompt_path, "summary"),
+        ):
+            try:
+                register_artifact(
+                    conn,
+                    paths=paths,
+                    project_id=project_id,
+                    artifact_type=artifact_type,
+                    path=artifact_path,
+                    run_id=str(run_id_db),
+                    provenance={"source": "commander_runner", "goal_id": goal_id},
+                    commit=False,
+                )
+            except ArtifactRegistryError:
+                pass
+        conn.commit()
+
     return CommanderRunResult(
         succeeded=response is not None,
         response=response,

@@ -182,15 +182,28 @@ def add_artifact(conn: sqlite3.Connection, task_id: str, kind: str, path: Path) 
     ).fetchone()
     project_id = task["project_id"] if task else "legacy-default"
     conn.execute(
-        "insert into artifacts(task_id, kind, path, project_id) values (?, ?, ?, ?)",
+        "insert into task_artifacts(task_id, kind, path, project_id) values (?, ?, ?, ?)",
         (task_id, kind, str(path), project_id),
     )
+    from .artifact_registry import register_task_kind_artifact, resolve_warehouse_paths
+
+    warehouse_paths = resolve_warehouse_paths()
+    if warehouse_paths is not None:
+        register_task_kind_artifact(
+            conn,
+            paths=warehouse_paths,
+            project_id=str(project_id),
+            task_id=task_id,
+            kind=kind,
+            path=path,
+            commit=False,
+        )
     conn.commit()
 
 
 def artifact_kinds(conn: sqlite3.Connection, task_id: str) -> set[str]:
     rows = conn.execute(
-        "select kind from artifacts where task_id = ?",
+        "select kind from task_artifacts where task_id = ?",
         (task_id,),
     ).fetchall()
     return {row["kind"] for row in rows}
@@ -208,7 +221,7 @@ def list_task_events(conn: sqlite3.Connection, task_id: str) -> list[sqlite3.Row
 def list_task_artifacts(conn: sqlite3.Connection, task_id: str) -> list[sqlite3.Row]:
     """Return artifacts with kind and path for a task."""
     return conn.execute(
-        "select kind, path from artifacts where task_id = ? order by id",
+        "select kind, path from task_artifacts where task_id = ? order by id",
         (task_id,),
     ).fetchall()
 
@@ -777,7 +790,7 @@ def task_list_artifacts_for_project(
     task_id: str,
 ) -> list[sqlite3.Row]:
     return conn.execute(
-        "select kind, path from artifacts where project_id = ? and task_id = ? order by id",
+        "select kind, path from task_artifacts where project_id = ? and task_id = ? order by id",
         (project_id, task_id),
     ).fetchall()
 
@@ -805,7 +818,7 @@ def project_list_artifacts(
     conn: sqlite3.Connection, *, project_id: str
 ) -> list[sqlite3.Row]:
     return conn.execute(
-        "select * from artifacts where project_id = ? order by id",
+        "select * from task_artifacts where project_id = ? order by id",
         (project_id,),
     ).fetchall()
 

@@ -134,7 +134,7 @@ class LoopE2ETests(unittest.TestCase):
                 self.assertEqual(task["state"], "done")
 
                 artifacts = conn.execute(
-                    "select kind from artifacts where task_id = ?",
+                    "select kind from task_artifacts where task_id = ?",
                     (task["id"],),
                 ).fetchall()
                 kinds = {row["kind"] for row in artifacts}

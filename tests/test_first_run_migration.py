@@ -80,7 +80,7 @@ def _copy_legacy_fixture(dest_legacy: Path, *, include_real_db: bool = False) ->
     log_path = runs_dir / "agent.log"
     log_path.write_text("agent output\n", encoding="utf-8")
     db.execute(
-        "insert into artifacts(task_id, kind, path, project_id) values (?, ?, ?, ?)",
+        "insert into task_artifacts(task_id, kind, path, project_id) values (?, ?, ?, ?)",
         (
             "task-demo0001",
             "agent_log",
@@ -244,7 +244,7 @@ class ArtifactPathRemappingTests(FirstRunMigrationTestBase):
         conn = connect(self.paths.database)
         try:
             row = conn.execute(
-                "select path from artifacts where task_id = ?",
+                "select path from task_artifacts where task_id = ?",
                 ("task-demo0001",),
             ).fetchone()
             self.assertIsNotNone(row)
@@ -324,7 +324,7 @@ class RealSchemaVerificationTests(unittest.TestCase):
             (self.sample_goal_id,),
         ).fetchone()[0]
         self.sample_artifact = dict(
-            source_conn.execute("select kind, path from artifacts order by id limit 1").fetchone()
+            source_conn.execute("select kind, path from task_artifacts order by id limit 1").fetchone()
         )
         self.legacy_db_before = (self.legacy / "coordinator.db").read_bytes()
         source_conn.close()
@@ -370,7 +370,7 @@ class RealSchemaVerificationTests(unittest.TestCase):
             self.assertIsNone(find_project_by_path(conn, self.legacy))
 
             artifact = conn.execute(
-                "select kind, path from artifacts order by id limit 1",
+                "select kind, path from task_artifacts order by id limit 1",
             ).fetchone()
             self.assertEqual(artifact["kind"], self.sample_artifact["kind"])
             artifact_path = Path(artifact["path"])

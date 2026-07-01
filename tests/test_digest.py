@@ -41,14 +41,14 @@ class DigestTests(unittest.TestCase):
         diff_path = self.root / "diff.patch"
         diff_path.write_text("+++ b/src/main.py\n@@ -1,1 +1,1 @@\n-a\n+b\n+++ b/src/utils.py\n")
         self.conn.execute(
-            "insert into artifacts(task_id, kind, path) values ('task-1', 'diff', ?)",
+            "insert into task_artifacts(task_id, kind, path) values ('task-1', 'diff', ?)",
             (str(diff_path),),
         )
 
         diff2_path = self.root / "diff2.patch"
         diff2_path.write_text("+++ b/src/main.py\n")
         self.conn.execute(
-            "insert into artifacts(task_id, kind, path) values ('task-2', 'diff', ?)",
+            "insert into task_artifacts(task_id, kind, path) values ('task-2', 'diff', ?)",
             (str(diff2_path),),
         )
         self.conn.commit()

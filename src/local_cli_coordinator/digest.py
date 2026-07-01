@@ -44,7 +44,7 @@ def generate_digest(conn: sqlite3.Connection, date_str: str, root: Path) -> str:
     for task_id in task_ids:
         artifact = conn.execute(
             """
-            select path from artifacts
+            select path from task_artifacts
             where task_id = ? and kind = 'diff'
             order by created_at desc limit 1
             """,

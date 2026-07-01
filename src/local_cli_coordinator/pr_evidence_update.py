@@ -128,6 +128,37 @@ def update_pr_evidence(
         error=error,
         commit=False,
     )
+    from .artifact_registry import (
+        ArtifactRegistryError,
+        register_artifact,
+        resolve_warehouse_paths,
+    )
+
+    paths = resolve_warehouse_paths()
+    if paths is not None:
+        evidence_dir = paths.data_dir / "warehouse" / "pr_evidence" / project_id
+        evidence_dir.mkdir(parents=True, exist_ok=True)
+        evidence_path = evidence_dir / f"delivery-{delivery_id}.md"
+        evidence_path.write_text(merged, encoding="utf-8")
+        try:
+            register_artifact(
+                conn,
+                paths=paths,
+                project_id=project_id,
+                artifact_type="pr_evidence",
+                path=evidence_path,
+                provenance={
+                    "source": "pr_evidence_update",
+                    "delivery_id": delivery_id,
+                    "attempt_id": attempt.id,
+                    "dry_run": dry_run,
+                },
+                redaction_status="redacted",
+                commit=False,
+            )
+        except ArtifactRegistryError:
+            pass
+
     if commit:
         conn.commit()
     return EvidenceUpdateResult(

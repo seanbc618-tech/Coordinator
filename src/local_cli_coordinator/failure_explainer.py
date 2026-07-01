@@ -116,7 +116,7 @@ def explain_task_failure(
             "verification_command": str(task["verification_commands"]).split("\n")[0],
             "verification_result": str(attempt["result_reason"] or ""),
             "changed_file_count": conn.execute(
-                "select count(*) as cnt from artifacts where task_id = ?",
+                "select count(*) as cnt from task_artifacts where task_id = ?",
                 (task_id,),
             ).fetchone()["cnt"],
         }

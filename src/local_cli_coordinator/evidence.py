@@ -76,6 +76,40 @@ def record_evidence(
         ),
     )
     evidence_id = int(cursor.lastrowid)
+    if artifact_path:
+        from .artifact_registry import (
+            ArtifactRegistryError,
+            register_artifact,
+            resolve_warehouse_paths,
+        )
+
+        paths = resolve_warehouse_paths()
+        if paths is not None:
+            artifact_type = (
+                "patch"
+                if evidence_type == "diff"
+                else "command_output"
+                if evidence_type == "command"
+                else "summary"
+            )
+            try:
+                register_artifact(
+                    conn,
+                    paths=paths,
+                    project_id=project_id,
+                    artifact_type=artifact_type,
+                    path=artifact_path,
+                    task_id=task_id,
+                    provenance={
+                        "source": "task_evidence",
+                        "evidence_id": evidence_id,
+                        "evidence_type": evidence_type,
+                        "status": status,
+                    },
+                    commit=False,
+                )
+            except ArtifactRegistryError:
+                pass
     if commit:
         conn.commit()
     return evidence_id

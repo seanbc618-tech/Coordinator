@@ -256,9 +256,67 @@ export function buildSlashRpc(
     }
   }
 
+  if (commandName === '/evidence') {
+    const parts = args.trim().split(/\s+/).filter(Boolean)
+    if (!parts.length || parts[0]?.toLowerCase() === 'search') {
+      const artifactType = parts[0]?.toLowerCase() === 'search' ? parts[1] : undefined
+      return {
+        ok: true,
+        method: 'evidence.search',
+        params: {
+          scope: 'project',
+          ...(artifactType ? { artifact_type: artifactType } : {}),
+        },
+        displayMethod: 'evidence.search',
+      }
+    }
+    if (parts[0]?.startsWith('task-')) {
+      return {
+        ok: true,
+        method: 'project.evidence',
+        params: { task_id: parts[0] },
+        displayMethod: 'project.evidence',
+      }
+    }
+    return {
+      ok: true,
+      method: 'evidence.search',
+      params: { scope: 'project', artifact_type: parts[0] },
+      displayMethod: 'evidence.search',
+    }
+  }
+
+  if (commandName === '/artifacts') {
+    return {
+      ok: true,
+      method: 'artifact.list',
+      params: {},
+      displayMethod: 'artifact.list',
+    }
+  }
+
+  if (commandName === '/export evidence') {
+    const taskId = args.trim().split(/\s+/)[0]
+    return {
+      ok: true,
+      method: 'evidence.export',
+      params: taskId ? { scope: 'task', task_id: taskId } : { scope: 'project' },
+      displayMethod: 'evidence.export',
+    }
+  }
+
+  if (commandName === '/retention') {
+    const apply = args.trim().toLowerCase() === 'apply'
+    return {
+      ok: true,
+      method: 'retention.plan',
+      params: { scope: 'project', mode: apply ? 'apply' : 'dry_run' },
+      displayMethod: 'retention.plan',
+    }
+  }
+
   if (
-    commandName === '/evidence'
-    || commandName === '/review'
+    commandName === '/review'
     || commandName === '/risk'
     || commandName === '/merge-ready'
     || commandName === '/deliver'

@@ -8,6 +8,7 @@ review, commit/push, fallback.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 import sqlite3
 
@@ -60,6 +61,50 @@ def select_available_agent(
     if agent is None:
         return None, task
     return agent, task
+
+
+def _register_cycle_summary(
+    conn: sqlite3.Connection,
+    runtime: ProjectRuntime,
+    *,
+    task_id: str,
+) -> None:
+    from .artifact_registry import (
+        ArtifactRegistryError,
+        register_artifact,
+        resolve_warehouse_paths,
+    )
+
+    paths = resolve_warehouse_paths()
+    if paths is None:
+        return
+    summary_path = runtime.runs_dir / f"{task_id}-cycle.json"
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    summary_path.write_text(
+        json.dumps(
+            {
+                "project_id": runtime.project_id,
+                "task_id": task_id,
+                "repo_root": str(runtime.repo_root),
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    try:
+        register_artifact(
+            conn,
+            paths=paths,
+            project_id=runtime.project_id,
+            artifact_type="summary",
+            path=summary_path,
+            task_id=task_id,
+            provenance={"source": "project_runtime"},
+            commit=True,
+        )
+    except ArtifactRegistryError:
+        pass
 
 
 def project_is_runnable(
@@ -121,6 +166,7 @@ def run_project_cycle(
         )
 
         if processed:
+            _register_cycle_summary(conn, runtime, task_id=task_id)
             return ProjectCycleResult(
                 project_id=runtime.project_id,
                 task_id=task_id,

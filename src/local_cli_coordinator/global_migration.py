@@ -579,12 +579,12 @@ def _remap_artifact_paths(paths: RuntimePaths, source: Path) -> None:
     conn = connect(paths.database)
     try:
         init_db(conn)
-        rows = conn.execute("select id, path from artifacts").fetchall()
+        rows = conn.execute("select id, path from task_artifacts").fetchall()
         for row in rows:
             new_path = _remap_artifact_path(row["path"], source, paths.data_dir)
             if new_path != row["path"]:
                 conn.execute(
-                    "update artifacts set path = ? where id = ?",
+                    "update task_artifacts set path = ? where id = ?",
                     (new_path, row["id"]),
                 )
         conn.commit()

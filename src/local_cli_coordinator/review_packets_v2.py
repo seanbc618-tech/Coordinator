@@ -168,6 +168,30 @@ def write_review_packet_v2(
             _iso_now(),
         ),
     )
+    from .artifact_registry import (
+        ArtifactRegistryError,
+        register_artifact,
+        resolve_warehouse_paths,
+    )
+
+    paths = resolve_warehouse_paths()
+    if paths is not None:
+        for packet_path in (json_path, markdown_path):
+            try:
+                register_artifact(
+                    conn,
+                    paths=paths,
+                    project_id=project_id,
+                    artifact_type="review_packet",
+                    path=packet_path,
+                    task_id=task_id,
+                    provenance={"source": "review_packets_v2", "verdict": verdict},
+                    redaction_status="redacted",
+                    commit=False,
+                )
+            except ArtifactRegistryError:
+                pass
+
     if commit:
         conn.commit()
 

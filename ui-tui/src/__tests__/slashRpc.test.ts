@@ -39,6 +39,41 @@ describe('buildSlashRpc', () => {
     }
   })
 
+  it('maps /evidence without args to evidence.search', () => {
+    const rpc = buildSlashRpc('/evidence', 'evidence.search', '')
+    expect(rpc.ok).toBe(true)
+    if (rpc.ok) {
+      expect(rpc.method).toBe('evidence.search')
+      expect(rpc.params).toEqual({ scope: 'project' })
+    }
+  })
+
+  it('maps /evidence task-id to project.evidence', () => {
+    const rpc = buildSlashRpc('/evidence', 'evidence.search', 'task-abc')
+    expect(rpc.ok).toBe(true)
+    if (rpc.ok) {
+      expect(rpc.method).toBe('project.evidence')
+      expect(rpc.params).toEqual({ task_id: 'task-abc' })
+    }
+  })
+
+  it('maps /artifacts to artifact.list', () => {
+    const rpc = buildSlashRpc('/artifacts', 'artifact.list', '')
+    expect(rpc.ok).toBe(true)
+    if (rpc.ok) {
+      expect(rpc.method).toBe('artifact.list')
+    }
+  })
+
+  it('maps /retention to retention.plan dry_run', () => {
+    const rpc = buildSlashRpc('/retention', 'retention.plan', '')
+    expect(rpc.ok).toBe(true)
+    if (rpc.ok) {
+      expect(rpc.method).toBe('retention.plan')
+      expect(rpc.params).toEqual({ scope: 'project', mode: 'dry_run' })
+    }
+  })
+
   it('maps /approve token to operator.approval.approve', () => {
     const rpc = buildSlashRpc(
       '/approve',

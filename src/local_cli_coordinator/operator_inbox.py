@@ -637,4 +637,43 @@ def build_operator_decision(
 
     payload["executed"] = True
     payload["note"] = "caller must invoke routed_method via existing Supervisor RPC"
+
+    from .artifact_registry import (
+        ArtifactRegistryError,
+        register_artifact,
+        resolve_warehouse_paths,
+    )
+
+    paths = resolve_warehouse_paths()
+    if paths is not None:
+        audit_dir = paths.data_dir / "warehouse" / "operator_decisions" / project_id
+        audit_dir.mkdir(parents=True, exist_ok=True)
+        audit_path = audit_dir / f"{item.id}.json"
+        audit_path.write_text(
+            json.dumps(
+                {
+                    "item_id": item.id,
+                    "routed_method": routed_method,
+                    "routed_params": dict(item.action_params),
+                    "executed": True,
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        try:
+            register_artifact(
+                conn,
+                paths=paths,
+                project_id=project_id,
+                artifact_type="summary",
+                path=audit_path,
+                provenance={"source": "operator_decision", "item_id": item.id},
+                redaction_status="redacted",
+                commit=True,
+            )
+        except ArtifactRegistryError:
+            pass
+
     return payload

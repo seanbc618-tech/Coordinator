@@ -501,6 +501,28 @@ export function formatSlashResponse(
       ].join('\n')
     }
 
+    case 'evidence.search': {
+      const count = Number(result.count ?? 0)
+      return `Evidence search — ${count} artifact(s)`
+    }
+
+    case 'artifact.list': {
+      const count = Number(result.count ?? 0)
+      return `Artifacts — ${count} registered`
+    }
+
+    case 'evidence.export': {
+      return `Export ${String(result.export_id ?? '')} [${String(result.status ?? '')}]`
+    }
+
+    case 'retention.plan': {
+      const plan = (result.plan as Record<string, unknown> | undefined) ?? {}
+      return (
+        `Retention ${String(result.mode ?? 'dry_run')} — `
+        + `${Number(plan.candidate_count ?? 0)} candidate(s)`
+      )
+    }
+
     case 'simulation.run': {
       const report = (result.report as Record<string, unknown> | undefined) ?? {}
       const scheduled = (report.scheduled_projects as unknown[] | undefined) ?? []

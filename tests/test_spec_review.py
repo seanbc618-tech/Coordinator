@@ -108,7 +108,7 @@ class SpecReviewTests(unittest.TestCase):
                 )
                 task = get_task(conn, task_id)
                 artifacts = conn.execute(
-                    "select kind, path from artifacts where task_id = ? order by id",
+                    "select kind, path from task_artifacts where task_id = ? order by id",
                     (task_id,),
                 ).fetchall()
             finally:
@@ -144,7 +144,7 @@ class SpecReviewTests(unittest.TestCase):
                 )
                 task = get_task(conn, task_id)
                 artifacts = conn.execute(
-                    "select kind, path from artifacts where task_id = ? order by id",
+                    "select kind, path from task_artifacts where task_id = ? order by id",
                     (task_id,),
                 ).fetchall()
             finally:
