@@ -654,10 +654,29 @@ def _parse_loop_slash(text: str) -> tuple[str, dict[str, Any]]:
     return "project.loop.status", {}
 
 
+def _parse_approve_slash(
+    args_text: str,
+) -> tuple[str, dict[str, Any]] | None:
+    parts = args_text.strip().split()
+    if parts and parts[0].lower() == "token":
+        if len(parts) < 2:
+            return None
+        from .approval_tokens import is_approval_token
+
+        token = parts[1]
+        if not is_approval_token(token):
+            return None
+        return "operator.approval.approve", {"token": token, "confirmed": True}
+    task_id = args_text.strip().split()[0] if args_text.strip() else ""
+    if not task_id:
+        return None
+    return "project.task.approve", {"task_id": task_id}
+
+
 def _parse_slash_command(text: str) -> tuple[str, str]:
     stripped = text.strip()
     lowered = stripped.lower()
-    for multi in ("/ci failures", "/pr update"):
+    for multi in ("/ci failures", "/pr update", "/notify test"):
         if lowered.startswith(multi):
             return multi, stripped[len(multi) :].strip()
     parts = stripped.split(maxsplit=1)
@@ -1174,21 +1193,22 @@ def _handle_slash(
             user_reply=reply,
             intent="status_question",
         )
-    if command in {"/inbox", "/attention", "/summary", "/notify"}:
+    if command in {"/inbox", "/attention", "/summary", "/notify", "/notify test"}:
         args_text = text.strip()[len(command) :].strip()
         method = {
             "/inbox": "operator.inbox",
             "/attention": "operator.attention",
             "/summary": "operator.summary",
             "/notify": "operator.notify",
+            "/notify test": "operator.notify",
         }[command]
         params: dict[str, Any] = {}
         if command == "/summary":
             params["kind"] = "morning" if "morning" in args_text.lower() else "current"
             params["args"] = args_text
-        if command == "/notify":
-            params["dry_run"] = "--dry-run" in args_text
-            params["args"] = args_text
+        if command in {"/notify", "/notify test"}:
+            params["dry_run"] = command == "/notify test" or "--dry-run" in args_text
+            params["args"] = "test" if command == "/notify test" else args_text
         result, err, _envelope = _send_rpc(
             paths,
             project_id=project_id,
@@ -1211,6 +1231,94 @@ def _handle_slash(
             deliveries = result.get("deliveries") or []
             dry = " dry-run" if result.get("dry_run") else ""
             reply = f"Notify{dry}: {len(deliveries)} delivery record(s)"
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=reply,
+            intent="status_question",
+        )
+    if command == "/approvals":
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="operator.approvals",
+            params={},
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        requests = result.get("requests") or []
+        reply = f"Approvals: {len(requests)} request(s)"
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=reply,
+            intent="status_question",
+        )
+    if command == "/channels":
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="operator.channels",
+            params={},
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        channels = result.get("channels") or []
+        reply = f"Channels: {len(channels)} configured"
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=reply,
+            intent="status_question",
+        )
+    if command == "/approve":
+        parsed = _parse_approve_slash(args_text)
+        if parsed is None:
+            return _error_outcome(
+                "invalid_args",
+                "usage: /approve <task-id> or /approve token <approval-token>",
+            )
+        method, params = parsed
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method=method,
+            params=params,
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        if method == "operator.approval.approve":
+            reply = f"Approval: {result.get('status')}"
+        else:
+            reply = f"Task {params['task_id']} -> {result.get('state', 'approved')}"
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=reply,
+            intent="status_question",
+        )
+    if command == "/reject":
+        from .approval_tokens import is_approval_token
+
+        token = args_text.strip().split()[0] if args_text.strip() else ""
+        if not token or not is_approval_token(token):
+            return _error_outcome(
+                "invalid_args",
+                "usage: /reject <approval-token>",
+            )
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="operator.approval.reject",
+            params={"token": token},
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        reply = f"Rejected: {result.get('status')}"
         return PromptOutcome(
             ok=True,
             project_id=project_id,
@@ -1763,26 +1871,81 @@ def _rpc_slash(
         if envelope is not None:
             return envelope, 0 if envelope.ok else 1
         return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
-    if command in {"/inbox", "/attention", "/summary", "/notify"}:
+    if command in {"/inbox", "/attention", "/summary", "/notify", "/notify test"}:
         args_text = text.strip()[len(command) :].strip()
         method = {
             "/inbox": "operator.inbox",
             "/attention": "operator.attention",
             "/summary": "operator.summary",
             "/notify": "operator.notify",
+            "/notify test": "operator.notify",
         }[command]
         params: dict[str, Any] = {}
         if command == "/summary":
             params["kind"] = "morning" if "morning" in args_text.lower() else "current"
             params["args"] = args_text
-        if command == "/notify":
-            params["dry_run"] = "--dry-run" in args_text
-            params["args"] = args_text
+        if command in {"/notify", "/notify test"}:
+            params["dry_run"] = command == "/notify test" or "--dry-run" in args_text
+            params["args"] = "test" if command == "/notify test" else args_text
         _, err, envelope = _send_rpc(
             paths,
             project_id=project_id,
             method=method,
             params=params,
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/approvals":
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="operator.approvals",
+            params={},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/channels":
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="operator.channels",
+            params={},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/approve":
+        parsed = _parse_approve_slash(args_text)
+        if parsed is None:
+            outcome = _error_outcome(
+                "invalid_args",
+                "usage: /approve <task-id> or /approve token <approval-token>",
+            )
+            return _outcome_to_rpc(outcome), 1
+        method, params = parsed
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method=method,
+            params=params,
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/reject":
+        from .approval_tokens import is_approval_token
+
+        token = args_text.strip().split()[0] if args_text.strip() else ""
+        if not token or not is_approval_token(token):
+            outcome = _error_outcome("invalid_args", "usage: /reject <approval-token>")
+            return _outcome_to_rpc(outcome), 1
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="operator.approval.reject",
+            params={"token": token},
         )
         if envelope is not None:
             return envelope, 0 if envelope.ok else 1

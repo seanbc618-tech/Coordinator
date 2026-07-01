@@ -34,7 +34,24 @@ describe('buildSlashRpc', () => {
     const rpc = buildSlashRpc('/approve', 'project.task.approve', 'task-9')
     expect(rpc.ok).toBe(true)
     if (rpc.ok) {
+      expect(rpc.method).toBe('project.task.approve')
       expect(rpc.params).toEqual({ task_id: 'task-9' })
+    }
+  })
+
+  it('maps /approve token to operator.approval.approve', () => {
+    const rpc = buildSlashRpc(
+      '/approve',
+      'project.task.approve',
+      'token coord-appr-abc123def456',
+    )
+    expect(rpc.ok).toBe(true)
+    if (rpc.ok) {
+      expect(rpc.method).toBe('operator.approval.approve')
+      expect(rpc.params).toEqual({
+        token: 'coord-appr-abc123def456',
+        confirmed: true,
+      })
     }
   })
 })

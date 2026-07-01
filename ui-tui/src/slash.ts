@@ -44,6 +44,10 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/attention', description: 'Show items needing human attention', method: 'operator.attention' },
   { name: '/summary', description: 'Show operator summary', method: 'operator.summary' },
   { name: '/notify', description: 'Dispatch notifications (use --dry-run)', method: 'operator.notify' },
+  { name: '/notify test', description: 'Dry-run notification delivery test', method: 'operator.notify' },
+  { name: '/approvals', description: 'List pending external approval requests', method: 'operator.approvals' },
+  { name: '/channels', description: 'Show external approval channel configs', method: 'operator.channels' },
+  { name: '/reject', description: 'Reject an external approval token', method: 'operator.approval.reject' },
   { name: '/decision', description: 'Route safe action for an inbox item', method: 'operator.decision' },
   { name: '/dismiss', description: 'Dismiss an operator inbox item', method: 'operator.dismiss' },
   { name: '/recoveries', description: 'List pending recovery proposals', method: 'project.recoveries' },
@@ -83,7 +87,7 @@ export interface ParsedUnknownCommand {
 
 export type Parsed = ParsedSlash | ParsedMessage | ParsedUnknownCommand
 
-const MULTI_WORD_COMMANDS = ['/ci failures', '/pr update'] as const
+const MULTI_WORD_COMMANDS = ['/ci failures', '/pr update', '/notify test'] as const
 
 export function parse(input: string): Parsed {
   const trimmed = input.trim()
@@ -149,6 +153,10 @@ const HELP_COMMAND_NAMES = new Set([
   '/attention',
   '/summary',
   '/notify',
+  '/notify test',
+  '/approvals',
+  '/channels',
+  '/reject',
   '/decision',
   '/dismiss',
   '/recoveries',
@@ -183,6 +191,7 @@ export function formatHelpText(): string {
     }
     if (cmd.name === '/approve') {
       lines.push('/approve <task-id> - Unblock awaiting_human task')
+      lines.push('/approve token <token> - Approve external approval token')
       continue
     }
     if (cmd.name === '/retry') {
@@ -300,6 +309,22 @@ export function formatHelpText(): string {
     }
     if (cmd.name === '/notify') {
       lines.push('/notify --dry-run - Preview notification delivery')
+      continue
+    }
+    if (cmd.name === '/notify test') {
+      lines.push('/notify test - Dry-run notification delivery test')
+      continue
+    }
+    if (cmd.name === '/approvals') {
+      lines.push('/approvals - List pending external approval requests')
+      continue
+    }
+    if (cmd.name === '/channels') {
+      lines.push('/channels - Show external approval channel configs')
+      continue
+    }
+    if (cmd.name === '/reject') {
+      lines.push('/reject <token> - Reject an external approval token')
       continue
     }
     if (cmd.name === '/decision') {

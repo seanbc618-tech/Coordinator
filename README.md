@@ -43,8 +43,12 @@ The coordinator implements a full loop pipeline:
 8. **PR/CI self-healing** — `/heal`, `/stale`, `/ci failures`, `/reviews`,
    `/pr update`, and `/rebase` keep delivered PRs healthy with safe dry-run
    rebases, CI classification, and evidence refresh.
-9. **Scheduling** — the daemon loop runs continuously or on demand.
-10. **Human review** — risky changes pause for human approval.
+9. **External approval channels** — `/approvals`, `/channels`, `/notify test`,
+   and `coordinator approve|reject <token>` deliver one-time hashed approval
+   tokens through safe local channels (file inbox, dry-run webhook, optional
+   macOS notification) without bypassing existing RPC policy gates.
+10. **Scheduling** — the daemon loop runs continuously or on demand.
+11. **Human review** — risky changes pause for human approval.
 
 ## Quick Commands
 

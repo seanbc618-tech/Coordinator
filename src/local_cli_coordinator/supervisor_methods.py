@@ -260,6 +260,11 @@ class SupervisorMethods:
             "operator.notify": self._handle_operator_notify,
             "operator.decision": self._handle_operator_decision,
             "operator.dismiss": self._handle_operator_dismiss,
+            "operator.approvals": self._handle_operator_approvals,
+            "operator.approval.create": self._handle_operator_approval_create,
+            "operator.approval.approve": self._handle_operator_approval_approve,
+            "operator.approval.reject": self._handle_operator_approval_reject,
+            "operator.channels": self._handle_operator_channels,
             "events.subscribe": self._handle_events_subscribe,
             "events.replay": self._handle_events_replay,
             "events.v2.replay": self._handle_events_v2_replay,
@@ -1532,7 +1537,7 @@ class SupervisorMethods:
             commit=True,
         )
         items = list_operator_items(conn, project_id=project_id)
-        state_dir = self._paths.state if self._paths is not None else Path("state")
+        state_dir = self._paths.state_dir if self._paths is not None else Path("state")
         payload = dispatch_project_notifications(
             conn,
             project_id=project_id,
@@ -1599,6 +1604,133 @@ class SupervisorMethods:
         if item is None:
             return self._error(request, f"operator item {item_id!r} not found")
         return self._ok(request, {"project_id": project_id, "item_id": item.id, "status": item.status})
+
+    def _handle_operator_approvals(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .approval_callbacks import surface_expired_operator_items
+        from .approval_channels import build_approvals_payload
+
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        surface_expired_operator_items(conn, project_id=project_id, commit=True)
+        return self._ok(request, build_approvals_payload(conn, project_id=project_id))
+
+    def _handle_operator_channels(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .approval_channels import build_channels_payload
+
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        return self._ok(request, build_channels_payload(conn, project_id=project_id))
+
+    def _handle_operator_approval_create(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .approval_callbacks import create_approval_from_operator_item
+        from .approval_channels import deliver_approval_request
+        from .approval_tokens import public_request_view
+        from .runtime_paths import resolve_runtime_paths
+
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        operator_item_id = request.params.get("operator_item_id") or request.params.get(
+            "item_id"
+        )
+        if not isinstance(operator_item_id, str) or not operator_item_id.strip():
+            return self._error(request, "operator_item_id is required")
+        deliver = bool(request.params.get("deliver", True))
+        try:
+            raw, approval = create_approval_from_operator_item(
+                conn,
+                project_id=project_id,
+                operator_item_id=operator_item_id.strip(),
+                deliver=False,
+                commit=False,
+            )
+        except ValueError as exc:
+            return self._error(request, str(exc))
+        if deliver:
+            paths = resolve_runtime_paths()
+            deliver_approval_request(
+                conn,
+                request_id=approval.id,
+                project_id=project_id,
+                state_dir=paths.state_dir,
+                policy=self._config.notifications,
+                commit=False,
+            )
+        conn.commit()
+        return self._ok(
+            request,
+            {
+                "token": raw,
+                "token_hint": approval.token_hint,
+                "request": public_request_view(approval),
+            },
+        )
+
+    def _handle_operator_approval_approve(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .approval_callbacks import approve_approval_token
+
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        token = request.params.get("token") or request.params.get("args")
+        if not isinstance(token, str) or not token.strip():
+            return self._error(request, "token is required")
+        confirmed = bool(request.params.get("confirmed"))
+        if not confirmed:
+            return self._ok(
+                request,
+                {
+                    "executed": False,
+                    "requires_confirmation": True,
+                    "confirmation_hint": "provide confirmed=true to approve",
+                    "token_hint": token.strip()[-4:],
+                },
+            )
+        try:
+            payload = approve_approval_token(
+                conn,
+                raw_token=token.strip(),
+                project_id=project_id,
+                methods=self,
+                decided_by="supervisor",
+                commit=True,
+            )
+        except ValueError as exc:
+            return self._error(request, str(exc))
+        return self._ok(request, payload)
+
+    def _handle_operator_approval_reject(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .approval_callbacks import reject_approval_token
+
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        token = request.params.get("token") or request.params.get("args")
+        if not isinstance(token, str) or not token.strip():
+            return self._error(request, "token is required")
+        try:
+            payload = reject_approval_token(
+                conn,
+                raw_token=token.strip(),
+                project_id=project_id,
+                decided_by="supervisor",
+                commit=True,
+            )
+        except ValueError as exc:
+            return self._error(request, str(exc))
+        return self._ok(request, payload)
 
     def _handle_project_recoveries(
         self, conn: sqlite3.Connection, request: RequestEnvelope

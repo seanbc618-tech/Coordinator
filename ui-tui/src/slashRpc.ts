@@ -349,9 +349,74 @@ export function buildSlashRpc(
     }
   }
 
+  if (commandName === '/notify test') {
+    return {
+      ok: true,
+      method: 'operator.notify',
+      params: { dry_run: true, args: 'test' },
+      displayMethod: 'operator.notify',
+    }
+  }
+
+  if (commandName === '/approvals') {
+    return {
+      ok: true,
+      method: 'operator.approvals',
+      params: {},
+      displayMethod: 'operator.approvals',
+    }
+  }
+
+  if (commandName === '/channels') {
+    return {
+      ok: true,
+      method: 'operator.channels',
+      params: {},
+      displayMethod: 'operator.channels',
+    }
+  }
+
+  if (commandName === '/reject') {
+    const token = args.trim().split(/\s+/)[0]
+    if (!token || !token.startsWith('coord-appr-')) {
+      return { ok: false, error: 'usage: /reject <approval-token>' }
+    }
+    return {
+      ok: true,
+      method: 'operator.approval.reject',
+      params: { token },
+      displayMethod: 'operator.approval.reject',
+    }
+  }
+
+  if (commandName === '/approve') {
+    const parts = args.trim().split(/\s+/).filter(Boolean)
+    if (parts[0]?.toLowerCase() === 'token') {
+      const token = parts[1]
+      if (!token || !token.startsWith('coord-appr-')) {
+        return { ok: false, error: 'usage: /approve token <approval-token>' }
+      }
+      return {
+        ok: true,
+        method: 'operator.approval.approve',
+        params: { token, confirmed: true },
+        displayMethod: 'operator.approval.approve',
+      }
+    }
+    const taskId = args.trim()
+    if (!taskId) {
+      return { ok: false, error: 'usage: /approve <task-id> or /approve token <approval-token>' }
+    }
+    return {
+      ok: true,
+      method: 'project.task.approve',
+      params: { task_id: taskId },
+      displayMethod: 'project.task.approve',
+    }
+  }
+
   if (
-    method === 'project.task.approve'
-    || method === 'project.task.retry'
+    method === 'project.task.retry'
     || method === 'project.task.cancel'
   ) {
     const taskId = args.trim()

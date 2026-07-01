@@ -1,5 +1,10 @@
 # Coordinator CLI Prompt Modes
 
+> **Phase 13 merged** — this file now covers external approval channels
+> (`/approvals`, `/channels`, `/reject`, `/notify test`),
+> `coordinator approve <token> --yes`, `coordinator reject <token>`,
+> one-time hashed tokens, and safe local channel delivery (file, dry-run
+> webhook, policy-gated command sink).
 > **Phase 12 merged** — this file now covers PR/CI self-healing
 > (`/heal`, `/stale`, `/ci failures`, `/reviews`, `/pr update`, `/rebase`),
 > PR health records, safe dry-run rebases, CI failure classification, review
@@ -456,6 +461,25 @@ For local testing, set `COORDINATOR_GH_EXECUTABLE` and `COORDINATOR_GH_PREFIX`
 to point at `tests/fixtures/fake_gh.py`. Production uses the real `gh` binary
 with argv-only invocation (no shell interpolation).
 
+## External approval channels (Phase 13)
+
+Destructive or policy-gated operator actions can create one-time approval
+tokens (stored as hashes only). Approve or reject outside the TUI:
+
+```bash
+coordinator approve coord-appr-… --yes
+coordinator reject coord-appr-…
+coordinator --print -p "/approve token coord-appr-…"
+coordinator --print -p "/approve <task-id>"
+coordinator --print -p "/channels"
+coordinator --print -p "/approvals"
+coordinator --print -p "/notify test"
+```
+
+Channels default safely: file inbox enabled; stdout, macOS, and command sinks
+disabled; webhook dry-run only. Tokens expire, reject replay, and route through
+existing Supervisor RPCs. Merge approval is blocked unless merge policy allows it.
+
 ## PR and CI self-healing (Phase 12)
 
 After Phase 9 opens a PR, Phase 12 keeps delivery records healthy: watch stale
@@ -516,6 +540,10 @@ coordinator operator summary --json
 | `/attention` | `operator.attention` | Warning/error/critical items only |
 | `/summary` | `operator.summary` | Counts and redacted highlights |
 | `/notify` | `operator.notify` | Durable notification deliveries (`--dry-run` previews) |
+| `/notify test` | `operator.notify` | Dry-run channel delivery smoke test |
+| `/approvals` | `operator.approvals` | Pending external approval requests (token hints only) |
+| `/channels` | `operator.channels` | Approval channel configs and safe defaults |
+| `/reject <token>` | `operator.approval.reject` | Reject a one-time approval token |
 | `/decision` | `operator.decision` | Routes to existing safe RPC (dry-run by default in print mode) |
 | `/dismiss` | `operator.dismiss` | Marks an item dismissed |
 
