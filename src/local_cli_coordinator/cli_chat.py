@@ -691,6 +691,40 @@ def _parse_onboard_slash(args_text: str) -> tuple[str, dict[str, Any]]:
     return "project.onboard.plan", {"path": path, "preset": "observe"}
 
 
+def _parse_evidence_slash(args_text: str) -> tuple[str, dict[str, Any]]:
+    """Route task evidence vs warehouse search."""
+    parts = args_text.strip().split()
+    if not parts:
+        return "evidence.search", {"scope": "project"}
+    if parts[0].lower() == "search":
+        params: dict[str, Any] = {"scope": "project"}
+        if len(parts) > 1:
+            params["artifact_type"] = parts[1]
+        return "evidence.search", params
+    if parts[0].startswith("task-"):
+        return "project.evidence", {"task_id": parts[0]}
+    return "evidence.search", {"scope": "project", "artifact_type": parts[0]}
+
+
+def _parse_export_slash(args_text: str) -> tuple[str, dict[str, Any]]:
+    parts = args_text.strip().split()
+    if not parts or parts[0].lower() != "evidence":
+        raise ValueError("usage: /export evidence [task-id]")
+    params: dict[str, Any] = {"scope": "project"}
+    if len(parts) > 1:
+        params["scope"] = "task"
+        params["task_id"] = parts[1]
+    return "evidence.export", params
+
+
+def _parse_retention_slash(args_text: str) -> tuple[str, dict[str, Any]]:
+    parts = args_text.strip().split()
+    params: dict[str, Any] = {"scope": "project", "mode": "dry_run"}
+    if parts and parts[0].lower() == "apply":
+        params["mode"] = "apply"
+    return "retention.plan", params
+
+
 def _parse_simulation_slash(args_text: str) -> tuple[str, dict[str, Any]]:
     """Route autonomy simulation vs onboarding preset simulation."""
     parts = args_text.strip().split()
@@ -730,6 +764,7 @@ def _parse_slash_command(text: str) -> tuple[str, str]:
         "/resume all",
         "/rollback-onboard",
         "/benchmark agents",
+        "/export evidence",
     ):
         if lowered.startswith(multi):
             return multi, stripped[len(multi) :].strip()
@@ -1009,7 +1044,87 @@ def _handle_slash(
             user_reply=reply,
             intent="status_question",
         )
-    if command in {"/evidence", "/review", "/risk", "/merge-ready"}:
+    if command == "/evidence":
+        method, params = _parse_evidence_slash(args_text)
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method=method,
+            params=params,
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        if method == "project.evidence":
+            task_id = str(params.get("task_id") or "")
+            items = result.get("evidence") or []
+            reply = f"Evidence for {task_id}: {len(items)} record(s)"
+        else:
+            reply = f"Warehouse evidence: {result.get('count', 0)} artifact(s)"
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=reply,
+            intent="status_question",
+        )
+    if command == "/artifacts":
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="artifact.list",
+            params={},
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=f"Artifacts: {result.get('count', 0)} registered",
+            intent="status_question",
+        )
+    if command == "/export evidence":
+        try:
+            method, params = _parse_export_slash(args_text)
+        except ValueError as exc:
+            return _error_outcome("invalid_args", str(exc))
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method=method,
+            params=params,
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=f"Export {result.get('export_id')}: {result.get('status')}",
+            intent="status_question",
+        )
+    if command == "/retention":
+        method, params = _parse_retention_slash(args_text)
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method=method,
+            params=params,
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        plan = result.get("plan") or {}
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=(
+                f"Retention {result.get('mode')}: "
+                f"{plan.get('candidate_count', 0)} candidate(s)"
+            ),
+            intent="status_question",
+        )
+    if command in {"/review", "/risk", "/merge-ready"}:
         task_id = _parse_task_id_slash(text)
         if not task_id:
             return _error_outcome(
@@ -1017,7 +1132,6 @@ def _handle_slash(
                 f"usage: {command} <task-id>",
             )
         method = {
-            "/evidence": "project.evidence",
             "/review": "project.review",
             "/risk": "project.risk",
             "/merge-ready": "project.merge_ready",
@@ -1031,10 +1145,7 @@ def _handle_slash(
         if err is not None:
             return err
         assert result is not None
-        if command == "/evidence":
-            items = result.get("evidence") or []
-            reply = f"Evidence for {task_id}: {len(items)} record(s)"
-        elif command == "/review":
+        if command == "/review":
             reply = (
                 f"Review {task_id}: allowed={result.get('completion_allowed')} "
                 f"risk={result.get('risk_level')}"
@@ -1841,6 +1952,106 @@ def _handle_slash(
             user_reply=f"Rollback restored snapshot {snapshot_id}",
             intent="status_question",
         )
+    if command == "/preferences":
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="preference.list",
+            params={},
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        rules = result.get("rules") or []
+        lines = [f"Preferences ({len(rules)} rule(s)):"]
+        for rule in rules:
+            lines.append(
+                f"  {rule.get('id')} [{rule.get('status')}] "
+                f"{rule.get('rule_type')}: {rule.get('rule')}"
+            )
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply="\n".join(lines) if rules else "Preferences — no rules yet",
+            intent="status_question",
+        )
+    if command == "/learned":
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="preference.list",
+            params={"learned_only": True},
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        rules = result.get("rules") or []
+        lines = [f"Learned suggestions ({len(rules)}):"]
+        for rule in rules:
+            lines.append(
+                f"  {rule.get('id')} [{rule.get('status')}] "
+                f"{rule.get('rule_type')}: {rule.get('rule')}"
+            )
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply="\n".join(lines) if rules else "Learned — no suggestions yet",
+            intent="status_question",
+        )
+    if command == "/prefer":
+        parts = args_text.strip().split(maxsplit=2)
+        if len(parts) < 2:
+            return _error_outcome(
+                "invalid_args",
+                "usage: /prefer <rule_type> <json-or-key=value>",
+            )
+        rule_type, rule_text = parts[0], parts[1] if len(parts) == 2 else parts[1] + " " + parts[2]
+        import json
+
+        try:
+            if rule_text.startswith("{"):
+                rule_body = json.loads(rule_text)
+            else:
+                key, _, value = rule_text.partition("=")
+                rule_body = {key.strip(): value.strip()}
+        except json.JSONDecodeError:
+            return _error_outcome("invalid_args", "rule body must be JSON or key=value")
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="preference.approve",
+            params={"rule_type": rule_type, "rule": rule_body},
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        rule = result.get("rule") or {}
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=f"Preference active: {rule.get('id')} ({rule.get('rule_type')})",
+            intent="status_question",
+        )
+    if command == "/forget":
+        rule_id = args_text.strip().split()[0] if args_text.strip() else ""
+        if not rule_id:
+            return _error_outcome("invalid_args", "usage: /forget <rule-id>")
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="preference.delete",
+            params={"rule_id": rule_id},
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        rule = result.get("rule") or {}
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=f"Preference deleted: {rule.get('id')}",
+            intent="status_question",
+        )
     return _error_outcome("unknown_slash", f"Unknown command: {command}. Use /help.")
 
 
@@ -2095,13 +2306,58 @@ def _rpc_slash(
         if envelope is not None:
             return envelope, 0 if envelope.ok else 1
         return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
-    if command in {"/evidence", "/review", "/risk", "/merge-ready"}:
+    if command == "/evidence":
+        method, params = _parse_evidence_slash(args_text)
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method=method,
+            params=params,
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/artifacts":
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="artifact.list",
+            params={},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/export evidence":
+        try:
+            method, params = _parse_export_slash(args_text)
+        except ValueError as exc:
+            return _outcome_to_rpc(_error_outcome("invalid_args", str(exc))), 1
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method=method,
+            params=params,
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/retention":
+        method, params = _parse_retention_slash(args_text)
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method=method,
+            params=params,
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command in {"/review", "/risk", "/merge-ready"}:
         task_id = _parse_task_id_slash(text)
         if not task_id:
             outcome = _error_outcome("invalid_args", f"usage: {command} <task-id>")
             return _outcome_to_rpc(outcome), 1
         method = {
-            "/evidence": "project.evidence",
             "/review": "project.review",
             "/risk": "project.risk",
             "/merge-ready": "project.merge_ready",
@@ -2515,6 +2771,69 @@ def _rpc_slash(
             project_id=project_id,
             method="project.onboard.rollback",
             params={"snapshot_id": snapshot_id},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/preferences":
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="preference.list",
+            params={},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/learned":
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="preference.list",
+            params={"learned_only": True},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/prefer":
+        parts = args_text.strip().split(maxsplit=2)
+        if len(parts) < 2:
+            outcome = _error_outcome(
+                "invalid_args",
+                "usage: /prefer <rule_type> <json-or-key=value>",
+            )
+            return _outcome_to_rpc(outcome), 1
+        rule_type, rule_text = parts[0], parts[1] if len(parts) == 2 else parts[1] + " " + parts[2]
+        import json
+
+        try:
+            if rule_text.startswith("{"):
+                rule_body = json.loads(rule_text)
+            else:
+                key, _, value = rule_text.partition("=")
+                rule_body = {key.strip(): value.strip()}
+        except json.JSONDecodeError:
+            outcome = _error_outcome("invalid_args", "rule body must be JSON or key=value")
+            return _outcome_to_rpc(outcome), 1
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="preference.approve",
+            params={"rule_type": rule_type, "rule": rule_body},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/forget":
+        rule_id = args_text.strip().split()[0] if args_text.strip() else ""
+        if not rule_id:
+            outcome = _error_outcome("invalid_args", "usage: /forget <rule-id>")
+            return _outcome_to_rpc(outcome), 1
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="preference.delete",
+            params={"rule_id": rule_id},
         )
         if envelope is not None:
             return envelope, 0 if envelope.ok else 1

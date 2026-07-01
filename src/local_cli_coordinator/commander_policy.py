@@ -125,6 +125,26 @@ def batch_is_high_risk_only(
     return True
 
 
+def preference_hints_for_proposal(
+    conn: sqlite3.Connection,
+    *,
+    project_id: str,
+    proposal: CommanderTaskProposal,
+) -> list[str]:
+    """Return explainable planning hints from active preference rules."""
+    from .preference_rules import planning_preference_hints
+
+    combined = _proposal_text(proposal)
+    return [
+        hint.message
+        for hint in planning_preference_hints(
+            conn,
+            project_id=project_id,
+            text=combined,
+        )
+    ]
+
+
 def proposal_rejection_reasons(
     conn: sqlite3.Connection,
     config: CoordinatorConfig,

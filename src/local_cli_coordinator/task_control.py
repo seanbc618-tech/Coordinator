@@ -286,6 +286,15 @@ def approve_task(
         new_state="ready",
         note="approved by operator",
     )
+    from .preference_observer import observe_task_approval
+
+    observe_task_approval(
+        conn,
+        project_id=project_id,
+        task_id=task_id,
+        title=str(row["title"] or ""),
+        commit=False,
+    )
     return {"task_id": task_id, "state": "ready"}
 
 
@@ -326,6 +335,14 @@ def retry_task(
         task_id=task_id,
         new_state="ready",
         note="retried by operator",
+    )
+    from .preference_observer import observe_task_retry
+
+    observe_task_retry(
+        conn,
+        project_id=project_id,
+        task_id=task_id,
+        commit=False,
     )
     return {"task_id": task_id, "state": "ready", "attempt": attempt_count + 1}
 

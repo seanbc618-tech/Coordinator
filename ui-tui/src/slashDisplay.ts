@@ -583,6 +583,43 @@ export function formatSlashResponse(
       return JSON.stringify(result, null, 2)
     }
 
+    case 'preference.list': {
+      const rules = (result.rules as Array<Record<string, unknown>> | undefined) ?? []
+      if (!rules.length) {
+        return 'Preferences — (none)'
+      }
+      return [
+        `Preferences (${rules.length}):`,
+        ...rules.map(rule =>
+          `- ${rule.id} [${rule.status}] ${rule.rule_type}: ${JSON.stringify(rule.rule)}`,
+        ),
+      ].join('\n')
+    }
+
+    case 'preference.approve': {
+      const rule = result.rule as Record<string, unknown> | undefined
+      if (!rule) {
+        return 'Preference approved'
+      }
+      return `Preference active: ${rule.id} [${rule.status}] ${rule.rule_type}`
+    }
+
+    case 'preference.reject': {
+      const rule = result.rule as Record<string, unknown> | undefined
+      if (!rule) {
+        return 'Preference rejected'
+      }
+      return `Preference rejected: ${rule.id}`
+    }
+
+    case 'preference.delete': {
+      const rule = result.rule as Record<string, unknown> | undefined
+      if (!rule) {
+        return 'Preference deleted'
+      }
+      return `Preference deleted: ${rule.id}`
+    }
+
     default:
       return JSON.stringify(result, null, 2)
   }

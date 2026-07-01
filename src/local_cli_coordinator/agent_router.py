@@ -138,6 +138,13 @@ def score_agent_candidates(
             score += bonus
             reasons.append("benchmark evidence")
 
+        from .preference_rules import routing_preference_hints
+
+        for hint in routing_preference_hints(conn, project_id=project_id):
+            if hint.agent_id == agent.id:
+                score += hint.score_delta
+                reasons.append(hint.message)
+
         if not reasons:
             reasons.append("eligible default")
 
@@ -344,6 +351,19 @@ def route_and_record(
     else:
         return None, candidates, "no eligible agents"
     reason = f"selected {selected.agent_id}: {selected.reason}"
+    if selected_agent_id is not None and eligible:
+        top_agent = eligible[0].agent_id
+        if selected_agent_id != top_agent:
+            from .preference_observer import observe_route_override
+
+            observe_route_override(
+                conn,
+                project_id=project_id,
+                task_id=task_id,
+                selected_agent_id=selected_agent_id,
+                reason=reason,
+                commit=False,
+            )
     record_route_decision(
         conn,
         project_id=project_id,

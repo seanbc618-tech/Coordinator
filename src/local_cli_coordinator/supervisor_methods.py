@@ -285,6 +285,14 @@ class SupervisorMethods:
             "simulation.run": self._handle_simulation_run,
             "simulation.report": self._handle_simulation_report,
             "simulation.list": self._handle_simulation_list,
+            "evidence.search": self._handle_evidence_search,
+            "artifact.list": self._handle_artifact_list,
+            "evidence.export": self._handle_evidence_export,
+            "retention.plan": self._handle_retention_plan,
+            "preference.list": self._handle_preference_list,
+            "preference.approve": self._handle_preference_approve,
+            "preference.reject": self._handle_preference_reject,
+            "preference.delete": self._handle_preference_delete,
             "events.subscribe": self._handle_events_subscribe,
             "events.replay": self._handle_events_replay,
             "events.v2.replay": self._handle_events_v2_replay,
@@ -2175,6 +2183,115 @@ class SupervisorMethods:
             ),
         )
 
+    def _handle_evidence_search(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .evidence_search import search_evidence
+
+        if self._paths is None:
+            return self._error(request, "runtime paths not configured")
+        scope = str(request.params.get("scope") or "project")
+        project_id = request.project_id
+        if scope in {"project", "task"}:
+            resolved = self._require_registered_project(conn, request)
+            if not isinstance(resolved, str):
+                return resolved
+            project_id = resolved
+        try:
+            payload = search_evidence(
+                conn,
+                paths=self._paths,
+                scope=scope,
+                project_id=project_id,
+                task_id=request.params.get("task_id"),
+                artifact_type=request.params.get("artifact_type"),
+                agent_id=request.params.get("agent_id"),
+                since=request.params.get("since"),
+                until=request.params.get("until"),
+                include_paths=bool(request.params.get("include_paths")),
+                limit=int(request.params.get("limit") or 50),
+            )
+        except ValueError as exc:
+            return self._error(request, str(exc))
+        return self._ok(request, payload)
+
+    def _handle_artifact_list(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .evidence_search import build_artifact_list_payload
+
+        if self._paths is None:
+            return self._error(request, "runtime paths not configured")
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        return self._ok(
+            request,
+            build_artifact_list_payload(
+                conn,
+                paths=self._paths,
+                project_id=project_id,
+                task_id=request.params.get("task_id"),
+                artifact_type=request.params.get("artifact_type"),
+                limit=int(request.params.get("limit") or 100),
+            ),
+        )
+
+    def _handle_evidence_export(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .evidence_export import export_evidence_bundle
+
+        if self._paths is None:
+            return self._error(request, "runtime paths not configured")
+        scope = str(request.params.get("scope") or "project")
+        project_id = request.project_id
+        if scope in {"project", "task"}:
+            resolved = self._require_registered_project(conn, request)
+            if not isinstance(resolved, str):
+                return resolved
+            project_id = resolved
+        try:
+            payload = export_evidence_bundle(
+                conn,
+                paths=self._paths,
+                scope=scope,
+                project_id=project_id,
+                task_id=request.params.get("task_id"),
+                limit=int(request.params.get("limit") or 500),
+            )
+        except (ValueError, RuntimeError) as exc:
+            return self._error(request, str(exc))
+        return self._ok(request, payload)
+
+    def _handle_retention_plan(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .retention_policy import plan_retention
+
+        if self._paths is None:
+            return self._error(request, "runtime paths not configured")
+        scope = str(request.params.get("scope") or "project")
+        project_id = request.project_id
+        if scope == "project":
+            resolved = self._require_registered_project(conn, request)
+            if not isinstance(resolved, str):
+                return resolved
+            project_id = resolved
+        mode = str(request.params.get("mode") or "dry_run")
+        try:
+            payload = plan_retention(
+                conn,
+                paths=self._paths,
+                scope=scope,
+                project_id=project_id,
+                mode=mode,
+                max_age_days=int(request.params.get("max_age_days") or 30),
+            )
+        except ValueError as exc:
+            return self._error(request, str(exc))
+        return self._ok(request, payload)
+
     def _handle_agent_benchmark(
         self, conn: sqlite3.Connection, request: RequestEnvelope
     ) -> ResponseEnvelope:
@@ -2645,6 +2762,114 @@ class SupervisorMethods:
                 for e in events
             ]
         })
+
+    def _handle_preference_list(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .preference_rules import _rule_payload, export_rules, list_observations, list_rules
+
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        status = request.params.get("status")
+        if status is not None and not isinstance(status, str):
+            return self._error(request, "status must be a string")
+        learned_only = bool(request.params.get("learned_only"))
+        if learned_only:
+            status = "suggested"
+        rules = list_rules(
+            conn,
+            project_id=project_id,
+            status=status,
+            include_global=True,
+        )
+        observations = list_observations(conn, project_id=project_id, limit=50)
+        return self._ok(
+            request,
+            {
+                "project_id": project_id,
+                "rules": [_rule_payload(rule) for rule in rules],
+                "observations": [
+                    {
+                        "id": obs.id,
+                        "observation_type": obs.observation_type,
+                        "subject": obs.subject,
+                        "evidence": obs.evidence,
+                        "redaction_status": obs.redaction_status,
+                        "created_at": obs.created_at,
+                    }
+                    for obs in observations
+                ],
+                "export": export_rules(conn, project_id=project_id),
+            },
+        )
+
+    def _handle_preference_approve(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .preference_rules import _rule_payload, approve_rule, create_rule
+
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        rule_id = request.params.get("rule_id")
+        if isinstance(rule_id, str) and rule_id.strip():
+            try:
+                updated = approve_rule(conn, rule_id=rule_id.strip(), commit=True)
+            except ValueError as exc:
+                return self._error(request, str(exc))
+            return self._ok(request, {"rule": _rule_payload(updated)})
+        rule_type = request.params.get("rule_type")
+        rule_body = request.params.get("rule")
+        if isinstance(rule_type, str) and isinstance(rule_body, dict):
+            try:
+                created = create_rule(
+                    conn,
+                    scope="project",
+                    project_id=project_id,
+                    rule_type=rule_type,
+                    rule=rule_body,
+                    status="active",
+                    commit=True,
+                )
+            except ValueError as exc:
+                return self._error(request, str(exc))
+            return self._ok(request, {"rule": _rule_payload(created)})
+        return self._error(request, "rule_id or rule_type+rule is required")
+
+    def _handle_preference_reject(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .preference_rules import _rule_payload, reject_rule
+
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        rule_id = request.params.get("rule_id")
+        if not isinstance(rule_id, str) or not rule_id.strip():
+            return self._error(request, "rule_id is required")
+        try:
+            updated = reject_rule(conn, rule_id=rule_id.strip(), commit=True)
+        except ValueError as exc:
+            return self._error(request, str(exc))
+        return self._ok(request, {"rule": _rule_payload(updated)})
+
+    def _handle_preference_delete(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .preference_rules import _rule_payload, delete_rule
+
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        rule_id = request.params.get("rule_id")
+        if not isinstance(rule_id, str) or not rule_id.strip():
+            return self._error(request, "rule_id is required")
+        try:
+            updated = delete_rule(conn, rule_id=rule_id.strip(), commit=True)
+        except ValueError as exc:
+            return self._error(request, str(exc))
+        return self._ok(request, {"rule": _rule_payload(updated)})
 
     def _handle_events_v2_replay(
         self, conn: sqlite3.Connection, request: RequestEnvelope

@@ -616,6 +616,66 @@ export function buildSlashRpc(
     }
   }
 
+  if (commandName === '/preferences') {
+    return {
+      ok: true,
+      method: 'preference.list',
+      params: {},
+      displayMethod: 'preference.list',
+    }
+  }
+
+  if (commandName === '/learned') {
+    return {
+      ok: true,
+      method: 'preference.list',
+      params: { learned_only: true },
+      displayMethod: 'preference.list',
+    }
+  }
+
+  if (commandName === '/prefer') {
+    const parts = args.trim().split(/\s+/)
+    if (parts.length < 2) {
+      return { ok: false, error: 'usage: /prefer <rule_type> <json-or-key=value>' }
+    }
+    const ruleType = parts[0]!
+    const ruleText = parts.slice(1).join(' ')
+    let rule: Record<string, unknown>
+    try {
+      if (ruleText.startsWith('{')) {
+        rule = JSON.parse(ruleText) as Record<string, unknown>
+      } else {
+        const eq = ruleText.indexOf('=')
+        if (eq < 0) {
+          return { ok: false, error: 'rule body must be JSON or key=value' }
+        }
+        rule = { [ruleText.slice(0, eq).trim()]: ruleText.slice(eq + 1).trim() }
+      }
+    } catch {
+      return { ok: false, error: 'rule body must be JSON or key=value' }
+    }
+    return {
+      ok: true,
+      method: 'preference.approve',
+      params: { rule_type: ruleType, rule },
+      displayMethod: 'preference.approve',
+    }
+  }
+
+  if (commandName === '/forget') {
+    const ruleId = args.trim().split(/\s+/)[0] ?? ''
+    if (!ruleId) {
+      return { ok: false, error: 'usage: /forget <rule-id>' }
+    }
+    return {
+      ok: true,
+      method: 'preference.delete',
+      params: { rule_id: ruleId },
+      displayMethod: 'preference.delete',
+    }
+  }
+
   return { ok: true, method, params: { args }, displayMethod: method }
 }
 

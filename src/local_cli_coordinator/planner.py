@@ -13,8 +13,9 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .config import AgentConfig, CoordinatorConfig, select_agent_by_role
@@ -59,6 +60,7 @@ class PlanResult:
 
     tasks: list[TaskDraft]
     needs_split: list[str]
+    preference_hints: list[str] = field(default_factory=list)
 
 
 def _normalize(text: str) -> str:
@@ -105,7 +107,12 @@ def _capability_from_source(source: str) -> list[str]:
     return ["code"]
 
 
-def plan_finding(finding: Finding) -> PlanResult:
+def plan_finding(
+    finding: Finding,
+    *,
+    conn: sqlite3.Connection | None = None,
+    project_id: str | None = None,
+) -> PlanResult:
     """Convert a single finding into task drafts or split reasons.
 
     Returns a :class:`PlanResult` with either one or more ``TaskDraft``
@@ -113,6 +120,19 @@ def plan_finding(finding: Finding) -> PlanResult:
     finding cannot be planned as-is.
     """
     reasons: list[str] = []
+    preference_hints: list[str] = []
+    if conn is not None and project_id is not None:
+        from .preference_rules import planning_preference_hints
+
+        combined = f"{finding.title}\n{finding.body}"
+        preference_hints = [
+            hint.message
+            for hint in planning_preference_hints(
+                conn,
+                project_id=project_id,
+                text=combined,
+            )
+        ]
 
     if _has_broad_signals(finding.title) or _has_broad_signals(finding.body):
         reasons.append(
@@ -139,7 +159,11 @@ def plan_finding(finding: Finding) -> PlanResult:
         )
 
     if reasons:
-        return PlanResult(tasks=[], needs_split=reasons)
+        return PlanResult(
+            tasks=[],
+            needs_split=reasons,
+            preference_hints=preference_hints,
+        )
 
     task = TaskDraft(
         title=finding.title,
@@ -150,18 +174,37 @@ def plan_finding(finding: Finding) -> PlanResult:
         acceptance_criteria=criteria,
         source_path=f"state/findings/{finding.id}.jsonl",
     )
-    return PlanResult(tasks=[task], needs_split=[])
+    return PlanResult(
+        tasks=[task],
+        needs_split=[],
+        preference_hints=preference_hints,
+    )
 
 
-def plan_findings(findings: list[Finding]) -> PlanResult:
+def plan_findings(
+    findings: list[Finding],
+    *,
+    conn: sqlite3.Connection | None = None,
+    project_id: str | None = None,
+) -> PlanResult:
     """Plan a batch of findings, aggregating tasks and split reasons."""
     all_tasks: list[TaskDraft] = []
     all_reasons: list[str] = []
+    all_hints: list[str] = []
     for finding in findings:
-        result = plan_finding(finding)
+        result = plan_finding(
+            finding,
+            conn=conn,
+            project_id=project_id,
+        )
         all_tasks.extend(result.tasks)
         all_reasons.extend(result.needs_split)
-    return PlanResult(tasks=all_tasks, needs_split=all_reasons)
+        all_hints.extend(result.preference_hints)
+    return PlanResult(
+        tasks=all_tasks,
+        needs_split=all_reasons,
+        preference_hints=all_hints,
+    )
 
 
 # ---------------------------------------------------------------------------
