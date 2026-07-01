@@ -159,7 +159,14 @@ input starts with `/`.
 | `/recoveries` | List pending failure recovery proposals |
 | `/agents` | Show agent scorecards and routing preference |
 | `/overnight` | Quiet-hour window and latest overnight summary |
-| `/dashboard` | Multi-project counts (includes strategic metrics, no task titles) |
+| `/dashboard` | Daily operator view: pause state, counts, approvals, health, next actions |
+| `/doctor` | Safe doctor repair dry-run (`operator.doctor`) |
+| `/repair` | Plan repairs (default dry-run; `--apply` requires confirmation) |
+| `/health` | Agent health from durable attempt records (`operator.health`) |
+| `/morning` | Morning handoff summary (`operator.morning`) |
+| `/why <task-id>` | Explain task failure (`operator.explain_failure`; paths still use `project.why`) |
+| `/pause all` | Pause all projects globally (`global.pause`) |
+| `/resume all` | Resume projects paused by the last global pause (`global.resume`) |
 | `/jump <target>` | Resolve a task, log, goal, worktree, or supervisor log path (hint only) |
 | `/open <target>` | Alias of `/jump` (does not launch an editor) |
 | `/logs` | Show recent logs |

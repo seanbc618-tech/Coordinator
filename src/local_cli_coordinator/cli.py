@@ -146,8 +146,10 @@ def _cmd_approval_token(
 
 def _cmd_operator_summary(args: argparse.Namespace) -> int:
     from .admin_json import emit_envelope, envelope
+    from .config_runtime import load_config_for_paths
     from .db import connect, init_db
-    from .operator_summary import build_global_summary, build_morning_summary
+    from .morning_handoff import build_morning_handoff
+    from .operator_summary import build_global_summary
     from .runtime_paths import resolve_runtime_paths
 
     paths = resolve_runtime_paths()
@@ -156,12 +158,16 @@ def _cmd_operator_summary(args: argparse.Namespace) -> int:
     init_db(conn)
     try:
         if getattr(args, "morning", False):
+            config = load_config_for_paths(paths)
             row = conn.execute("select id from projects limit 1").fetchone()
-            if row is None:
-                data = build_global_summary(conn)
-                data["summary_kind"] = "morning"
-            else:
-                data = build_morning_summary(conn, project_id=str(row["id"]))
+            project_id = str(row["id"]) if row is not None else None
+            data = build_morning_handoff(
+                conn,
+                paths=paths,
+                config=config,
+                project_id=project_id,
+            )
+            data["summary_kind"] = "morning"
         else:
             data = build_global_summary(conn)
     finally:
@@ -181,9 +187,44 @@ def _cmd_operator_summary(args: argparse.Namespace) -> int:
 
 def _cmd_doctor(args: argparse.Namespace) -> int:
     from .admin_json import emit_envelope, envelope
+    from .db import connect, init_db
+    from .runtime_paths import resolve_runtime_paths
 
     root = Path(args.root)
     config, config_error = try_load_config(root)
+    if getattr(args, "repair", False):
+        paths = resolve_runtime_paths()
+        paths.create()
+        conn = connect(paths.database)
+        init_db(conn)
+        try:
+            from .doctor_repair import run_diagnostic
+
+            mode = "repair_apply" if getattr(args, "apply", False) else "repair_dry_run"
+            result = run_diagnostic(conn, paths, config, mode=mode)
+        finally:
+            conn.close()
+        if getattr(args, "json", False):
+            warnings: list[str] = []
+            if config_error is not None:
+                warnings.append(str(config_error))
+            return emit_envelope(
+                envelope(
+                    command="doctor",
+                    ok=True,
+                    data=result,
+                    warnings=warnings,
+                )
+            )
+        print(f"Doctor repair ({result.get('mode')})")
+        print(f"status: {result.get('status')}")
+        for repair in result.get("repairs") or []:
+            print(
+                f"  [{repair.get('status')}] {repair.get('repair_key')}: "
+                f"{repair.get('path', '')}"
+            )
+        return 0
+
     readiness = [
         {
             "name": check.name,
@@ -217,6 +258,56 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         print(f"  [WARN] configuration: {config_error}")
     for check in check_loop_readiness(root, config):
         print(f"  [{check.status.upper()}] {check.name}: {check.message}")
+    return 0
+
+
+def _cmd_pause(args: argparse.Namespace) -> int:
+    from .admin_json import emit_envelope, envelope
+    from .db import connect, init_db
+    from .global_controls import pause_all
+    from .runtime_paths import resolve_runtime_paths
+
+    if not getattr(args, "all", False):
+        print("usage: coordinator pause --all --reason \"...\"", file=sys.stderr)
+        return 2
+    paths = resolve_runtime_paths()
+    paths.create()
+    conn = connect(paths.database)
+    init_db(conn)
+    try:
+        result = pause_all(conn, paths=paths, reason=getattr(args, "reason", "") or "")
+    finally:
+        conn.close()
+    if getattr(args, "json", False):
+        return emit_envelope(envelope(command="pause", ok=True, data=result))
+    print(f"Global pause enabled ({len(result.get('affected_projects') or [])} projects)")
+    return 0
+
+
+def _cmd_resume(args: argparse.Namespace) -> int:
+    from .admin_json import emit_envelope, envelope
+    from .db import connect, init_db
+    from .global_controls import resume_all
+    from .runtime_paths import resolve_runtime_paths
+
+    if not getattr(args, "all", False):
+        print("usage: coordinator resume --all", file=sys.stderr)
+        return 2
+    paths = resolve_runtime_paths()
+    paths.create()
+    conn = connect(paths.database)
+    init_db(conn)
+    try:
+        result = resume_all(
+            conn,
+            paths=paths,
+            include_manual=getattr(args, "include_manual", False),
+        )
+    finally:
+        conn.close()
+    if getattr(args, "json", False):
+        return emit_envelope(envelope(command="resume", ok=True, data=result))
+    print(f"Global pause cleared ({len(result.get('resumed_projects') or [])} projects resumed)")
     return 0
 
 
@@ -1216,6 +1307,8 @@ _ADMIN_COMMANDS = frozenset({
     "operator",
     "approve",
     "reject",
+    "pause",
+    "resume",
     "mock-provider",
 })
 
@@ -1366,6 +1459,17 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument("--loop", action="store_true")
     doctor = subparsers.add_parser("doctor")
     doctor.add_argument("--json", action="store_true")
+    doctor.add_argument("--repair", action="store_true")
+    doctor.add_argument("--dry-run", action="store_true")
+    doctor.add_argument("--apply", action="store_true")
+    pause = subparsers.add_parser("pause")
+    pause.add_argument("--all", action="store_true")
+    pause.add_argument("--reason", default="")
+    pause.add_argument("--json", action="store_true")
+    resume = subparsers.add_parser("resume")
+    resume.add_argument("--all", action="store_true")
+    resume.add_argument("--include-manual", action="store_true")
+    resume.add_argument("--json", action="store_true")
     subparsers.add_parser("digest")
     discover = subparsers.add_parser("discover")
     discover.add_argument("--once", action="store_true")
@@ -1529,6 +1633,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(cli_argv)
     if args.command == "doctor":
         return _cmd_doctor(args)
+    if args.command == "pause":
+        return _cmd_pause(args)
+    if args.command == "resume":
+        return _cmd_resume(args)
     if args.command == "digest":
         return _cmd_digest(args)
     if args.command == "discover":

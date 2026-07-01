@@ -265,6 +265,13 @@ class SupervisorMethods:
             "operator.approval.approve": self._handle_operator_approval_approve,
             "operator.approval.reject": self._handle_operator_approval_reject,
             "operator.channels": self._handle_operator_channels,
+            "operator.doctor": self._handle_operator_doctor,
+            "operator.repair": self._handle_operator_repair,
+            "operator.explain_failure": self._handle_operator_explain_failure,
+            "operator.health": self._handle_operator_health,
+            "operator.morning": self._handle_operator_morning,
+            "global.pause": self._handle_global_pause,
+            "global.resume": self._handle_global_resume,
             "events.subscribe": self._handle_events_subscribe,
             "events.replay": self._handle_events_replay,
             "events.v2.replay": self._handle_events_v2_replay,
@@ -753,7 +760,14 @@ class SupervisorMethods:
     def _handle_supervisor_dashboard(
         self, conn: sqlite3.Connection, request: RequestEnvelope
     ) -> ResponseEnvelope:
-        return self._ok(request, build_dashboard_payload(conn))
+        from .operator_dashboard import build_daily_dashboard
+
+        if self._paths is None:
+            return self._error(request, "runtime paths not configured")
+        return self._ok(
+            request,
+            build_daily_dashboard(conn, paths=self._paths, config=self._config),
+        )
 
     def _handle_project_logs(
         self, conn: sqlite3.Connection, request: RequestEnvelope
@@ -1626,6 +1640,125 @@ class SupervisorMethods:
         if not isinstance(project_id, str):
             return project_id
         return self._ok(request, build_channels_payload(conn, project_id=project_id))
+
+    def _handle_operator_doctor(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .doctor_repair import run_diagnostic
+
+        if self._paths is None:
+            return self._error(request, "runtime paths not configured")
+        dry_run = bool(request.params.get("dry_run", True))
+        mode = "repair_dry_run" if dry_run else "repair_apply"
+        if not dry_run and not bool(request.params.get("confirmed")):
+            return self._error(request, "repair apply requires confirmed=true")
+        project_id = request.project_id or None
+        payload = run_diagnostic(
+            conn,
+            self._paths,
+            self._config,
+            mode=mode,
+            project_id=project_id,
+        )
+        return self._ok(request, payload)
+
+    def _handle_operator_repair(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .doctor_repair import run_diagnostic
+
+        if self._paths is None:
+            return self._error(request, "runtime paths not configured")
+        dry_run = bool(request.params.get("dry_run", True))
+        apply = bool(request.params.get("apply")) and bool(request.params.get("confirmed"))
+        mode = "repair_apply" if apply else "repair_dry_run"
+        payload = run_diagnostic(
+            conn,
+            self._paths,
+            self._config,
+            mode=mode,
+            project_id=request.project_id or None,
+        )
+        payload["applied"] = mode == "repair_apply"
+        return self._ok(request, payload)
+
+    def _handle_operator_explain_failure(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .failure_explainer import explain_task_failure
+
+        task_id = request.params.get("task_id") or request.params.get("args")
+        if not isinstance(task_id, str) or not task_id.strip():
+            return self._error(request, "task_id is required")
+        try:
+            payload = explain_task_failure(conn, task_id=task_id.strip())
+        except ValueError as exc:
+            return self._error(request, str(exc))
+        return self._ok(request, payload)
+
+    def _handle_operator_health(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .agent_health import compute_agent_health, snapshot_agent_health
+
+        if self._config is None:
+            return self._error(request, "supervisor config is unavailable")
+        project_id = request.project_id or None
+        snapshot_agent_health(
+            conn,
+            config=self._config,
+            project_id=project_id,
+            commit=True,
+        )
+        agents = compute_agent_health(
+            conn,
+            config=self._config,
+            project_id=project_id,
+        )
+        return self._ok(request, {"agents": agents})
+
+    def _handle_operator_morning(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .morning_handoff import build_morning_handoff
+
+        if self._paths is None:
+            return self._error(request, "runtime paths not configured")
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        payload = build_morning_handoff(
+            conn,
+            paths=self._paths,
+            config=self._config,
+            project_id=project_id,
+        )
+        return self._ok(request, payload)
+
+    def _handle_global_pause(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .global_controls import pause_all
+
+        if self._paths is None:
+            return self._error(request, "runtime paths not configured")
+        reason = str(request.params.get("reason") or "")
+        payload = pause_all(conn, paths=self._paths, reason=reason)
+        return self._ok(request, payload)
+
+    def _handle_global_resume(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .global_controls import resume_all
+
+        if self._paths is None:
+            return self._error(request, "runtime paths not configured")
+        payload = resume_all(
+            conn,
+            paths=self._paths,
+            include_manual=bool(request.params.get("include_manual")),
+        )
+        return self._ok(request, payload)
 
     def _handle_operator_approval_create(
         self, conn: sqlite3.Connection, request: RequestEnvelope

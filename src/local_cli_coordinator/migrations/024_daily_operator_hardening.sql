@@ -68,3 +68,6 @@ CREATE TABLE IF NOT EXISTS morning_handoffs (
 
 CREATE INDEX IF NOT EXISTS idx_morning_handoffs_created
 ON morning_handoffs(scope, project_id, created_at);
+
+ALTER TABLE projects ADD COLUMN status TEXT NOT NULL DEFAULT 'active';
+ALTER TABLE projects ADD COLUMN pause_reason TEXT NOT NULL DEFAULT '';

@@ -515,9 +515,10 @@ class FakeSupervisor:
                     {"projects": [{"project_id": self.project_id, "goal_status": "active", "task_counts": {}, "active_workers": 0, "last_tick_at": self._started_at}]},
                 )
                 return
+            from local_cli_coordinator.config_runtime import load_config_for_paths
             from local_cli_coordinator.db import connect, init_db
+            from local_cli_coordinator.operator_dashboard import build_daily_dashboard
             from local_cli_coordinator.runtime_paths import RuntimePaths
-            from local_cli_coordinator.task_control import build_dashboard_payload
 
             paths = RuntimePaths(
                 Path(home) / "config",
@@ -527,7 +528,15 @@ class FakeSupervisor:
             db = connect(paths.database)
             try:
                 init_db(db)
-                self._respond(conn, request_id, build_dashboard_payload(db))
+                try:
+                    config = load_config_for_paths(paths)
+                except (OSError, ValueError):
+                    config = None
+                self._respond(
+                    conn,
+                    request_id,
+                    build_daily_dashboard(db, paths=paths, config=config),
+                )
             finally:
                 db.close()
             return

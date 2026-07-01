@@ -673,10 +673,25 @@ def _parse_approve_slash(
     return "project.task.approve", {"task_id": task_id}
 
 
+def _parse_why_slash(args_text: str) -> tuple[str, dict[str, Any]] | None:
+    target = args_text.strip().split()[0] if args_text.strip() else ""
+    if not target:
+        return None
+    if target.startswith("task-"):
+        return "operator.explain_failure", {"task_id": target}
+    return "project.why", {"path": target}
+
+
 def _parse_slash_command(text: str) -> tuple[str, str]:
     stripped = text.strip()
     lowered = stripped.lower()
-    for multi in ("/ci failures", "/pr update", "/notify test"):
+    for multi in (
+        "/ci failures",
+        "/pr update",
+        "/notify test",
+        "/pause all",
+        "/resume all",
+    ):
         if lowered.startswith(multi):
             return multi, stripped[len(multi) :].strip()
     parts = stripped.split(maxsplit=1)
@@ -1355,22 +1370,94 @@ def _handle_slash(
             user_reply=reply,
             intent="status_question",
         )
+    if command in {"/doctor", "/repair", "/health", "/morning"}:
+        method_params = {
+            "/doctor": ("operator.doctor", {"dry_run": True}),
+            "/repair": (
+                "operator.repair",
+                {"dry_run": "--apply" not in args_text, "apply": "--apply" in args_text},
+            ),
+            "/health": ("operator.health", {}),
+            "/morning": ("operator.morning", {}),
+        }[command]
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method=method_params[0],
+            params=method_params[1],
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        if command == "/health":
+            agents = result.get("agents") or []
+            reply = f"Agent health: {len(agents)} agent(s)"
+        elif command == "/morning":
+            reply = (
+                f"Morning handoff: completed={len(result.get('completed_tasks') or [])} "
+                f"failed={len(result.get('failed_tasks') or [])}"
+            )
+        else:
+            reply = f"{command} status={result.get('status', 'ok')}"
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=reply,
+            intent="status_question",
+        )
+    if command == "/pause all":
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="global.pause",
+            params={"reason": args_text or "operator pause"},
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=f"Global pause enabled ({len(result.get('affected_projects') or [])} projects)",
+            intent="status_question",
+        )
+    if command == "/resume all":
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="global.resume",
+            params={},
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=f"Global pause cleared ({len(result.get('resumed_projects') or [])} resumed)",
+            intent="status_question",
+        )
     if command in {"/brain", "/map", "/where", "/why", "/impact", "/context"}:
         args_text = text.strip()[len(command) :].strip()
-        method = {
-            "/brain": "project.brain",
-            "/map": "project.map",
-            "/where": "project.where",
-            "/why": "project.why",
-            "/impact": "project.impact",
-            "/context": "project.context",
-        }[command]
         params: dict[str, Any] = {}
+        if command == "/why":
+            parsed = _parse_why_slash(args_text)
+            if parsed is None:
+                return _error_outcome("invalid_args", "usage: /why <task-id|path>")
+            method, params = parsed
+        else:
+            method = {
+                "/brain": "project.brain",
+                "/map": "project.map",
+                "/where": "project.where",
+                "/impact": "project.impact",
+                "/context": "project.context",
+            }[command]
         if command == "/where":
             if not args_text:
                 return _error_outcome("invalid_args", "usage: /where <query>")
             params["query"] = args_text
-        elif command in {"/why", "/impact"}:
+        elif command == "/impact":
             if not args_text:
                 return _error_outcome("invalid_args", f"usage: {command} <path>")
             params["path"] = args_text
@@ -1398,7 +1485,16 @@ def _handle_slash(
         elif command == "/where":
             matches = result.get("matches") or []
             reply = f"Where: {len(matches)} match(es)"
-        elif command in {"/why", "/impact"}:
+        elif command == "/why":
+            if method == "operator.explain_failure":
+                reply = (
+                    f"Why {result.get('task_id')}: "
+                    f"{result.get('classified_reason')} — {result.get('next_action')}"
+                )
+            else:
+                related = result.get("related") or []
+                reply = f"Impact: {len(related)} related path(s)"
+        elif command == "/impact":
             related = result.get("related") or []
             reply = f"Impact: {len(related)} related path(s)"
         else:
@@ -1614,6 +1710,67 @@ def _rpc_slash(
             paths,
             project_id=project_id,
             method="supervisor.dashboard",
+            params={},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/doctor":
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="operator.doctor",
+            params={"dry_run": True},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/repair":
+        apply = "--apply" in args_text
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="operator.repair",
+            params={"dry_run": not apply, "apply": apply, "confirmed": apply},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/health":
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="operator.health",
+            params={},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/morning":
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="operator.morning",
+            params={},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/pause all":
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="global.pause",
+            params={"reason": args_text or "operator pause"},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/resume all":
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="global.resume",
             params={},
         )
         if envelope is not None:
@@ -1841,21 +1998,27 @@ def _rpc_slash(
             return envelope, 0 if envelope.ok else 1
         return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
     if command in {"/brain", "/map", "/where", "/why", "/impact", "/context"}:
-        method = {
-            "/brain": "project.brain",
-            "/map": "project.map",
-            "/where": "project.where",
-            "/why": "project.why",
-            "/impact": "project.impact",
-            "/context": "project.context",
-        }[command]
         params: dict[str, Any] = {}
+        if command == "/why":
+            parsed = _parse_why_slash(args_text)
+            if parsed is None:
+                outcome = _error_outcome("invalid_args", "usage: /why <task-id|path>")
+                return _outcome_to_rpc(outcome), 1
+            method, params = parsed
+        else:
+            method = {
+                "/brain": "project.brain",
+                "/map": "project.map",
+                "/where": "project.where",
+                "/impact": "project.impact",
+                "/context": "project.context",
+            }[command]
         if command == "/where":
             if not args_text:
                 outcome = _error_outcome("invalid_args", "usage: /where <query>")
                 return _outcome_to_rpc(outcome), 1
             params["query"] = args_text
-        elif command in {"/why", "/impact"}:
+        elif command == "/impact":
             if not args_text:
                 outcome = _error_outcome("invalid_args", f"usage: {command} <path>")
                 return _outcome_to_rpc(outcome), 1

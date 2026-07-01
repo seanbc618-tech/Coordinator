@@ -39611,7 +39611,13 @@ var init_slash = __esm({
       { name: "/brain", description: "Show project brain snapshot", method: "project.brain" },
       { name: "/map", description: "Show project structure map", method: "project.map" },
       { name: "/where", description: "Find where to make a change", method: "project.where" },
-      { name: "/why", description: "Explain a file path", method: "project.why" },
+      { name: "/why", description: "Explain task failure or file path", method: "operator.explain_failure" },
+      { name: "/doctor", description: "Run doctor repair dry-run", method: "operator.doctor" },
+      { name: "/repair", description: "Plan or apply safe repairs (dry-run default)", method: "operator.repair" },
+      { name: "/health", description: "Show agent health from durable state", method: "operator.health" },
+      { name: "/morning", description: "Show morning handoff summary", method: "operator.morning" },
+      { name: "/pause all", description: "Pause all projects globally", method: "global.pause", destructive: true },
+      { name: "/resume all", description: "Resume projects paused by global pause", method: "global.resume" },
       { name: "/impact", description: "Show impact of changing a file", method: "project.impact" },
       { name: "/context", description: "Show task context packet", method: "project.context" },
       { name: "/inbox", description: "Show operator inbox for this project", method: "operator.inbox" },
@@ -39642,7 +39648,13 @@ var init_slash = __esm({
       { name: "/help", description: "Show available commands", method: "local.help" },
       { name: "/quit", description: "Detach the TUI", method: "system.quit" }
     ];
-    MULTI_WORD_COMMANDS = ["/ci failures", "/pr update", "/notify test"];
+    MULTI_WORD_COMMANDS = [
+      "/ci failures",
+      "/pr update",
+      "/notify test",
+      "/pause all",
+      "/resume all"
+    ];
     HELP_COMMAND_NAMES = /* @__PURE__ */ new Set([
       "/status",
       "/goal",
@@ -40009,16 +40021,85 @@ function buildSlashRpc(commandName, method, args) {
       displayMethod: method
     };
   }
-  if (commandName === "/why" || commandName === "/impact") {
+  if (commandName === "/why") {
+    const target = args.trim().split(/\s+/)[0] ?? "";
+    if (!target) {
+      return { ok: false, error: "usage: /why <task-id|path>" };
+    }
+    if (target.startsWith("task-")) {
+      return {
+        ok: true,
+        method: "operator.explain_failure",
+        params: { task_id: target },
+        displayMethod: "operator.explain_failure"
+      };
+    }
+    return {
+      ok: true,
+      method: "project.why",
+      params: { path: target },
+      displayMethod: "project.why"
+    };
+  }
+  if (commandName === "/impact") {
     const pathArg = args.trim();
     if (!pathArg) {
-      return { ok: false, error: `usage: ${commandName} <path>` };
+      return { ok: false, error: "usage: /impact <path>" };
     }
     return {
       ok: true,
       method,
       params: { path: pathArg },
       displayMethod: method
+    };
+  }
+  if (commandName === "/doctor") {
+    return {
+      ok: true,
+      method: "operator.doctor",
+      params: { dry_run: true },
+      displayMethod: "operator.doctor"
+    };
+  }
+  if (commandName === "/repair") {
+    const apply = args.includes("--apply");
+    return {
+      ok: true,
+      method: "operator.repair",
+      params: { dry_run: !apply, apply, confirmed: apply },
+      displayMethod: "operator.repair"
+    };
+  }
+  if (commandName === "/health") {
+    return {
+      ok: true,
+      method: "operator.health",
+      params: {},
+      displayMethod: "operator.health"
+    };
+  }
+  if (commandName === "/morning") {
+    return {
+      ok: true,
+      method: "operator.morning",
+      params: {},
+      displayMethod: "operator.morning"
+    };
+  }
+  if (commandName === "/pause all") {
+    return {
+      ok: true,
+      method: "global.pause",
+      params: { reason: args.trim() || "operator pause" },
+      displayMethod: "global.pause"
+    };
+  }
+  if (commandName === "/resume all") {
+    return {
+      ok: true,
+      method: "global.resume",
+      params: {},
+      displayMethod: "global.resume"
     };
   }
   if (commandName === "/context") {
