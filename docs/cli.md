@@ -1,5 +1,9 @@
 # Coordinator CLI Prompt Modes
 
+> **Phase 12 merged** — this file now covers PR/CI self-healing
+> (`/heal`, `/stale`, `/ci failures`, `/reviews`, `/pr update`, `/rebase`),
+> PR health records, safe dry-run rebases, CI failure classification, review
+> comment ingest, and evidence refresh without erasing prior failure history.
 > **Phase 10 merged** — this file now covers the operator control tower
 > (`/inbox`, `/attention`, `/summary`, `/notify`, `/decision`, `/dismiss`),
 > durable operator items, notification policy with local sinks, and safe
@@ -85,6 +89,12 @@ coordinator --print -p "/prs"
 coordinator --print -p "/ci <task-id>"
 coordinator --print -p "/delivery <task-id>"
 coordinator --print -p "/merge-policy"
+coordinator --print -p "/heal"
+coordinator --print -p "/stale"
+coordinator --print -p "/ci failures"
+coordinator --print -p "/reviews"
+coordinator --print -p "/pr update <delivery-id>"
+coordinator --print -p "/rebase <delivery-id>"
 coordinator --print -p "/inbox"
 coordinator --print -p "/attention"
 coordinator --print -p "/summary"
@@ -445,6 +455,44 @@ coordinator --print -p "/merge-policy"
 For local testing, set `COORDINATOR_GH_EXECUTABLE` and `COORDINATOR_GH_PREFIX`
 to point at `tests/fixtures/fake_gh.py`. Production uses the real `gh` binary
 with argv-only invocation (no shell interpolation).
+
+## PR and CI self-healing (Phase 12)
+
+After Phase 9 opens a PR, Phase 12 keeps delivery records healthy: watch stale
+branches, classify CI failures, ingest review comments as untrusted evidence,
+refresh PR bodies, and run bounded repair cycles — without force-push by default.
+
+```bash
+coordinator project add <repo-path> --yes   # required before slash smoke on a fresh home
+coordinator --print -p "/heal"
+coordinator --print -p "/stale"
+coordinator --print -p "/ci failures"
+coordinator --print -p "/reviews"
+coordinator --print -p "/pr update <delivery-id>"
+coordinator --print -p "/rebase <delivery-id>"
+coordinator --print -p "/rebase <delivery-id> --apply"
+```
+
+| Slash | RPC | What you see |
+|---|---|---|
+| `/heal` | `project.pr.heal` | Bounded watch + CI repair cycle (dry-run by default) |
+| `/stale` | `project.pr.health` | PR health records where base advanced (`stale_only`) |
+| `/ci failures` | `project.pr.health` | PR health records with failed checks |
+| `/reviews` | `project.pr.reviews` | Unresolved review comments as evidence + operator items |
+| `/pr update <id>` | `project.pr.update_evidence` | Append latest evidence section (dry-run by default) |
+| `/rebase <id>` | `project.pr.rebase` | Dry-run rebase in isolated worktree |
+| `/rebase <id> --apply` | `project.pr.rebase` | Apply only when `allow_push` and review policy permit |
+
+- **Safe defaults:** `/rebase` is dry-run only; `--force` is rejected unless
+  `allow_force_update=true` in repo policy. Rebases never use `shell=True`.
+- **CI repair dedupe:** classified failures update `ci_failure_records` and create
+  at most one open `ci_repair` recovery per check name.
+- **Review comments** are quoted as external reviewer text — never executed or
+  injected into shell commands.
+- **Evidence refresh** appends a `## Coordinator Evidence (latest)` section and
+  preserves prior failure history in the PR body.
+- **Storage:** migration 022 adds `pr_health_records`, `pr_healing_attempts`, and
+  `ci_failure_records`.
 
 ## Operator control tower (Phase 10)
 

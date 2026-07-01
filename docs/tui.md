@@ -139,6 +139,12 @@ input starts with `/`.
 | `/ci <id>` | Poll GitHub CI for a task delivery (`project.ci`) |
 | `/delivery <id>` | Show delivery record for a task (`project.delivery`) |
 | `/merge-policy` | Show repo merge and push policy (`project.merge_policy`) |
+| `/heal` | Run bounded PR self-healing cycle (`project.pr.heal`, dry-run) |
+| `/stale` | List stale delivery PRs (`project.pr.health`) |
+| `/ci failures` | List PRs with failed CI (`project.pr.health`) |
+| `/reviews` | Ingest unresolved PR review comments (`project.pr.reviews`) |
+| `/pr update <id>` | Refresh PR evidence section (`project.pr.update_evidence`) |
+| `/rebase <id>` | Dry-run safe rebase (`project.pr.rebase`) |
 | `/inbox` | Show operator inbox (`operator.inbox`) |
 | `/attention` | Show items needing attention (`operator.attention`) |
 | `/summary` | Operator summary (`operator.summary`) |
@@ -152,6 +158,24 @@ input starts with `/`.
 | `/jump <target>` | Resolve a task, log, goal, worktree, or supervisor log path (hint only) |
 | `/open <target>` | Alias of `/jump` (does not launch an editor) |
 | `/logs` | Show recent logs |
+
+### PR and CI self-healing (Phase 12)
+
+`/heal`, `/stale`, `/ci failures`, `/reviews`, `/pr update`, and `/rebase` call
+Supervisor RPC methods. They watch delivery records for the **current project**
+and never force-push or merge without explicit policy.
+
+- `/heal` — dry-run bounded cycle: watch PR health, classify CI failures, skip
+  duplicate repair proposals.
+- `/stale` — list PRs whose base branch advanced locally or on GitHub.
+- `/ci failures` — list deliveries with failed check state.
+- `/reviews` — fetch unresolved review comments via `gh`, store as evidence,
+  create operator items and brain memories (untrusted text only).
+- `/pr update <delivery-id>` — dry-run evidence refresh; prior failure sections
+  remain in the PR body.
+- `/rebase <delivery-id>` — dry-run rebase in a detached worktree; conflicts
+  leave the main worktree clean. `--apply` requires `allow_push` and passes
+  human-review gates.
 
 ### Operator control tower (Phase 10)
 

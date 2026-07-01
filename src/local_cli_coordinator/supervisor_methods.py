@@ -249,6 +249,11 @@ class SupervisorMethods:
             "project.why": self._handle_project_why,
             "project.impact": self._handle_project_impact,
             "project.context": self._handle_project_context,
+            "project.pr.health": self._handle_project_pr_health,
+            "project.pr.heal": self._handle_project_pr_heal,
+            "project.pr.rebase": self._handle_project_pr_rebase,
+            "project.pr.reviews": self._handle_project_pr_reviews,
+            "project.pr.update_evidence": self._handle_project_pr_update_evidence,
             "operator.inbox": self._handle_operator_inbox,
             "operator.attention": self._handle_operator_attention,
             "operator.summary": self._handle_operator_summary,
@@ -1288,6 +1293,171 @@ class SupervisorMethods:
         return self._ok(
             request,
             {"project_id": project_id, "packet_id": packet_id, "packet": packet},
+        )
+
+    def _handle_project_pr_health(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .pr_ci_healing import build_pr_health_payload
+        from .pr_watcher import watch_project_pr_health
+
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        stale_only = bool(request.params.get("stale_only"))
+        ci_failed_only = bool(request.params.get("ci_failed_only"))
+        refresh = request.params.get("refresh", True)
+        if refresh:
+            gh_executable, gh_prefix, gh_env = self._gh_delivery_settings()
+            watch_project_pr_health(
+                conn,
+                config=self._config,
+                project_id=project_id,
+                gh_executable=gh_executable,
+                gh_prefix=gh_prefix,
+                env=gh_env or None,
+                stale_only=False,
+            )
+        payload = build_pr_health_payload(
+            conn,
+            project_id=project_id,
+            stale_only=stale_only,
+            ci_failed_only=ci_failed_only,
+        )
+        return self._ok(request, payload)
+
+    def _handle_project_pr_heal(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .pr_ci_healing import run_pr_heal_cycle
+
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        dry_run = bool(request.params.get("dry_run", True))
+        gh_executable, gh_prefix, gh_env = self._gh_delivery_settings()
+        payload = run_pr_heal_cycle(
+            conn,
+            config=self._config,
+            project_id=project_id,
+            gh_executable=gh_executable,
+            gh_prefix=gh_prefix,
+            env=gh_env or None,
+            dry_run=dry_run,
+        )
+        return self._ok(request, payload)
+
+    def _handle_project_pr_rebase(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .rebase_controller import apply_rebase, dry_run_rebase
+
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        raw_id = request.params.get("delivery_id") or request.params.get("args")
+        try:
+            delivery_id = int(str(raw_id).strip().split()[0])
+        except (TypeError, ValueError):
+            return self._error(request, "delivery_id is required")
+        apply_flag = bool(request.params.get("apply"))
+        force = bool(request.params.get("force"))
+        dry_run = bool(request.params.get("dry_run", not apply_flag))
+        repo_root = self._project_repo_root(conn, project_id)
+        worktrees_root = repo_root / ".coordinator" / "rebase-worktrees"
+        if dry_run and not apply_flag:
+            result = dry_run_rebase(
+                conn,
+                config=self._config,
+                project_id=project_id,
+                delivery_id=delivery_id,
+                worktrees_root=worktrees_root,
+            )
+        else:
+            result = apply_rebase(
+                conn,
+                config=self._config,
+                project_id=project_id,
+                delivery_id=delivery_id,
+                worktrees_root=worktrees_root,
+                force=force,
+            )
+        return self._ok(
+            request,
+            {
+                "project_id": project_id,
+                "delivery_id": delivery_id,
+                "status": result.status,
+                "action": result.action,
+                "error": result.error,
+            },
+        )
+
+    def _handle_project_pr_reviews(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .pr_ci_healing import build_pr_reviews_payload
+
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        delivery_id = request.params.get("delivery_id")
+        parsed_delivery: int | None = None
+        if delivery_id is not None:
+            try:
+                parsed_delivery = int(delivery_id)
+            except (TypeError, ValueError):
+                return self._error(request, "delivery_id must be an integer")
+        gh_executable, gh_prefix, gh_env = self._gh_delivery_settings()
+        payload = build_pr_reviews_payload(
+            conn,
+            project_id=project_id,
+            config=self._config,
+            gh_executable=gh_executable,
+            gh_prefix=gh_prefix,
+            env=gh_env or None,
+            delivery_id=parsed_delivery,
+        )
+        return self._ok(request, payload)
+
+    def _handle_project_pr_update_evidence(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .pr_evidence_update import update_pr_evidence
+
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        raw_id = request.params.get("delivery_id") or request.params.get("args")
+        try:
+            delivery_id = int(str(raw_id).strip().split()[0])
+        except (TypeError, ValueError):
+            return self._error(request, "delivery_id is required")
+        dry_run = bool(request.params.get("dry_run", True))
+        sections = request.params.get("sections") or {"ci": "observed"}
+        if not isinstance(sections, dict):
+            sections = {"ci": "observed"}
+        gh_executable, gh_prefix, gh_env = self._gh_delivery_settings()
+        result = update_pr_evidence(
+            conn,
+            config=self._config,
+            project_id=project_id,
+            delivery_id=delivery_id,
+            sections=sections,
+            gh_executable=gh_executable,
+            gh_prefix=gh_prefix,
+            env=gh_env or None,
+            dry_run=dry_run,
+        )
+        return self._ok(
+            request,
+            {
+                "project_id": project_id,
+                "delivery_id": delivery_id,
+                "updated": result.updated,
+                "dry_run": result.dry_run,
+                "body": result.body,
+            },
         )
 
     def _handle_operator_inbox(

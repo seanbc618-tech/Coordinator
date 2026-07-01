@@ -250,6 +250,37 @@ export function formatSlashResponse(
       ].join('\n')
     }
 
+    case 'project.pr.health': {
+      const records = (result.records as Array<Record<string, unknown>> | undefined) ?? []
+      if (!records.length) {
+        return 'PR health — none'
+      }
+      return [
+        'PR health:',
+        ...records.map(
+          r => `- delivery ${r.delivery_id} #${r.pr_number} [${r.status}] stale=${r.stale} ci=${r.ci_state}`,
+        ),
+      ].join('\n')
+    }
+
+    case 'project.pr.heal': {
+      const attempts = (result.attempts as Array<Record<string, unknown>> | undefined) ?? []
+      return `Heal — ${attempts.length} attempt(s) dry_run=${result.dry_run ?? true}`
+    }
+
+    case 'project.pr.rebase': {
+      return `Rebase — delivery ${result.delivery_id}: ${result.status} (${result.action})`
+    }
+
+    case 'project.pr.reviews': {
+      const reviews = (result.reviews as Array<Record<string, unknown>> | undefined) ?? []
+      return `Reviews — ${reviews.length} delivery set(s)`
+    }
+
+    case 'project.pr.update_evidence': {
+      return `PR evidence — delivery ${result.delivery_id}: updated=${result.updated} dry_run=${result.dry_run ?? true}`
+    }
+
     case 'project.ci': {
       return `CI — ${result.task_id}: ${result.ci_state ?? 'unknown'}`
     }

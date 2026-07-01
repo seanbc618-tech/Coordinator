@@ -286,6 +286,69 @@ export function buildSlashRpc(
     }
   }
 
+  if (commandName === '/heal') {
+    return {
+      ok: true,
+      method: 'project.pr.heal',
+      params: { dry_run: true },
+      displayMethod: 'project.pr.heal',
+    }
+  }
+
+  if (commandName === '/stale') {
+    return {
+      ok: true,
+      method: 'project.pr.health',
+      params: { stale_only: true },
+      displayMethod: 'project.pr.health',
+    }
+  }
+
+  if (commandName === '/ci failures') {
+    return {
+      ok: true,
+      method: 'project.pr.health',
+      params: { ci_failed_only: true },
+      displayMethod: 'project.pr.health',
+    }
+  }
+
+  if (commandName === '/reviews') {
+    return {
+      ok: true,
+      method: 'project.pr.reviews',
+      params: {},
+      displayMethod: 'project.pr.reviews',
+    }
+  }
+
+  if (commandName === '/pr update') {
+    const deliveryId = args.trim().split(/\s+/)[0]
+    if (!deliveryId) {
+      return { ok: false, error: 'usage: /pr update <delivery-id>' }
+    }
+    return {
+      ok: true,
+      method: 'project.pr.update_evidence',
+      params: { delivery_id: deliveryId, dry_run: true },
+      displayMethod: 'project.pr.update_evidence',
+    }
+  }
+
+  if (commandName === '/rebase') {
+    const apply = args.includes('--apply')
+    const deliveryId = args.replace('--apply', '').trim().split(/\s+/)[0]
+    if (!deliveryId) {
+      return { ok: false, error: 'usage: /rebase <delivery-id> [--apply]' }
+    }
+    return {
+      ok: true,
+      method: 'project.pr.rebase',
+      params: { delivery_id: deliveryId, dry_run: !apply, apply },
+      displayMethod: 'project.pr.rebase',
+    }
+  }
+
   if (
     method === 'project.task.approve'
     || method === 'project.task.retry'

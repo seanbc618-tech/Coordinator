@@ -39349,6 +39349,15 @@ function parse(input) {
   if (!trimmed.startsWith("/")) {
     return { type: "message", text: trimmed };
   }
+  const lowered = trimmed.toLowerCase();
+  for (const multi of MULTI_WORD_COMMANDS) {
+    if (lowered.startsWith(multi)) {
+      const command2 = SLASH_COMMANDS.find((c) => c.name === multi);
+      if (command2) {
+        return { type: "command", command: command2, args: trimmed.slice(multi.length).trim() };
+      }
+    }
+  }
   const spaceIdx = trimmed.indexOf(" ");
   const cmdPart = spaceIdx >= 0 ? trimmed.slice(0, spaceIdx) : trimmed;
   const args = spaceIdx >= 0 ? trimmed.slice(spaceIdx + 1).trim() : "";
@@ -39418,6 +39427,30 @@ function formatHelpText() {
     }
     if (cmd.name === "/prs") {
       lines.push("/prs - List project delivery PR records");
+      continue;
+    }
+    if (cmd.name === "/heal") {
+      lines.push("/heal - Run bounded PR self-healing cycle (dry-run)");
+      continue;
+    }
+    if (cmd.name === "/stale") {
+      lines.push("/stale - List stale delivery PRs");
+      continue;
+    }
+    if (cmd.name === "/ci failures") {
+      lines.push("/ci failures - List PRs with failed CI");
+      continue;
+    }
+    if (cmd.name === "/reviews") {
+      lines.push("/reviews - Ingest unresolved PR review comments");
+      continue;
+    }
+    if (cmd.name === "/pr update") {
+      lines.push("/pr update <delivery-id> - Refresh PR evidence (dry-run)");
+      continue;
+    }
+    if (cmd.name === "/rebase") {
+      lines.push("/rebase <delivery-id> [--apply] - Dry-run or apply safe rebase");
       continue;
     }
     if (cmd.name === "/ci") {
@@ -39529,7 +39562,7 @@ function completePartial(partial) {
   const lower = partial.toLowerCase();
   return SLASH_COMMANDS.filter((c) => c.name.startsWith(lower)).map((c) => c.name);
 }
-var SLASH_COMMANDS, HELP_COMMAND_NAMES;
+var SLASH_COMMANDS, MULTI_WORD_COMMANDS, HELP_COMMAND_NAMES;
 var init_slash = __esm({
   "src/slash.ts"() {
     "use strict";
@@ -39549,6 +39582,12 @@ var init_slash = __esm({
       { name: "/merge-ready", description: "Check merge readiness under repo policy", method: "project.merge_ready" },
       { name: "/deliver", description: "Deliver task branch to GitHub under policy", method: "project.deliver" },
       { name: "/prs", description: "List project delivery PR records", method: "project.prs" },
+      { name: "/heal", description: "Run bounded PR self-healing cycle (dry-run)", method: "project.pr.heal" },
+      { name: "/stale", description: "List stale delivery PRs", method: "project.pr.health" },
+      { name: "/ci failures", description: "List PRs with failed CI", method: "project.pr.health" },
+      { name: "/reviews", description: "Ingest unresolved PR review comments", method: "project.pr.reviews" },
+      { name: "/pr update", description: "Refresh PR evidence section (dry-run)", method: "project.pr.update_evidence" },
+      { name: "/rebase", description: "Dry-run rebase for a delivery PR", method: "project.pr.rebase" },
       { name: "/ci", description: "Poll GitHub CI for a task delivery", method: "project.ci" },
       { name: "/delivery", description: "Show delivery record for a task", method: "project.delivery" },
       { name: "/merge-policy", description: "Show repo merge and push policy", method: "project.merge_policy" },
@@ -39582,6 +39621,7 @@ var init_slash = __esm({
       { name: "/help", description: "Show available commands", method: "local.help" },
       { name: "/quit", description: "Detach the TUI", method: "system.quit" }
     ];
+    MULTI_WORD_COMMANDS = ["/ci failures", "/pr update"];
     HELP_COMMAND_NAMES = /* @__PURE__ */ new Set([
       "/status",
       "/goal",
@@ -39597,6 +39637,12 @@ var init_slash = __esm({
       "/merge-ready",
       "/deliver",
       "/prs",
+      "/heal",
+      "/stale",
+      "/ci failures",
+      "/reviews",
+      "/pr update",
+      "/rebase",
       "/ci",
       "/delivery",
       "/merge-policy",
@@ -40082,6 +40128,63 @@ function buildSlashRpc(commandName, method, args) {
       displayMethod: "project.loop.status"
     };
   }
+  if (commandName === "/heal") {
+    return {
+      ok: true,
+      method: "project.pr.heal",
+      params: { dry_run: true },
+      displayMethod: "project.pr.heal"
+    };
+  }
+  if (commandName === "/stale") {
+    return {
+      ok: true,
+      method: "project.pr.health",
+      params: { stale_only: true },
+      displayMethod: "project.pr.health"
+    };
+  }
+  if (commandName === "/ci failures") {
+    return {
+      ok: true,
+      method: "project.pr.health",
+      params: { ci_failed_only: true },
+      displayMethod: "project.pr.health"
+    };
+  }
+  if (commandName === "/reviews") {
+    return {
+      ok: true,
+      method: "project.pr.reviews",
+      params: {},
+      displayMethod: "project.pr.reviews"
+    };
+  }
+  if (commandName === "/pr update") {
+    const deliveryId = args.trim().split(/\s+/)[0];
+    if (!deliveryId) {
+      return { ok: false, error: "usage: /pr update <delivery-id>" };
+    }
+    return {
+      ok: true,
+      method: "project.pr.update_evidence",
+      params: { delivery_id: deliveryId, dry_run: true },
+      displayMethod: "project.pr.update_evidence"
+    };
+  }
+  if (commandName === "/rebase") {
+    const apply = args.includes("--apply");
+    const deliveryId = args.replace("--apply", "").trim().split(/\s+/)[0];
+    if (!deliveryId) {
+      return { ok: false, error: "usage: /rebase <delivery-id> [--apply]" };
+    }
+    return {
+      ok: true,
+      method: "project.pr.rebase",
+      params: { delivery_id: deliveryId, dry_run: !apply, apply },
+      displayMethod: "project.pr.rebase"
+    };
+  }
   if (method === "project.task.approve" || method === "project.task.retry" || method === "project.task.cancel") {
     const taskId = args.trim();
     if (!taskId) {
@@ -40352,6 +40455,32 @@ ${tail}`;
           (p) => `- ${p.task_id ?? "?"} #${p.pr_number ?? "?"} [${p.status}] ${p.last_check_state ?? ""}`
         )
       ].join("\n");
+    }
+    case "project.pr.health": {
+      const records = result.records ?? [];
+      if (!records.length) {
+        return "PR health \u2014 none";
+      }
+      return [
+        "PR health:",
+        ...records.map(
+          (r) => `- delivery ${r.delivery_id} #${r.pr_number} [${r.status}] stale=${r.stale} ci=${r.ci_state}`
+        )
+      ].join("\n");
+    }
+    case "project.pr.heal": {
+      const attempts = result.attempts ?? [];
+      return `Heal \u2014 ${attempts.length} attempt(s) dry_run=${result.dry_run ?? true}`;
+    }
+    case "project.pr.rebase": {
+      return `Rebase \u2014 delivery ${result.delivery_id}: ${result.status} (${result.action})`;
+    }
+    case "project.pr.reviews": {
+      const reviews = result.reviews ?? [];
+      return `Reviews \u2014 ${reviews.length} delivery set(s)`;
+    }
+    case "project.pr.update_evidence": {
+      return `PR evidence \u2014 delivery ${result.delivery_id}: updated=${result.updated} dry_run=${result.dry_run ?? true}`;
     }
     case "project.ci": {
       return `CI \u2014 ${result.task_id}: ${result.ci_state ?? "unknown"}`;

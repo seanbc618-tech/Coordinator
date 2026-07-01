@@ -644,6 +644,43 @@ coordinator --print -p "/recoveries"
 Fix the failing checks on GitHub, then `/retry` or admit the recovery backlog
 item. Coordinator does not infinite-retry CI automatically.
 
+Phase 12 adds targeted self-healing commands:
+
+```bash
+coordinator project add <repo-path> --yes
+coordinator --print -p "/ci failures"
+coordinator --print -p "/heal"
+```
+
+`/heal` runs a bounded dry-run cycle (watch + classify + deduped repair).
+Use `/recoveries` to admit pending `ci_repair` proposals.
+
+## `/stale` lists a delivery PR
+
+**Symptom:** `/stale` shows a PR health record with `stale=true`.
+
+**Cause:** The base branch advanced after the delivery branch was created.
+
+**Fix:**
+
+```bash
+coordinator --print -p "/rebase <delivery-id>"
+coordinator --print -p "/rebase <delivery-id> --apply"
+```
+
+Dry-run is the default. Apply requires `allow_push=true` and passes human-review
+policy. Force rebase is blocked unless `allow_force_update=true`.
+
+## `/rebase` blocked or failed
+
+**Symptom:** `/rebase <delivery-id>` returns `status: blocked` or `failed`.
+
+**Cause:** `allow_push=false`, human review required, merge conflicts, or missing
+branch.
+
+**Fix:** Check `/merge-policy`, resolve conflicts locally, then retry dry-run.
+Conflicts record healing evidence without leaving a dirty main worktree.
+
 ## `/recoveries` shows nothing after a failed task
 
 **Symptom:** A task failed but `/recoveries` reports none pending.

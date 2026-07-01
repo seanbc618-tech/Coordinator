@@ -28,6 +28,26 @@ class PrCheck:
 
 
 @dataclass(frozen=True)
+class PrReviewComment:
+    comment_id: int
+    author: str
+    body: str
+    path: str
+    line: int | None
+    is_resolved: bool
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "id": self.comment_id,
+            "author": self.author,
+            "body": self.body,
+            "path": self.path,
+            "line": self.line,
+            "isResolved": self.is_resolved,
+        }
+
+
+@dataclass(frozen=True)
 class GhCommandResult:
     returncode: int
     stdout: str
@@ -111,6 +131,44 @@ class GitHubCli:
 
     def pr_edit(self, number: int, *, body: str) -> GhCommandResult:
         return self._run("pr", "edit", str(number), "--body", body)
+
+    def pr_body(self, number: int) -> str | None:
+        result = self._run("pr", "view", str(number), "--json", "body")
+        if result.returncode != 0:
+            return None
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return None
+        body = payload.get("body")
+        return str(body) if body is not None else ""
+
+    def pr_review_comments(self, number: int) -> list[PrReviewComment]:
+        result = self._run("pr", "view", str(number), "--json", "comments")
+        if result.returncode != 0:
+            return []
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return []
+        raw_comments = payload.get("comments")
+        if not isinstance(raw_comments, list):
+            return []
+        comments: list[PrReviewComment] = []
+        for item in raw_comments:
+            if not isinstance(item, dict):
+                continue
+            comments.append(
+                PrReviewComment(
+                    comment_id=int(item.get("id", 0)),
+                    author=str(item.get("author", "reviewer")),
+                    body=str(item.get("body", "")),
+                    path=str(item.get("path", "")),
+                    line=int(item["line"]) if item.get("line") is not None else None,
+                    is_resolved=bool(item.get("isResolved", False)),
+                )
+            )
+        return comments
 
     def pr_checks(self, number: int) -> list[PrCheck]:
         result = self._run("pr", "checks", str(number), "--json", "name,state,bucket")

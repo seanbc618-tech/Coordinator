@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic fake ``gh`` for Phase 9 tests. Never calls GitHub."""
+"""Deterministic fake ``gh`` for Phase 9+ tests. Never calls GitHub."""
 
 from __future__ import annotations
 
@@ -52,6 +52,28 @@ def _emit_error(message: str, *, exit_code: int = 1) -> int:
     return exit_code
 
 
+def _pr_number_from_args(pr_args: list[str], scenario: dict) -> int:
+    for token in pr_args[1:]:
+        if token.isdigit():
+            return int(token)
+    return int(scenario.get("pr_number", 42))
+
+
+def _json_fields(pr_args: list[str]) -> list[str]:
+    if "--json" not in pr_args:
+        return []
+    index = pr_args.index("--json")
+    if index + 1 >= len(pr_args):
+        return []
+    return [field.strip() for field in pr_args[index + 1].split(",") if field.strip()]
+
+
+def _filter_payload(payload: dict, fields: list[str]) -> dict:
+    if not fields:
+        return payload
+    return {key: payload[key] for key in fields if key in payload}
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(argv if argv is not None else sys.argv[1:])
     _append_log(" ".join(args))
@@ -73,8 +95,8 @@ def main(argv: list[str] | None = None) -> int:
 
     sub = pr_args[0]
     if sub == "view":
-        number = scenario.get("pr_number", 42)
-        payload = scenario.get(
+        number = _pr_number_from_args(pr_args, scenario)
+        base_payload = scenario.get(
             "pr_view",
             {
                 "number": number,
@@ -85,7 +107,12 @@ def main(argv: list[str] | None = None) -> int:
                 "baseRefName": scenario.get("base_ref", "main"),
             },
         )
-        return _emit(payload)
+        payload = dict(base_payload)
+        payload.setdefault("number", number)
+        payload["body"] = scenario.get("pr_body", payload.get("body", ""))
+        payload["comments"] = scenario.get("review_comments", payload.get("comments", []))
+        fields = _json_fields(pr_args)
+        return _emit(_filter_payload(payload, fields) if fields else payload)
 
     if sub == "create":
         number = int(scenario.get("create_number", scenario.get("pr_number", 99)))

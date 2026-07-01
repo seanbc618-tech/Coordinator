@@ -654,12 +654,24 @@ def _parse_loop_slash(text: str) -> tuple[str, dict[str, Any]]:
     return "project.loop.status", {}
 
 
+def _parse_slash_command(text: str) -> tuple[str, str]:
+    stripped = text.strip()
+    lowered = stripped.lower()
+    for multi in ("/ci failures", "/pr update"):
+        if lowered.startswith(multi):
+            return multi, stripped[len(multi) :].strip()
+    parts = stripped.split(maxsplit=1)
+    command = parts[0].lower()
+    args_text = parts[1] if len(parts) > 1 else ""
+    return command, args_text
+
+
 def _handle_slash(
     paths: RuntimePaths,
     project_id: str,
     text: str,
 ) -> PromptOutcome:
-    command = text.strip().split()[0].lower()
+    command, args_text = _parse_slash_command(text)
     if command == "/dashboard":
         result, err, _envelope = _send_rpc(
             paths,
@@ -1027,6 +1039,123 @@ def _handle_slash(
             user_reply=reply,
             intent="status_question",
         )
+    if command == "/heal":
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="project.pr.heal",
+            params={"dry_run": True},
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        attempts = result.get("attempts") or []
+        reply = f"Heal: {len(attempts)} bounded attempt(s) (dry-run)"
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=reply,
+            intent="status_question",
+        )
+    if command == "/stale":
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="project.pr.health",
+            params={"stale_only": True},
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        records = result.get("records") or []
+        reply = f"Stale PRs: {len(records)} record(s)"
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=reply,
+            intent="status_question",
+        )
+    if command == "/ci failures":
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="project.pr.health",
+            params={"ci_failed_only": True},
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        records = result.get("records") or []
+        reply = f"CI failures: {len(records)} record(s)"
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=reply,
+            intent="status_question",
+        )
+    if command == "/reviews":
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="project.pr.reviews",
+            params={},
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        reviews = result.get("reviews") or []
+        reply = f"Reviews: {len(reviews)} delivery review set(s)"
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=reply,
+            intent="status_question",
+        )
+    if command == "/pr update":
+        if not args_text:
+            return _error_outcome("invalid_args", "usage: /pr update <delivery-id>")
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="project.pr.update_evidence",
+            params={"delivery_id": args_text.split()[0], "dry_run": True},
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        updated = result.get("updated")
+        reply = f"PR evidence update: updated={updated} (dry-run)"
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=reply,
+            intent="status_question",
+        )
+    if command == "/rebase":
+        if not args_text:
+            return _error_outcome("invalid_args", "usage: /rebase <delivery-id> [--apply]")
+        apply = "--apply" in args_text
+        delivery_id = args_text.replace("--apply", "").strip().split()[0]
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="project.pr.rebase",
+            params={
+                "delivery_id": delivery_id,
+                "dry_run": not apply,
+                "apply": apply,
+            },
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        reply = f"Rebase: status={result.get('status')} action={result.get('action')}"
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=reply,
+            intent="status_question",
+        )
     if command == "/merge-policy":
         result, err, _envelope = _send_rpc(
             paths,
@@ -1371,7 +1500,7 @@ def _rpc_slash(
     project_id: str,
     text: str,
 ) -> tuple[ResponseEnvelope, int]:
-    command = text.strip().split()[0].lower()
+    command, args_text = _parse_slash_command(text)
     if command == "/dashboard":
         _, err, envelope = _send_rpc(
             paths,
@@ -1521,6 +1650,78 @@ def _rpc_slash(
         if envelope is not None:
             return envelope, 0 if envelope.ok else 1
         return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/heal":
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="project.pr.heal",
+            params={"dry_run": True},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/stale":
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="project.pr.health",
+            params={"stale_only": True},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/ci failures":
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="project.pr.health",
+            params={"ci_failed_only": True},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/reviews":
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="project.pr.reviews",
+            params={},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/pr update":
+        if not args_text:
+            outcome = _error_outcome("invalid_args", "usage: /pr update <delivery-id>")
+            return _outcome_to_rpc(outcome), 1
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="project.pr.update_evidence",
+            params={"delivery_id": args_text.split()[0], "dry_run": True},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/rebase":
+        if not args_text:
+            outcome = _error_outcome("invalid_args", "usage: /rebase <delivery-id> [--apply]")
+            return _outcome_to_rpc(outcome), 1
+        apply = "--apply" in args_text
+        delivery_id = args_text.replace("--apply", "").strip().split()[0]
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="project.pr.rebase",
+            params={
+                "delivery_id": delivery_id,
+                "dry_run": not apply,
+                "apply": apply,
+            },
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
     if command == "/merge-policy":
         _, err, envelope = _send_rpc(
             paths,
@@ -1532,7 +1733,6 @@ def _rpc_slash(
             return envelope, 0 if envelope.ok else 1
         return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
     if command in {"/brain", "/map", "/where", "/why", "/impact", "/context"}:
-        args_text = text.strip()[len(command) :].strip()
         method = {
             "/brain": "project.brain",
             "/map": "project.map",

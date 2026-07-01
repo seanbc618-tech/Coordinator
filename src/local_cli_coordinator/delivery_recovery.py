@@ -5,12 +5,15 @@ from __future__ import annotations
 import json
 import sqlite3
 
+from .ci_failure_classifier import ClassifiedFailure, summarize_check_failure
 from .github_delivery import get_delivery_record
+from .pr_health import upsert_ci_failure_record
 from .recovery import compute_recovery_dedupe_key
 
 
-def _delivery_recovery_dedupe_key(delivery_id: int) -> str:
-    return compute_recovery_dedupe_key(f"delivery-{delivery_id}", "ci_repair")
+def _delivery_recovery_dedupe_key(delivery_id: int, check_name: str = "") -> str:
+    suffix = f":{check_name}" if check_name else ""
+    return compute_recovery_dedupe_key(f"delivery-{delivery_id}{suffix}", "ci_repair")
 
 
 def _open_delivery_recovery_exists(
@@ -86,6 +89,88 @@ def propose_recovery_for_ci_failure(
         return None
 
     proposal_id = int(cursor.lastrowid)
+    if commit:
+        conn.commit()
+    return proposal_id
+
+
+def propose_recovery_for_classified_ci_failure(
+    conn: sqlite3.Connection,
+    *,
+    project_id: str,
+    delivery_id: int,
+    classified: ClassifiedFailure,
+    commit: bool = True,
+) -> int | None:
+    record = get_delivery_record(conn, delivery_id=delivery_id)
+    if record is None or record.project_id != project_id:
+        return None
+    if record.task_id is None:
+        return None
+
+    failure_record = upsert_ci_failure_record(
+        conn,
+        project_id=project_id,
+        delivery_id=delivery_id,
+        check_name=classified.check_name,
+        status=classified.state,
+        conclusion=classified.bucket,
+        failure_class=classified.failure_class,
+        summary=classified.summary,
+        evidence={"log_excerpt": classified.log_excerpt},
+        commit=False,
+    )
+    dedupe_key = _delivery_recovery_dedupe_key(delivery_id, classified.check_name)
+    if _open_delivery_recovery_exists(
+        conn,
+        project_id=project_id,
+        task_id=record.task_id,
+        dedupe_key=dedupe_key,
+    ):
+        return None
+
+    verify_commands = ["true"]
+    title = f"CI recovery ({classified.failure_class}): {classified.check_name}"
+    rationale = (
+        f"Bounded recovery for PR {record.pr_number} delivery {delivery_id}. "
+        f"{summarize_check_failure(classified)} "
+        "Scope: fix only the failing check."
+    )
+    try:
+        cursor = conn.execute(
+            """
+            insert into task_recovery_proposals(
+                project_id, task_id, attempt_id, proposal_type, status,
+                title, rationale, verification_commands_json, dedupe_key,
+                created_at
+            ) values (?, ?, NULL, 'ci_repair', 'pending', ?, ?, ?, ?, datetime('now'))
+            """,
+            (
+                project_id,
+                record.task_id,
+                title,
+                rationale,
+                json.dumps(verify_commands),
+                dedupe_key,
+            ),
+        )
+    except sqlite3.IntegrityError:
+        return None
+
+    proposal_id = int(cursor.lastrowid)
+    upsert_ci_failure_record(
+        conn,
+        project_id=project_id,
+        delivery_id=delivery_id,
+        check_name=classified.check_name,
+        status=classified.state,
+        conclusion=classified.bucket,
+        failure_class=classified.failure_class,
+        summary=classified.summary,
+        evidence={"log_excerpt": classified.log_excerpt},
+        recovery_task_id=str(proposal_id),
+        commit=False,
+    )
     if commit:
         conn.commit()
     return proposal_id
