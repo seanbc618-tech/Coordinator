@@ -43,6 +43,24 @@ def requires_external_approval(action_method: str) -> bool:
     return action_method in DESTRUCTIVE_METHODS | POLICY_GATED_METHODS
 
 
+def forecast_method_approval(
+    action_method: str,
+    *,
+    project_id: str | None = None,
+    task_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Return a read-only approval forecast for a policy-gated method."""
+    if not requires_external_approval(action_method):
+        return None
+    return {
+        "project_id": project_id,
+        "task_id": task_id,
+        "action_method": action_method,
+        "reason": "external approval required before execution",
+        "forecast": True,
+    }
+
+
 def create_approval_from_operator_item(
     conn: sqlite3.Connection,
     *,

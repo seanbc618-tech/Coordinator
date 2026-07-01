@@ -494,3 +494,56 @@ def build_evaluations_payload(
             }
         )
     return {"project_id": project_id, "evaluations": evaluations}
+
+
+def run_simulation(
+    conn: sqlite3.Connection,
+    *,
+    config: CoordinatorConfig,
+    paths: RuntimePaths,
+    scope: str = "global",
+    project_id: str | None = None,
+    horizon_hours: float = 8.0,
+    paused_projects: set[str] | None = None,
+    stopped_projects: set[str] | None = None,
+) -> dict[str, Any]:
+    """Run a dry-run autonomy simulation and persist only forecast tables."""
+    from .autonomy_simulator import run_autonomy_simulation
+
+    return run_autonomy_simulation(
+        conn,
+        config=config,
+        paths=paths,
+        scope=scope,
+        project_id=project_id,
+        horizon_hours=horizon_hours,
+        paused_projects=paused_projects,
+        stopped_projects=stopped_projects,
+        commit=True,
+    )
+
+
+def build_simulation_report_payload(
+    conn: sqlite3.Connection,
+    *,
+    simulation_run_id: str,
+) -> dict[str, Any] | None:
+    from .simulation_reports import get_simulation_report
+
+    return get_simulation_report(conn, simulation_run_id=simulation_run_id)
+
+
+def build_simulation_list_payload(
+    conn: sqlite3.Connection,
+    *,
+    project_id: str | None = None,
+    limit: int = 20,
+) -> dict[str, Any]:
+    from .simulation_reports import list_simulation_runs
+
+    runs = list_simulation_runs(conn, project_id=project_id, limit=limit)
+    return {
+        "runs": runs,
+        "count": len(runs),
+        "forecast": True,
+    }

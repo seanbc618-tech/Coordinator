@@ -303,7 +303,7 @@ class Phase15SlashRoutingTests(unittest.TestCase):
             "--mode",
             "rpc",
             "-p",
-            "/simulate overnight",
+            "/simulate preset overnight",
             cwd=self.repo,
         )
         methods = [m for m, _ in self.server.drain_requests()]

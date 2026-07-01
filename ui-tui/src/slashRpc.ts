@@ -556,13 +556,31 @@ export function buildSlashRpc(
     }
   }
 
-  if (commandName === '/simulate') {
-    const preset = args.trim().split(/\s+/)[0] ?? 'overnight'
+  if (commandName === '/simulate' || commandName === '/what-if') {
+    const parts = args.trim().split(/\s+/).filter(Boolean)
+    if (parts[0]?.toLowerCase() === 'preset') {
+      const preset = parts[1] ?? 'overnight'
+      return {
+        ok: true,
+        method: 'project.onboard.simulate',
+        params: { preset, path: '.' },
+        displayMethod: 'project.onboard.simulate',
+      }
+    }
+    if (parts[0]?.toLowerCase() === 'project') {
+      const hours = parts[1] ? Number(parts[1]) : 8
+      return {
+        ok: true,
+        method: 'simulation.run',
+        params: { scope: 'project', horizon_hours: Number.isFinite(hours) ? hours : 8 },
+        displayMethod: 'simulation.run',
+      }
+    }
     return {
       ok: true,
-      method: 'project.onboard.simulate',
-      params: { preset, path: '.' },
-      displayMethod: 'project.onboard.simulate',
+      method: 'simulation.run',
+      params: { scope: 'global', horizon_hours: 8 },
+      displayMethod: 'simulation.run',
     }
   }
 

@@ -451,6 +451,17 @@ class FakeSupervisor:
             "project.loop.pause",
             "project.loop.resume",
             "project.loop.run.status",
+            "simulation.run",
+            "simulation.report",
+            "simulation.list",
+            "project.onboard.plan",
+            "project.onboard.apply",
+            "project.onboard.simulate",
+            "project.profile",
+            "fleet.scan",
+            "agent.list",
+            "agent.detail",
+            "agent.route.preview",
         ):
             self._handle_operational_rpc(
                 conn,
@@ -600,6 +611,17 @@ class FakeSupervisor:
                 "project.plan",
                 "project.scan",
                 "project.jump",
+                "simulation.run",
+                "simulation.report",
+                "simulation.list",
+                "project.onboard.plan",
+                "project.onboard.apply",
+                "project.onboard.simulate",
+                "project.profile",
+                "fleet.scan",
+                "agent.list",
+                "agent.detail",
+                "agent.route.preview",
             ):
                 from local_cli_coordinator.config_runtime import load_config_for_paths
                 from local_cli_coordinator.supervisor_methods import SupervisorMethods

@@ -501,6 +501,21 @@ export function formatSlashResponse(
       ].join('\n')
     }
 
+    case 'simulation.run': {
+      const report = (result.report as Record<string, unknown> | undefined) ?? {}
+      const scheduled = (report.scheduled_projects as unknown[] | undefined) ?? []
+      const skipped = (report.skipped_projects as unknown[] | undefined) ?? []
+      const warnings = (report.safety_warnings as string[] | undefined) ?? []
+      const lines = [
+        `FORECAST run ${String(result.simulation_run_id ?? '')}`,
+        `Would schedule: ${scheduled.length}; would skip: ${skipped.length}`,
+      ]
+      if (warnings.length) {
+        lines.push(`Warnings: ${warnings.slice(0, 3).join('; ')}`)
+      }
+      return lines.join('\n')
+    }
+
     case 'project.overnight': {
       const latest = result.latest_summary as Record<string, unknown> | null | undefined
       const latestText = latest

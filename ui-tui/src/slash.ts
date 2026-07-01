@@ -40,7 +40,8 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/why', description: 'Explain task failure or file path', method: 'operator.explain_failure' },
   { name: '/profile', description: 'Show current project profile and preset', method: 'project.profile' },
   { name: '/onboard', description: 'Preview onboarding plan for current repo', method: 'project.onboard.plan' },
-  { name: '/simulate', description: 'Simulate preset autonomy without enabling it', method: 'project.onboard.simulate' },
+  { name: '/simulate', description: 'Forecast autonomy run without executing it', method: 'simulation.run' },
+  { name: '/what-if', description: 'Alias for autonomy simulation forecast', method: 'simulation.run' },
   { name: '/fleet', description: 'Scan a directory for Git repos to onboard', method: 'fleet.scan' },
   { name: '/rollback-onboard', description: 'Rollback onboarding config snapshot', method: 'project.onboard.rollback', destructive: true },
   { name: '/doctor', description: 'Run doctor repair dry-run', method: 'operator.doctor' },
@@ -102,6 +103,7 @@ export interface ParsedUnknownCommand {
 export type Parsed = ParsedSlash | ParsedMessage | ParsedUnknownCommand
 
 const MULTI_WORD_COMMANDS = [
+  '/what-if',
   '/ci failures',
   '/pr update',
   '/notify test',

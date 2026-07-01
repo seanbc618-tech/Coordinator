@@ -1276,6 +1276,72 @@ def _cmd_migrate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_simulate(args: argparse.Namespace) -> int:
+    from .admin_json import emit_envelope, envelope
+    from .autonomy_runtime import run_simulation
+    from .config_runtime import load_config_for_paths
+    from .db import connect, init_db
+    from .projects import get_project
+    from .runtime_paths import resolve_runtime_paths
+
+    paths = resolve_runtime_paths()
+    paths.create()
+    conn = connect(paths.database)
+    init_db(conn)
+    try:
+        config = load_config_for_paths(paths)
+        scope = "project" if getattr(args, "simulate_project", None) else "global"
+        project_id = getattr(args, "simulate_project", None)
+        if scope == "project" and project_id:
+            if get_project(conn, project_id) is None:
+                message = f"project not registered: {project_id}"
+                if getattr(args, "json", False):
+                    return emit_envelope(
+                        envelope(command="simulate", ok=False, errors=[message]),
+                    )
+                print(f"error: {message}", file=sys.stderr)
+                return 1
+        hours = float(getattr(args, "hours", 8.0) or 8.0)
+        if scope == "global" and getattr(args, "simulate_target", "") == "overnight":
+            hours = 8.0
+        result = run_simulation(
+            conn,
+            config=config,
+            paths=paths,
+            scope=scope,
+            project_id=project_id,
+            horizon_hours=hours,
+        )
+    except (ValueError, RuntimeError) as exc:
+        if getattr(args, "json", False):
+            return emit_envelope(
+                envelope(command="simulate", ok=False, errors=[str(exc)]),
+            )
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        conn.close()
+
+    if getattr(args, "json", False):
+        return emit_envelope(
+            envelope(command="simulate", ok=True, data=result),
+        )
+
+    report = result.get("report") or {}
+    print(result.get("report", {}).get("label", "FORECAST"))
+    print(f"simulation_run_id: {result.get('simulation_run_id')}")
+    print(
+        f"scheduled: {len(report.get('scheduled_projects') or [])}; "
+        f"skipped: {len(report.get('skipped_projects') or [])}"
+    )
+    warnings = report.get("safety_warnings") or []
+    if warnings:
+        print("warnings:")
+        for warning in warnings[:5]:
+            print(f"  - {warning}")
+    return 0
+
+
 _ADMIN_COMMANDS = frozenset({
     "daemon",
     "status",
@@ -1293,6 +1359,7 @@ _ADMIN_COMMANDS = frozenset({
     "project",
     "migrate",
     "onboard",
+    "simulate",
     "fleet",
     "config",
     "loop",
@@ -1601,6 +1668,12 @@ def build_parser() -> argparse.ArgumentParser:
     fleet_apply.add_argument("--enable-autonomy", action="store_true")
     fleet_apply.add_argument("--json", action="store_true")
 
+    simulate = subparsers.add_parser("simulate")
+    simulate.add_argument("simulate_target", nargs="?", default="overnight")
+    simulate.add_argument("--project", dest="simulate_project")
+    simulate.add_argument("--hours", type=float, default=8.0)
+    simulate.add_argument("--json", action="store_true")
+
     operator = subparsers.add_parser("operator")
     operator_subparsers = operator.add_subparsers(dest="operator_command")
     operator_subparsers.required = True
@@ -1759,6 +1832,8 @@ def main(argv: list[str] | None = None) -> int:
         from .onboarding_commands import run_fleet_command
 
         return run_fleet_command(args)
+    if args.command == "simulate":
+        return _cmd_simulate(args)
     if args.command == "operator" and args.operator_command == "summary":
         return _cmd_operator_summary(args)
     if args.command == "approve":

@@ -282,6 +282,9 @@ class SupervisorMethods:
             "agent.detail": self._handle_agent_detail,
             "agent.route.preview": self._handle_agent_route_preview,
             "agent.benchmark": self._handle_agent_benchmark,
+            "simulation.run": self._handle_simulation_run,
+            "simulation.report": self._handle_simulation_report,
+            "simulation.list": self._handle_simulation_list,
             "events.subscribe": self._handle_events_subscribe,
             "events.replay": self._handle_events_replay,
             "events.v2.replay": self._handle_events_v2_replay,
@@ -2096,6 +2099,80 @@ class SupervisorMethods:
                     for item in decision.candidate_scores
                 ],
             },
+        )
+
+    def _handle_simulation_run(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .autonomy_runtime import run_simulation
+
+        if self._config is None:
+            return self._error(request, "supervisor config is unavailable")
+        if self._paths is None:
+            return self._error(request, "runtime paths not configured")
+        scope = str(request.params.get("scope") or "global")
+        project_id = request.project_id
+        if scope == "project":
+            resolved = self._require_registered_project(conn, request)
+            if not isinstance(resolved, str):
+                return resolved
+            project_id = resolved
+        horizon_hours = float(request.params.get("horizon_hours") or 8.0)
+        try:
+            result = run_simulation(
+                conn,
+                config=self._config,
+                paths=self._paths,
+                scope=scope,
+                project_id=project_id,
+                horizon_hours=horizon_hours,
+                paused_projects=self._paused,
+                stopped_projects=self._stopped,
+            )
+        except ValueError as exc:
+            return self._error(request, str(exc))
+        except RuntimeError as exc:
+            return self._error(request, str(exc))
+        return self._ok(request, result)
+
+    def _handle_simulation_report(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .autonomy_runtime import build_simulation_report_payload
+
+        simulation_run_id = request.params.get("simulation_run_id")
+        if not isinstance(simulation_run_id, str) or not simulation_run_id.strip():
+            return self._error(request, "simulation_run_id is required")
+        payload = build_simulation_report_payload(
+            conn,
+            simulation_run_id=simulation_run_id,
+        )
+        if payload is None:
+            return self._error(
+                request,
+                f"simulation run not found: {simulation_run_id}",
+            )
+        return self._ok(request, payload)
+
+    def _handle_simulation_list(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .autonomy_runtime import build_simulation_list_payload
+
+        project_id = request.project_id
+        if project_id is not None:
+            resolved = self._require_registered_project(conn, request)
+            if not isinstance(resolved, str):
+                return resolved
+            project_id = resolved
+        limit = int(request.params.get("limit") or 20)
+        return self._ok(
+            request,
+            build_simulation_list_payload(
+                conn,
+                project_id=project_id,
+                limit=limit,
+            ),
         )
 
     def _handle_agent_benchmark(

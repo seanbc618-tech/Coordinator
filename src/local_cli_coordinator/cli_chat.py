@@ -691,6 +691,34 @@ def _parse_onboard_slash(args_text: str) -> tuple[str, dict[str, Any]]:
     return "project.onboard.plan", {"path": path, "preset": "observe"}
 
 
+def _parse_simulation_slash(args_text: str) -> tuple[str, dict[str, Any]]:
+    """Route autonomy simulation vs onboarding preset simulation."""
+    parts = args_text.strip().split()
+    if parts and parts[0].lower() == "preset":
+        preset = parts[1] if len(parts) > 1 else "overnight"
+        return "project.onboard.simulate", {
+            "preset": preset,
+            "path": str(Path.cwd()),
+        }
+    if parts and parts[0].lower() == "project":
+        hours = 8.0
+        if len(parts) > 1:
+            try:
+                hours = float(parts[1])
+            except ValueError:
+                hours = 8.0
+        return "simulation.run", {"scope": "project", "horizon_hours": hours}
+    hours = 8.0
+    if parts and parts[0].lower() == "overnight":
+        hours = 8.0
+    elif parts:
+        try:
+            hours = float(parts[0])
+        except ValueError:
+            hours = 8.0
+    return "simulation.run", {"scope": "global", "horizon_hours": hours}
+
+
 def _parse_slash_command(text: str) -> tuple[str, str]:
     stripped = text.strip()
     lowered = stripped.lower()
@@ -1745,21 +1773,35 @@ def _handle_slash(
             user_reply=f"Onboarding {method.split('.')[-1]} preset={params.get('preset', 'observe')}",
             intent="status_question",
         )
-    if command == "/simulate":
-        preset = args_text.strip().split()[0] if args_text.strip() else "overnight"
+    if command in {"/simulate", "/what-if"}:
+        method, params = _parse_simulation_slash(args_text)
         result, err, _envelope = _send_rpc(
             paths,
             project_id=project_id,
-            method="project.onboard.simulate",
-            params={"preset": preset, "path": str(Path.cwd())},
+            method=method,
+            params=params,
         )
         if err is not None:
             return err
         assert result is not None
+        if method == "project.onboard.simulate":
+            preset = str(params.get("preset") or "overnight")
+            return PromptOutcome(
+                ok=True,
+                project_id=project_id,
+                user_reply=f"Simulated preset {preset}: autonomy={result.get('autonomy_enabled')}",
+                intent="status_question",
+            )
+        report = result.get("report") or {}
+        scheduled = len(report.get("scheduled_projects") or [])
+        skipped = len(report.get("skipped_projects") or [])
         return PromptOutcome(
             ok=True,
             project_id=project_id,
-            user_reply=f"Simulated {preset}: autonomy={result.get('autonomy_enabled')}",
+            user_reply=(
+                f"FORECAST: {scheduled} project(s) would run, "
+                f"{skipped} skipped (run {result.get('simulation_run_id')})"
+            ),
             intent="status_question",
         )
     if command == "/fleet":
@@ -2441,13 +2483,13 @@ def _rpc_slash(
         if envelope is not None:
             return envelope, 0 if envelope.ok else 1
         return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
-    if command == "/simulate":
-        preset = args_text.strip().split()[0] if args_text.strip() else "overnight"
+    if command in {"/simulate", "/what-if"}:
+        method, params = _parse_simulation_slash(args_text)
         _, err, envelope = _send_rpc(
             paths,
             project_id=project_id,
-            method="project.onboard.simulate",
-            params={"preset": preset, "path": str(Path.cwd())},
+            method=method,
+            params=params,
         )
         if envelope is not None:
             return envelope, 0 if envelope.ok else 1
