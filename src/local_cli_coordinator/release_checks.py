@@ -7,30 +7,61 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .backup_manager import _package_migrations, verify_backup
+from .backup_manager import _package_migrations
 from .config_runtime import REQUIRED_CONFIG_FILES, config_files_present
 from .db import iter_migration_scripts
 from .extension_loader import load_extensions
 from .runtime_paths import RuntimePaths
 from .upgrade_preflight import run_upgrade_preflight
 
-ROOT = Path(__file__).resolve().parents[2]
-MIRROR_MIGRATIONS = ROOT / "migrations"
-PACKAGE_MIGRATIONS = ROOT / "src" / "local_cli_coordinator" / "migrations"
+
+def _repo_migrations_mirror() -> Path | None:
+    """Return repo-root migrations/ only when running from a source checkout."""
+    package_dir = Path(__file__).resolve().parent
+    if package_dir.name != "local_cli_coordinator":
+        return None
+    mirror = package_dir.parent.parent / "migrations"
+    if mirror.is_dir():
+        return mirror
+    return None
 
 
-def _migration_mirror_ok() -> tuple[bool, list[str]]:
-    if not MIRROR_MIGRATIONS.is_dir() or not PACKAGE_MIGRATIONS.is_dir():
-        return False, ["migration directories missing"]
-    auth = {p.name: p.read_bytes() for p in PACKAGE_MIGRATIONS.glob("*.sql")}
-    mir = {p.name: p.read_bytes() for p in MIRROR_MIGRATIONS.glob("*.sql")}
+def _migration_mirror_check() -> dict[str, Any]:
+    package = dict(iter_migration_scripts())
+    if not package:
+        return {
+            "ok": False,
+            "errors": ["no packaged migrations found"],
+            "skipped": False,
+            "package_count": 0,
+        }
+
+    mirror = _repo_migrations_mirror()
+    if mirror is None:
+        return {
+            "ok": True,
+            "errors": [],
+            "skipped": True,
+            "reason": "source checkout mirror not present (wheel install)",
+            "package_count": len(package),
+        }
+
+    mirror_files = {
+        path.name: path.read_text(encoding="utf-8") for path in mirror.glob("*.sql")
+    }
     errors: list[str] = []
-    if set(auth) != set(mir):
+    if set(package) != set(mirror_files):
         errors.append("migration mirror file set mismatch")
-    for name, body in auth.items():
-        if mir.get(name) != body:
+    for name, body in package.items():
+        if mirror_files.get(name) != body:
             errors.append(f"migration mirror mismatch: {name}")
-    return not errors, errors
+    return {
+        "ok": not errors,
+        "errors": errors,
+        "skipped": False,
+        "package_count": len(package),
+        "mirror_path": str(mirror),
+    }
 
 
 def _pending_migrations(conn: sqlite3.Connection) -> list[str]:
@@ -80,12 +111,12 @@ def run_release_checks(
         }
     )
 
-    mirror_ok, mirror_errors = _migration_mirror_ok()
+    mirror = _migration_mirror_check()
     checks.append(
         {
             "name": "migration_mirror",
-            "ok": mirror_ok,
-            "details": {"errors": mirror_errors},
+            "ok": mirror["ok"],
+            "details": mirror,
         }
     )
 

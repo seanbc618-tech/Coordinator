@@ -12,7 +12,7 @@
 - Upgrade preflight with migration backup guidance
 - Declarative local extension manifests (no arbitrary code execution)
 - Release checklist helpers for clean-wheel verification
-- CLI/RPC: `backup`, `restore`, `upgrade preflight`, `extension list`
+- CLI/RPC: `backup create`, `backup verify`, `restore`, `upgrade preflight`, `extensions list`, `release check`
 
 ## Gemini design red lines (tests)
 
@@ -43,11 +43,17 @@ python3 -m build
 
 ## Clean-wheel smoke (Gate G)
 
+After `pip install` of the built wheel (no `PYTHONPATH`):
+
 ```bash
-coordinator backup --dry-run --json
+coordinator init --yes --json
+coordinator backup create --json
 coordinator upgrade preflight --json
-coordinator extension list --json
+coordinator extensions list --json
+coordinator release check --json
 ```
+
+`release check` must return `ok=true` on a wheel install without a source-tree `migrations/` mirror.
 
 ## Out of scope
 
