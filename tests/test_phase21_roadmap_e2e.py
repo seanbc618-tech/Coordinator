@@ -23,6 +23,16 @@ from tests.helpers import ROOT, SRC, init_git_repo
 
 _PYTHON = sys.executable
 
+_ADMIN_ENVELOPE_KEYS = {
+    "ok",
+    "command",
+    "schema_version",
+    "generated_at",
+    "data",
+    "warnings",
+    "errors",
+}
+
 
 def _write_config(config_dir: Path, repo_path: Path) -> None:
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -176,6 +186,76 @@ class Phase21CliTests(unittest.TestCase):
         payload = json.loads(proc.stdout)
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["command"], "roadmap.next")
+
+
+class Phase21UnregisteredProjectCliTests(unittest.TestCase):
+    """roadmap --json must not traceback when the cwd project is not registered."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.home = self.tmp / "home"
+        self.repo = self.tmp / "repo"
+        init_git_repo(self.repo)
+        paths = RuntimePaths(
+            self.home / "config", self.home / "data", self.home / "state"
+        )
+        paths.create()
+        _write_config(self.home / "config", self.repo)
+
+    def tearDown(self) -> None:
+        import shutil
+
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _assert_unregistered_json_command(
+        self, proc: subprocess.CompletedProcess[str], *, command: str
+    ) -> None:
+        self.assertNotIn("Traceback", proc.stderr, proc.stderr)
+        self.assertNotIn("Traceback", proc.stdout, proc.stdout)
+        try:
+            payload = json.loads(proc.stdout)
+        except json.JSONDecodeError:
+            self.fail(f"stdout is not valid JSON: {proc.stdout[:500]!r}")
+
+        self.assertEqual(_ADMIN_ENVELOPE_KEYS, set(payload.keys()))
+        self.assertEqual(payload["command"], command)
+        self.assertEqual(payload["schema_version"], 1)
+        self.assertIsInstance(payload["data"], dict)
+        self.assertIsInstance(payload["warnings"], list)
+        self.assertIsInstance(payload["errors"], list)
+
+        if payload["ok"]:
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            return
+
+        self.assertNotEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(len(payload["errors"]), 1)
+        error = payload["errors"][0]
+        self.assertEqual(
+            set(error.keys()),
+            {"code", "message", "hint"},
+        )
+        self.assertEqual(error["code"], "project_not_registered")
+        self.assertIn("project not registered", error["message"])
+        self.assertTrue(error["hint"])
+
+    def test_cli_roadmap_status_json_unregistered_project(self) -> None:
+        proc = _run_cli_with_home(
+            self.home, "roadmap", "status", "--json", cwd=self.repo
+        )
+        self._assert_unregistered_json_command(proc, command="roadmap.status")
+
+    def test_cli_roadmap_next_json_unregistered_project(self) -> None:
+        proc = _run_cli_with_home(
+            self.home, "roadmap", "next", "--json", cwd=self.repo
+        )
+        self._assert_unregistered_json_command(proc, command="roadmap.next")
+
+    def test_cli_roadmap_blocked_json_unregistered_project(self) -> None:
+        proc = _run_cli_with_home(
+            self.home, "roadmap", "blocked", "--json", cwd=self.repo
+        )
+        self._assert_unregistered_json_command(proc, command="roadmap.blocked")
 
 
 class Phase21SlashRoutingTests(unittest.TestCase):

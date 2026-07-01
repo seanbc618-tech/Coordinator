@@ -6,7 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from .admin_json import emit_envelope, envelope
+from .admin_json import AdminError, emit_envelope, envelope
 from .db import connect, init_db
 from .projects import find_project_by_path, inspect_project
 from .roadmap_graph import set_roadmap_graph_enabled
@@ -28,6 +28,21 @@ def _resolve_project_from_cwd(
     return str(row["id"]), Path(str(row["canonical_path"]))
 
 
+def _project_not_registered_error(message: str) -> AdminError:
+    return AdminError(
+        code="project_not_registered",
+        message=message,
+        hint="Run `coordinator project add` or `coordinator init`.",
+    )
+
+
+def _roadmap_value_error(exc: ValueError) -> AdminError:
+    message = str(exc)
+    if message.startswith("project not registered"):
+        return _project_not_registered_error(message)
+    return AdminError(code="invalid_request", message=message)
+
+
 def run_roadmap_status_command(args: argparse.Namespace) -> int:
     paths = resolve_runtime_paths()
     paths.create()
@@ -39,7 +54,11 @@ def run_roadmap_status_command(args: argparse.Namespace) -> int:
     except ValueError as exc:
         if args.json:
             return emit_envelope(
-                envelope(command="roadmap.status", ok=False, errors=[str(exc)])
+                envelope(
+                    command="roadmap.status",
+                    ok=False,
+                    errors=[_roadmap_value_error(exc)],
+                )
             )
         print(str(exc), file=sys.stderr)
         return 2
@@ -63,7 +82,11 @@ def run_roadmap_next_command(args: argparse.Namespace) -> int:
     except ValueError as exc:
         if args.json:
             return emit_envelope(
-                envelope(command="roadmap.next", ok=False, errors=[str(exc)])
+                envelope(
+                    command="roadmap.next",
+                    ok=False,
+                    errors=[_roadmap_value_error(exc)],
+                )
             )
         print(str(exc), file=sys.stderr)
         return 2
@@ -88,7 +111,11 @@ def run_roadmap_blocked_command(args: argparse.Namespace) -> int:
     except ValueError as exc:
         if args.json:
             return emit_envelope(
-                envelope(command="roadmap.blocked", ok=False, errors=[str(exc)])
+                envelope(
+                    command="roadmap.blocked",
+                    ok=False,
+                    errors=[_roadmap_value_error(exc)],
+                )
             )
         print(str(exc), file=sys.stderr)
         return 2
@@ -122,7 +149,11 @@ def run_roadmap_import_command(args: argparse.Namespace) -> int:
     except ValueError as exc:
         if args.json:
             return emit_envelope(
-                envelope(command="roadmap.import", ok=False, errors=[str(exc)])
+                envelope(
+                    command="roadmap.import",
+                    ok=False,
+                    errors=[_roadmap_value_error(exc)],
+                )
             )
         print(str(exc), file=sys.stderr)
         return 2
@@ -149,7 +180,11 @@ def run_roadmap_enable_command(args: argparse.Namespace) -> int:
     except ValueError as exc:
         if args.json:
             return emit_envelope(
-                envelope(command="roadmap.enable", ok=False, errors=[str(exc)])
+                envelope(
+                    command="roadmap.enable",
+                    ok=False,
+                    errors=[_roadmap_value_error(exc)],
+                )
             )
         print(str(exc), file=sys.stderr)
         return 2
@@ -174,7 +209,11 @@ def run_roadmap_disable_command(args: argparse.Namespace) -> int:
     except ValueError as exc:
         if args.json:
             return emit_envelope(
-                envelope(command="roadmap.disable", ok=False, errors=[str(exc)])
+                envelope(
+                    command="roadmap.disable",
+                    ok=False,
+                    errors=[_roadmap_value_error(exc)],
+                )
             )
         print(str(exc), file=sys.stderr)
         return 2
