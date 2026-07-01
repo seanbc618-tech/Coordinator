@@ -442,6 +442,12 @@ export function formatHelpText(): string {
     }
     lines.push(`${cmd.name} - ${cmd.description}`)
   }
+  lines.push('')
+  lines.push('Essential:')
+  lines.push('/status - Show project status')
+  lines.push('/goal <objective> - Create a draft goal')
+  lines.push('/goal confirm - Activate the draft goal')
+  lines.push('/task <id> - Show one task in detail')
   return lines.join('\n')
 }
 

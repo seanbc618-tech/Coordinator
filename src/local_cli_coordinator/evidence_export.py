@@ -9,9 +9,9 @@ import sqlite3
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
-from .artifact_registry import list_warehouse_artifacts
+from .artifact_registry import WarehouseArtifact, list_warehouse_artifacts
 from .project_indexer import redact_text
 from .runtime_paths import RuntimePaths
 
@@ -59,6 +59,41 @@ def _copy_redacted_file(source: Path, destination: Path) -> tuple[str, int, int]
     return _sha256_bytes(payload), len(payload), redaction_count
 
 
+def _row_to_warehouse_artifact(row: sqlite3.Row) -> WarehouseArtifact:
+    return WarehouseArtifact(
+        id=str(row["id"]),
+        project_id=str(row["project_id"]),
+        task_id=str(row["task_id"]) if row["task_id"] else None,
+        run_id=str(row["run_id"]) if row["run_id"] else None,
+        artifact_type=str(row["artifact_type"]),
+        path=str(row["path"]),
+        sha256=str(row["sha256"]),
+        size_bytes=int(row["size_bytes"]),
+        redaction_status=str(row["redaction_status"]),
+        provenance=json.loads(row["provenance_json"]),
+        created_at=str(row["created_at"]),
+    )
+
+
+def _load_artifacts_by_ids(
+    conn: sqlite3.Connection,
+    artifact_ids: Sequence[str],
+) -> list[WarehouseArtifact]:
+    ids = [str(artifact_id) for artifact_id in artifact_ids if str(artifact_id)]
+    if not ids:
+        return []
+    placeholders = ", ".join("?" for _ in ids)
+    rows = conn.execute(
+        f"""
+        select * from artifacts
+        where id in ({placeholders})
+        order by created_at asc, id asc
+        """,
+        ids,
+    ).fetchall()
+    return [_row_to_warehouse_artifact(row) for row in rows]
+
+
 def export_evidence_bundle(
     conn: sqlite3.Connection,
     *,
@@ -66,6 +101,7 @@ def export_evidence_bundle(
     scope: str = "project",
     project_id: str | None = None,
     task_id: str | None = None,
+    artifact_ids: Sequence[str] | None = None,
     limit: int = 500,
     commit: bool = True,
 ) -> dict[str, Any]:
@@ -81,8 +117,10 @@ def export_evidence_bundle(
     files_dir = bundle_root / "files"
     files_dir.mkdir(parents=True, exist_ok=True)
 
-    artifacts = []
-    if scope == "global":
+    artifacts: list[WarehouseArtifact] = []
+    if artifact_ids is not None:
+        artifacts = _load_artifacts_by_ids(conn, artifact_ids)
+    elif scope == "global":
         rows = conn.execute(
             """
             select * from artifacts
@@ -91,24 +129,7 @@ def export_evidence_bundle(
             """,
             (max(1, limit),),
         ).fetchall()
-        from .artifact_registry import WarehouseArtifact
-
-        for row in rows:
-            artifacts.append(
-                WarehouseArtifact(
-                    id=str(row["id"]),
-                    project_id=str(row["project_id"]),
-                    task_id=str(row["task_id"]) if row["task_id"] else None,
-                    run_id=str(row["run_id"]) if row["run_id"] else None,
-                    artifact_type=str(row["artifact_type"]),
-                    path=str(row["path"]),
-                    sha256=str(row["sha256"]),
-                    size_bytes=int(row["size_bytes"]),
-                    redaction_status=str(row["redaction_status"]),
-                    provenance=json.loads(row["provenance_json"]),
-                    created_at=str(row["created_at"]),
-                )
-            )
+        artifacts = [_row_to_warehouse_artifact(row) for row in rows]
     else:
         artifacts = list_warehouse_artifacts(
             conn,

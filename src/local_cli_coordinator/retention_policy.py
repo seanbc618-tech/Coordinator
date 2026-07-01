@@ -103,18 +103,30 @@ def plan_retention(
 
     if mode == "apply" and candidates:
         export_scope = "project" if effective_project_id else "global"
+        candidate_ids = [str(candidate["artifact_id"]) for candidate in candidates]
         export_result = export_evidence_bundle(
             conn,
             paths=paths,
             scope=export_scope,
             project_id=effective_project_id,
-            limit=len(candidates),
+            artifact_ids=candidate_ids,
             commit=False,
         )
         result["export_id"] = export_result["export_id"]
         result["manifest_path"] = export_result["manifest_path"]
+        manifest_ids = {
+            str(entry["artifact_id"])
+            for entry in export_result["manifest"]["files"]
+        }
 
         for candidate in candidates:
+            artifact_id = str(candidate["artifact_id"])
+            if artifact_id not in manifest_ids:
+                result["errors"].append(
+                    f"{artifact_id}: missing from export manifest; delete skipped"
+                )
+                status = "partial"
+                continue
             path = Path(candidate["path"])
             try:
                 if path.is_file():
@@ -126,10 +138,10 @@ def plan_retention(
                     set redaction_status = 'blocked'
                     where id = ?
                     """,
-                    (candidate["artifact_id"],),
+                    (artifact_id,),
                 )
             except OSError as exc:
-                result["errors"].append(f"{candidate['artifact_id']}: {exc}")
+                result["errors"].append(f"{artifact_id}: {exc}")
                 status = "partial"
 
     conn.execute(

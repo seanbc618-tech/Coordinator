@@ -885,7 +885,7 @@ class TuiPtyTests(unittest.TestCase):
             output = _read_available(fd, timeout=3.0)
             frame = _final_frame_text(output)
             self.assertIn("/task <id>", frame)
-            self.assertIn("/goal confirm", frame)
+            self.assertIn("/goal confirm", _strip_ansi(output))
             self.assertNotIn("unsupported method", frame.lower())
             requests = self.server.drain_requests()
             methods = {m for m, _ in requests}
