@@ -349,6 +349,46 @@ export function buildSlashRpc(
     }
   }
 
+  if (commandName === '/notify test') {
+    return {
+      ok: true,
+      method: 'operator.notify',
+      params: { dry_run: true, args: 'test' },
+      displayMethod: 'operator.notify',
+    }
+  }
+
+  if (commandName === '/approvals') {
+    return {
+      ok: true,
+      method: 'operator.approvals',
+      params: {},
+      displayMethod: 'operator.approvals',
+    }
+  }
+
+  if (commandName === '/channels') {
+    return {
+      ok: true,
+      method: 'operator.channels',
+      params: {},
+      displayMethod: 'operator.channels',
+    }
+  }
+
+  if (commandName === '/reject') {
+    const token = args.trim().split(/\s+/)[0]
+    if (!token || !token.startsWith('coord-appr-')) {
+      return { ok: false, error: 'usage: /reject <approval-token>' }
+    }
+    return {
+      ok: true,
+      method: 'operator.approval.reject',
+      params: { token },
+      displayMethod: 'operator.approval.reject',
+    }
+  }
+
   if (
     method === 'project.task.approve'
     || method === 'project.task.retry'

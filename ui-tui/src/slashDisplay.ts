@@ -389,6 +389,36 @@ export function formatSlashResponse(
       return `Notify${dry}: ${deliveries.length} delivery record(s)`
     }
 
+    case 'operator.approvals': {
+      const requests = (result.requests as Array<Record<string, unknown>> | undefined) ?? []
+      if (!requests.length) {
+        return 'Approvals — none pending'
+      }
+      return [
+        'Approvals:',
+        ...requests.map(
+          r => (
+            `- ${r.action_method} [${r.status}] hint=…${r.token_hint ?? ''}`
+          ),
+        ),
+      ].join('\n')
+    }
+
+    case 'operator.channels': {
+      const channels = (result.channels as Array<Record<string, unknown>> | undefined) ?? []
+      return [
+        'Channels:',
+        ...channels.map(
+          c => `- ${c.channel_type}: ${c.enabled ? 'enabled' : 'disabled'}`,
+        ),
+      ].join('\n')
+    }
+
+    case 'operator.approval.approve':
+    case 'operator.approval.reject': {
+      return `Approval — ${result.status ?? 'updated'}`
+    }
+
     case 'operator.decision': {
       if (result.requires_confirmation) {
         return `Decision — confirmation required for ${result.routed_method}`

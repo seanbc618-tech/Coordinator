@@ -149,6 +149,10 @@ input starts with `/`.
 | `/attention` | Show items needing attention (`operator.attention`) |
 | `/summary` | Operator summary (`operator.summary`) |
 | `/notify` | Dispatch notifications (`operator.notify`, use `--dry-run`) |
+| `/notify test` | Dry-run notification delivery test (`operator.notify`) |
+| `/approvals` | List pending external approval requests (`operator.approvals`) |
+| `/channels` | Show approval channel configs (`operator.channels`) |
+| `/reject` | Reject external approval token (`operator.approval.reject`) |
 | `/decision` | Route safe action for inbox item (`operator.decision`) |
 | `/dismiss` | Dismiss inbox item (`operator.dismiss`) |
 | `/recoveries` | List pending failure recovery proposals |

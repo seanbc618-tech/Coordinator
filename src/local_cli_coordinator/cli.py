@@ -77,6 +77,73 @@ def _move_to_accepted(root: Path, source_path: str) -> None:
     shutil.move(str(source), str(accepted))
 
 
+def _cmd_approval_token(
+    args: argparse.Namespace,
+    *,
+    action: str,
+) -> int:
+    from .admin_json import emit_envelope, envelope
+    from .approval_callbacks import approve_approval_token, reject_approval_token
+    from .approval_tokens import get_approval_request_by_token
+    from .config_runtime import load_config_for_paths
+    from .db import connect, init_db
+    from .runtime_paths import resolve_runtime_paths
+    from .supervisor_events import EventBroker
+    from .supervisor_methods import SupervisorMethods
+
+    if action == "approve" and not args.yes:
+        print(
+            "approval requires --yes to confirm; token hint: "
+            f"{args.token.strip()[-4:]}",
+            file=sys.stderr,
+        )
+        return 2
+
+    paths = resolve_runtime_paths()
+    paths.create()
+    conn = connect(paths.database)
+    init_db(conn)
+    try:
+        request = get_approval_request_by_token(conn, raw_token=args.token.strip())
+        if request is None:
+            raise ValueError("unknown approval token")
+        config = load_config_for_paths(paths)
+        methods = SupervisorMethods(config=config, broker=EventBroker())
+        if action == "approve":
+            payload = approve_approval_token(
+                conn,
+                raw_token=args.token.strip(),
+                project_id=request.project_id,
+                methods=methods,
+                decided_by="cli",
+                commit=True,
+            )
+        else:
+            payload = reject_approval_token(
+                conn,
+                raw_token=args.token.strip(),
+                project_id=request.project_id,
+                decided_by="cli",
+                commit=True,
+            )
+    except ValueError as exc:
+        if args.json:
+            emit_envelope(
+                envelope(command=f"approval.{action}", ok=False, errors=[str(exc)])
+            )
+            return 2
+        print(str(exc), file=sys.stderr)
+        return 2
+    finally:
+        conn.close()
+
+    if args.json:
+        emit_envelope(envelope(command=f"approval.{action}", ok=True, data=payload))
+        return 0
+    print(payload.get("status", action))
+    return 0
+
+
 def _cmd_operator_summary(args: argparse.Namespace) -> int:
     from .admin_json import emit_envelope, envelope
     from .db import connect, init_db
@@ -1146,6 +1213,9 @@ _ADMIN_COMMANDS = frozenset({
     "config",
     "loop",
     "init",
+    "operator",
+    "approve",
+    "reject",
     "mock-provider",
 })
 
@@ -1402,6 +1472,25 @@ def build_parser() -> argparse.ArgumentParser:
     operator_summary.add_argument("--json", action="store_true")
     operator_summary.add_argument("--morning", action="store_true")
 
+    approve = subparsers.add_parser(
+        "approve",
+        help="Approve a pending external approval token",
+    )
+    approve.add_argument("token", help="One-time approval token")
+    approve.add_argument("--json", action="store_true")
+    approve.add_argument(
+        "--yes",
+        action="store_true",
+        help="Confirm approval without interactive prompt",
+    )
+
+    reject = subparsers.add_parser(
+        "reject",
+        help="Reject a pending external approval token",
+    )
+    reject.add_argument("token", help="One-time approval token")
+    reject.add_argument("--json", action="store_true")
+
     mock_provider = subparsers.add_parser("mock-provider")
     mock_provider_subparsers = mock_provider.add_subparsers(
         dest="mock_provider_command"
@@ -1519,6 +1608,10 @@ def main(argv: list[str] | None = None) -> int:
         return run_init_command(args)
     if args.command == "operator" and args.operator_command == "summary":
         return _cmd_operator_summary(args)
+    if args.command == "approve":
+        return _cmd_approval_token(args, action="approve")
+    if args.command == "reject":
+        return _cmd_approval_token(args, action="reject")
     if args.command == "mock-provider" and args.mock_provider_command == "run":
         from .mock_provider import MockProviderError, run_mock_provider_cli
 
