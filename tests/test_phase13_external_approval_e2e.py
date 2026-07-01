@@ -259,6 +259,18 @@ class Phase13SlashRoutingTests(unittest.TestCase):
         methods = [m for m, _ in self.server.drain_requests()]
         self.assertIn("operator.channels", methods)
 
+    def test_approve_token_slash_maps_to_operator_approval_approve(self) -> None:
+        _run_cli_with_home(
+            self.home,
+            "--mode",
+            "rpc",
+            "-p",
+            "/approve token coord-appr-test-token-placeholder",
+            cwd=self.repo,
+        )
+        methods = [m for m, _ in self.server.drain_requests()]
+        self.assertIn("operator.approval.approve", methods)
+
     def test_notify_test_slash_maps_to_operator_notify(self) -> None:
         _run_cli_with_home(
             self.home, "--mode", "rpc", "-p", "/notify test", cwd=self.repo

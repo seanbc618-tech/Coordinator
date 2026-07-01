@@ -152,6 +152,7 @@ input starts with `/`.
 | `/notify test` | Dry-run notification delivery test (`operator.notify`) |
 | `/approvals` | List pending external approval requests (`operator.approvals`) |
 | `/channels` | Show approval channel configs (`operator.channels`) |
+| `/approve token` | Approve external approval token (`operator.approval.approve`) |
 | `/reject` | Reject external approval token (`operator.approval.reject`) |
 | `/decision` | Route safe action for inbox item (`operator.decision`) |
 | `/dismiss` | Dismiss inbox item (`operator.dismiss`) |

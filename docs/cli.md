@@ -469,6 +469,8 @@ tokens (stored as hashes only). Approve or reject outside the TUI:
 ```bash
 coordinator approve coord-appr-… --yes
 coordinator reject coord-appr-…
+coordinator --print -p "/approve token coord-appr-…"
+coordinator --print -p "/approve <task-id>"
 coordinator --print -p "/channels"
 coordinator --print -p "/approvals"
 coordinator --print -p "/notify test"

@@ -128,6 +128,46 @@ class ApprovalTokenTests(unittest.TestCase):
                 self.conn, raw_token=raw, project_id=self.project_id
             )
 
+    def test_wrong_token_rejected_with_constant_time_compare(self) -> None:
+        from local_cli_coordinator.approval_tokens import (
+            create_approval_token,
+            verify_approval_token,
+        )
+
+        raw, _request = create_approval_token(
+            self.conn,
+            project_id=self.project_id,
+            action_method="project.task.approve",
+            action_params={"task_id": "task-5"},
+            commit=True,
+        )
+        forged = raw[:-4] + "XXXX"
+        with self.assertRaises(ValueError):
+            verify_approval_token(
+                self.conn, raw_token=forged, project_id=self.project_id
+            )
+
+    def test_double_consume_rejected_atomically(self) -> None:
+        from local_cli_coordinator.approval_tokens import (
+            consume_approval_token,
+            create_approval_token,
+        )
+
+        raw, _request = create_approval_token(
+            self.conn,
+            project_id=self.project_id,
+            action_method="project.task.retry",
+            action_params={"task_id": "task-6"},
+            commit=True,
+        )
+        consume_approval_token(
+            self.conn, raw_token=raw, project_id=self.project_id, commit=True
+        )
+        with self.assertRaises(ValueError):
+            consume_approval_token(
+                self.conn, raw_token=raw, project_id=self.project_id, commit=True
+            )
+
     def test_cross_project_token_rejected(self) -> None:
         from local_cli_coordinator.approval_tokens import (
             create_approval_token,

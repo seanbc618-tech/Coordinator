@@ -11,10 +11,11 @@ from .approval_channels import (
     update_approval_request_status,
 )
 from .approval_tokens import (
+    claim_approval_token_for_action,
     create_approval_token,
     expire_stale_approval_requests,
     public_request_view,
-    verify_approval_token,
+    reject_approval_token_atomic,
 )
 from .operator_inbox import DESTRUCTIVE_METHODS, get_operator_item, upsert_operator_item
 
@@ -109,7 +110,7 @@ def route_approval_action(
         update_approval_request_status(
             conn,
             request_id=request.id,
-            status="pending",
+            status="failed",
             audit_event="failed",
             audit_data={"error": response.error},
             commit=False,
@@ -131,19 +132,24 @@ def approve_approval_token(
     commit: bool = False,
 ) -> dict[str, Any]:
     expire_stale_approval_requests(conn, project_id=project_id, commit=False)
-    request = verify_approval_token(
-        conn, raw_token=raw_token, project_id=project_id
+    request = claim_approval_token_for_action(
+        conn,
+        raw_token=raw_token,
+        project_id=project_id,
+        decided_by=decided_by,
     )
     routed = route_approval_action(conn, request=request, methods=methods)
-    updated = update_approval_request_status(
+    from .approval_channels import record_audit_event
+
+    record_audit_event(
         conn,
-        request_id=request.id,
-        status="consumed",
-        decided_by=decided_by,
-        audit_event="approved",
-        audit_data={"routed_method": request.action_method},
-        commit=commit,
+        approval_request_id=request.id,
+        project_id=project_id,
+        event_type="approved",
+        data={"routed_method": request.action_method},
+        commit=False,
     )
+    updated = request
     return {
         "status": updated.status,
         "routed": True,
@@ -161,15 +167,11 @@ def reject_approval_token(
     decided_by: str = "external",
     commit: bool = False,
 ) -> dict[str, Any]:
-    request = verify_approval_token(
-        conn, raw_token=raw_token, project_id=project_id
-    )
-    updated = update_approval_request_status(
+    updated = reject_approval_token_atomic(
         conn,
-        request_id=request.id,
-        status="rejected",
+        raw_token=raw_token,
+        project_id=project_id,
         decided_by=decided_by,
-        audit_event="rejected",
         commit=commit,
     )
     return {

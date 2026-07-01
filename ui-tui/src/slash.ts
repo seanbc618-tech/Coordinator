@@ -191,6 +191,7 @@ export function formatHelpText(): string {
     }
     if (cmd.name === '/approve') {
       lines.push('/approve <task-id> - Unblock awaiting_human task')
+      lines.push('/approve token <token> - Approve external approval token')
       continue
     }
     if (cmd.name === '/retry') {

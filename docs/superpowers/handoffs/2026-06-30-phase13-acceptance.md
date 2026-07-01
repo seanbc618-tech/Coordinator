@@ -12,7 +12,8 @@
 - Safe local channels: file inbox (enabled), stdout (disabled by default), macOS (disabled), webhook (dry-run), command (policy-gated)
 - CLI: `coordinator approve <token> --yes`, `coordinator reject <token>`
 - RPCs: `operator.approvals`, `operator.approval.create`, `operator.approval.approve`, `operator.approval.reject`, `operator.channels`
-- Slash: `/approvals`, `/channels`, `/reject`, `/notify test` (existing `/approve` remains task approval)
+- Slash: `/approvals`, `/channels`, `/reject`, `/notify test`, `/approve token <token>` (task approval stays `/approve <task-id>`)
+- Token security: `hmac.compare_digest` hash verification, atomic `UPDATE … WHERE status='pending'` consume
 
 ## Verification (Grok)
 

@@ -23,6 +23,7 @@ VALID_REQUEST_STATUS = frozenset({
     "expired",
     "cancelled",
     "consumed",
+    "failed",
 })
 VALID_CHANNEL_TYPES = frozenset({"file", "macos", "stdout", "webhook", "command"})
 VALID_DELIVERY_STATUS = frozenset({"sent", "skipped", "failed"})
