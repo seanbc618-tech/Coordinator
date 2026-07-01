@@ -1375,6 +1375,7 @@ _ADMIN_COMMANDS = frozenset({
     "upgrade",
     "extensions",
     "release",
+    "roadmap",
 })
 
 _PROMPT_FLAGS = frozenset({
@@ -1749,6 +1750,20 @@ def build_parser() -> argparse.ArgumentParser:
     release_check = release_subparsers.add_parser("check")
     release_check.add_argument("--json", action="store_true")
 
+    roadmap = subparsers.add_parser("roadmap")
+    roadmap_subparsers = roadmap.add_subparsers(dest="roadmap_command")
+    roadmap_subparsers.required = True
+    for name in ("status", "next", "blocked", "enable", "disable"):
+        cmd = roadmap_subparsers.add_parser(name)
+        cmd.add_argument("--json", action="store_true")
+        cmd.add_argument("--root", default=".")
+    roadmap_import = roadmap_subparsers.add_parser("import")
+    roadmap_import.add_argument("path")
+    roadmap_import.add_argument("--dry-run", action="store_true")
+    roadmap_import.add_argument("--apply", action="store_true")
+    roadmap_import.add_argument("--json", action="store_true")
+    roadmap_import.add_argument("--root", default=".")
+
     return parser
 
 
@@ -1913,6 +1928,27 @@ def main(argv: list[str] | None = None) -> int:
         from .release_commands import run_extensions_list_command
 
         return run_extensions_list_command(args)
+    if args.command == "roadmap":
+        from .roadmap_commands import (
+            run_roadmap_blocked_command,
+            run_roadmap_disable_command,
+            run_roadmap_enable_command,
+            run_roadmap_import_command,
+            run_roadmap_next_command,
+            run_roadmap_status_command,
+        )
+
+        handlers = {
+            "status": run_roadmap_status_command,
+            "next": run_roadmap_next_command,
+            "blocked": run_roadmap_blocked_command,
+            "import": run_roadmap_import_command,
+            "enable": run_roadmap_enable_command,
+            "disable": run_roadmap_disable_command,
+        }
+        handler = handlers.get(args.roadmap_command)
+        if handler is not None:
+            return handler(args)
     if args.command == "release" and args.release_command == "check":
         from .release_commands import run_release_check_command
 

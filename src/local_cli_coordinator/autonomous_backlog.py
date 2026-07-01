@@ -140,17 +140,26 @@ def promote_next_backlog_item(
     """Create ready tasks from backlog and mark items admitted."""
     if max_items <= 0:
         return []
+    from .roadmap_readiness import backlog_item_roadmap_ready
+
     items = list_ready_backlog_items(
         conn,
         project_id=project_id,
         goal_id=goal_id,
-        limit=max_items,
+        limit=max(max_items * 4, max_items),
     )
     if not items:
         return []
 
     task_ids: list[str] = []
     for item in items:
+        ready, roadmap_node_id = backlog_item_roadmap_ready(
+            conn,
+            project_id=project_id,
+            backlog_id=str(item["id"]),
+        )
+        if not ready:
+            continue
         criteria = json.loads(item["acceptance_criteria_json"])
         verify_commands = json.loads(item["verification_commands_json"])
         execution_policy = item["execution_policy"]
@@ -180,5 +189,8 @@ def promote_next_backlog_item(
             commit=False,
         )
         task_ids.append(task_id)
-    conn.commit()
+        if len(task_ids) >= max_items:
+            break
+    if task_ids:
+        conn.commit()
     return task_ids

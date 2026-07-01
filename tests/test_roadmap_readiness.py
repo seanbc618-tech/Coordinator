@@ -9,7 +9,11 @@ from pathlib import Path
 from local_cli_coordinator.autonomous_loop_db import insert_backlog_item
 from local_cli_coordinator.db import connect, init_db
 from local_cli_coordinator.projects import inspect_project, register_project
-from local_cli_coordinator.roadmap_graph import add_roadmap_edge, upsert_roadmap_node
+from local_cli_coordinator.roadmap_graph import (
+    add_roadmap_edge,
+    update_roadmap_node_status,
+    upsert_roadmap_node,
+)
 from local_cli_coordinator.roadmap_readiness import (
     evaluate_node_readiness,
     list_ready_roadmap_items,
@@ -95,20 +99,12 @@ class RoadmapReadinessTests(unittest.TestCase):
         self.assertEqual(readiness["status"], "blocked")
         self.assertTrue(readiness["blockers"])
 
-        upsert_roadmap_node(
+        update_roadmap_node_status(
             self.conn,
             project_id=self.project_id,
-            node_type="external",
-            title="Write regression test",
-            ref_table=None,
-            ref_id=None,
-            metadata={"status_override": "done"},
+            node_id=prereq_id,
+            status="done",
         )
-        self.conn.execute(
-            "update roadmap_nodes set status='done' where id=?",
-            (prereq_id,),
-        )
-        self.conn.commit()
 
         readiness_after = evaluate_node_readiness(
             self.conn,

@@ -299,6 +299,12 @@ class SupervisorMethods:
             "release.upgrade_preflight": self._handle_release_upgrade_preflight,
             "release.extensions.list": self._handle_release_extensions_list,
             "release.check": self._handle_release_check,
+            "roadmap.status": self._handle_roadmap_status,
+            "roadmap.next": self._handle_roadmap_next,
+            "roadmap.blocked": self._handle_roadmap_blocked,
+            "roadmap.import": self._handle_roadmap_import,
+            "roadmap.enable": self._handle_roadmap_enable,
+            "roadmap.disable": self._handle_roadmap_disable,
             "events.subscribe": self._handle_events_subscribe,
             "events.replay": self._handle_events_replay,
             "events.v2.replay": self._handle_events_v2_replay,
@@ -2979,6 +2985,101 @@ class SupervisorMethods:
             return self._error(request, "runtime paths not configured")
         payload = run_release_checks(conn, self._paths)
         return self._ok(request, payload)
+
+    def _handle_roadmap_status(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .roadmap_reports import build_roadmap_status_report
+
+        project_id = request.project_id
+        if not project_id:
+            return self._error(request, "project_id required")
+        payload = build_roadmap_status_report(conn, project_id=project_id)
+        return self._ok(request, payload)
+
+    def _handle_roadmap_next(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .roadmap_readiness import select_next_best_work
+
+        project_id = request.project_id
+        if not project_id:
+            return self._error(request, "project_id required")
+        limit = int(request.params.get("limit") or 5)
+        payload = select_next_best_work(conn, project_id=project_id, limit=limit)
+        return self._ok(request, payload)
+
+    def _handle_roadmap_blocked(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .roadmap_reports import build_roadmap_blocked_report
+
+        project_id = request.project_id
+        if not project_id:
+            return self._error(request, "project_id required")
+        limit = int(request.params.get("limit") or 20)
+        payload = build_roadmap_blocked_report(
+            conn, project_id=project_id, limit=limit
+        )
+        return self._ok(request, payload)
+
+    def _handle_roadmap_import(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from pathlib import Path
+
+        from .projects import get_project
+        from .roadmap_import import import_roadmap_markdown
+
+        project_id = request.project_id
+        if not project_id:
+            return self._error(request, "project_id required")
+        project = get_project(conn, project_id)
+        if project is None:
+            return self._error(request, f"project not registered: {project_id}")
+        path_value = str(request.params.get("path") or "roadmap.md")
+        apply = bool(request.params.get("apply"))
+        if bool(request.params.get("dry_run")):
+            apply = False
+        try:
+            payload = import_roadmap_markdown(
+                conn,
+                project_id=project_id,
+                repo_root=Path(str(project["canonical_path"])),
+                path=Path(path_value),
+                apply=apply,
+            )
+        except ValueError as exc:
+            return self._error(request, str(exc))
+        return self._ok(request, payload)
+
+    def _handle_roadmap_enable(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .roadmap_graph import set_roadmap_graph_enabled
+
+        project_id = request.project_id
+        if not project_id:
+            return self._error(request, "project_id required")
+        set_roadmap_graph_enabled(conn, project_id=project_id, enabled=True)
+        return self._ok(
+            request,
+            {"project_id": project_id, "graph_enabled": True},
+        )
+
+    def _handle_roadmap_disable(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .roadmap_graph import set_roadmap_graph_enabled
+
+        project_id = request.project_id
+        if not project_id:
+            return self._error(request, "project_id required")
+        set_roadmap_graph_enabled(conn, project_id=project_id, enabled=False)
+        return self._ok(
+            request,
+            {"project_id": project_id, "graph_enabled": False},
+        )
 
     @staticmethod
     def _ok(request: RequestEnvelope, result: dict[str, Any]) -> ResponseEnvelope:

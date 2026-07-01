@@ -12,6 +12,7 @@ from local_cli_coordinator.projects import inspect_project, register_project
 from local_cli_coordinator.roadmap_graph import (
     add_roadmap_edge,
     list_roadmap_nodes,
+    roadmap_graph_enabled,
     upsert_roadmap_node,
 )
 from local_cli_coordinator.runtime_paths import RuntimePaths
@@ -139,6 +140,9 @@ class RoadmapGraphTests(unittest.TestCase):
                 to_node_id=node_a,
                 relation="blocks",
             )
+
+    def test_graph_policy_disabled_by_default(self) -> None:
+        self.assertFalse(roadmap_graph_enabled(self.conn, self.project_a))
 
     def test_migration_creates_roadmap_tables(self) -> None:
         for table in ("roadmap_nodes", "roadmap_edges", "roadmap_snapshots"):

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from local_cli_coordinator.db import connect, init_db
 from local_cli_coordinator.projects import inspect_project, register_project
@@ -79,6 +81,16 @@ class RoadmapImportTests(unittest.TestCase):
                 project_id=self.project_id,
                 repo_root=self.repo,
                 path=outside,
+                apply=False,
+            )
+
+    def test_import_never_executes_subprocess(self) -> None:
+        with patch("subprocess.run", side_effect=AssertionError("subprocess forbidden")):
+            import_roadmap_markdown(
+                self.conn,
+                project_id=self.project_id,
+                repo_root=self.repo,
+                path=self.roadmap_path,
                 apply=False,
             )
 

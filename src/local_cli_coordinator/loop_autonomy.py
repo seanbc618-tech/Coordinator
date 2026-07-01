@@ -291,6 +291,26 @@ def run_autonomous_iteration(
         )
 
     if admitted_task_ids:
+        iteration_caps = dict(caps or {})
+        from .roadmap_graph import find_node_for_ref
+
+        backlog_row = conn.execute(
+            """
+            select id from project_backlog_items
+            where linked_task_id = ? and project_id = ?
+            """,
+            (admitted_task_ids[0], project_id),
+        ).fetchone()
+        if backlog_row is not None:
+            node = find_node_for_ref(
+                conn,
+                project_id=project_id,
+                node_type="backlog",
+                ref_table="project_backlog_items",
+                ref_id=str(backlog_row["id"]),
+            )
+            if node is not None:
+                iteration_caps["roadmap_node_id"] = node.id
         decision = LoopDecision(
             project_id=project_id,
             goal_id=goal_id,
@@ -299,7 +319,7 @@ def run_autonomous_iteration(
             evaluated_count=evaluated_count,
             admitted_task_ids=tuple(admitted_task_ids),
         )
-        return _finalize_iteration(conn, decision, caps=caps)
+        return _finalize_iteration(conn, decision, caps=iteration_caps)
 
     if evaluated_count > 0:
         decision = LoopDecision(

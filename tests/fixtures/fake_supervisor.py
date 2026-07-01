@@ -466,6 +466,12 @@ class FakeSupervisor:
             "agent.list",
             "agent.detail",
             "agent.route.preview",
+            "roadmap.status",
+            "roadmap.next",
+            "roadmap.blocked",
+            "roadmap.import",
+            "roadmap.enable",
+            "roadmap.disable",
         ):
             self._handle_operational_rpc(
                 conn,
@@ -630,6 +636,12 @@ class FakeSupervisor:
                 "agent.list",
                 "agent.detail",
                 "agent.route.preview",
+                "roadmap.status",
+                "roadmap.next",
+                "roadmap.blocked",
+                "roadmap.import",
+                "roadmap.enable",
+                "roadmap.disable",
             ):
                 from local_cli_coordinator.config_runtime import load_config_for_paths
                 from local_cli_coordinator.supervisor_methods import SupervisorMethods

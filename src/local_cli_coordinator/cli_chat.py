@@ -753,6 +753,59 @@ def _parse_simulation_slash(args_text: str) -> tuple[str, dict[str, Any]]:
     return "simulation.run", {"scope": "global", "horizon_hours": hours}
 
 
+def _parse_roadmap_slash(args_text: str) -> tuple[str, dict[str, Any]]:
+    parts = args_text.strip().split()
+    if not parts:
+        return "roadmap.status", {}
+    sub = parts[0].lower()
+    if sub == "import":
+        params: dict[str, Any] = {
+            "path": parts[1] if len(parts) > 1 else "roadmap.md",
+        }
+        if "apply" in {p.lower() for p in parts[1:]}:
+            params["apply"] = True
+        else:
+            params["dry_run"] = True
+        return "roadmap.import", params
+    if sub == "enable":
+        return "roadmap.enable", {}
+    if sub == "disable":
+        return "roadmap.disable", {}
+    if sub == "next":
+        return "roadmap.next", {}
+    if sub == "blocked":
+        return "roadmap.blocked", {}
+    return "roadmap.status", {}
+
+
+def _format_roadmap_next_reply(result: dict[str, Any]) -> str:
+    items = result.get("items") or []
+    if not items:
+        return "Next: no ready roadmap items"
+    lines = ["Next ready items:"]
+    for item in items[:5]:
+        lines.append(f"- {item.get('title')}: {item.get('reason', '')}")
+    return "\n".join(lines)
+
+
+def _format_roadmap_blocked_reply(result: dict[str, Any]) -> str:
+    items = result.get("items") or []
+    if not items:
+        return "Blocked: none"
+    lines = ["Blocked items:"]
+    for item in items[:10]:
+        blockers = item.get("blockers") or []
+        blocker_titles = ", ".join(
+            str(blocker.get("title") or blocker.get("node_id") or "")
+            for blocker in blockers
+        )
+        lines.append(
+            f"- {item.get('title')}: {item.get('reason', '')}"
+            + (f" ({blocker_titles})" if blocker_titles else "")
+        )
+    return "\n".join(lines)
+
+
 def _parse_slash_command(text: str) -> tuple[str, str]:
     stripped = text.strip()
     lowered = stripped.lower()
@@ -765,6 +818,9 @@ def _parse_slash_command(text: str) -> tuple[str, str]:
         "/rollback-onboard",
         "/benchmark agents",
         "/export evidence",
+        "/roadmap import",
+        "/roadmap enable",
+        "/roadmap disable",
     ):
         if lowered.startswith(multi):
             return multi, stripped[len(multi) :].strip()
@@ -2052,6 +2108,45 @@ def _handle_slash(
             user_reply=f"Preference deleted: {rule.get('id')}",
             intent="status_question",
         )
+    if command in {"/roadmap", "/next", "/blocked"}:
+        if command == "/next":
+            method, params = "roadmap.next", {}
+        elif command == "/blocked":
+            method, params = "roadmap.blocked", {}
+        else:
+            method, params = _parse_roadmap_slash(args_text)
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method=method,
+            params=params,
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        if method == "roadmap.import" and not params.get("apply"):
+            reply = (
+                f"Roadmap import dry-run: {len(result.get('proposed_nodes') or [])} "
+                "proposed node(s); no changes written"
+            )
+        elif method == "roadmap.next":
+            reply = _format_roadmap_next_reply(result)
+        elif method == "roadmap.blocked":
+            reply = _format_roadmap_blocked_reply(result)
+        elif method in {"roadmap.enable", "roadmap.disable"}:
+            reply = f"Roadmap graph {'enabled' if method.endswith('enable') else 'disabled'}"
+        else:
+            reply = (
+                f"Roadmap: {result.get('node_count', 0)} nodes, "
+                f"ready={result.get('ready_count', 0)}, "
+                f"blocked={result.get('blocked_count', 0)}"
+            )
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=reply,
+            intent="status_question",
+        )
     if command in {"/backup", "/upgrade-check", "/extensions", "/release-check"}:
         method_params = {
             "/backup": ("release.backup.create", {}),
@@ -2868,6 +2963,22 @@ def _rpc_slash(
             project_id=project_id,
             method="preference.delete",
             params={"rule_id": rule_id},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command in {"/roadmap", "/next", "/blocked"}:
+        if command == "/next":
+            method, params = "roadmap.next", {}
+        elif command == "/blocked":
+            method, params = "roadmap.blocked", {}
+        else:
+            method, params = _parse_roadmap_slash(args_text)
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method=method,
+            params=params,
         )
         if envelope is not None:
             return envelope, 0 if envelope.ok else 1

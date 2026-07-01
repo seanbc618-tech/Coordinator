@@ -102,12 +102,14 @@ class Phase21RpcTests(unittest.TestCase):
             self.conn, inspect_project(self.repo), confirmed=True
         )
         self.conn.commit()
-        self.broker = EventBroker()
+        self.project_id = self.conn.execute(
+            "select id from projects limit 1"
+        ).fetchone()["id"]
+        self.config = load_config_for_paths(self.paths)
         self.methods = SupervisorMethods(
-            self.conn,
-            self.paths,
-            load_config_for_paths(self.paths),
-            broker=self.broker,
+            config=self.config,
+            broker=EventBroker(),
+            paths=self.paths,
         )
 
     def tearDown(self) -> None:
@@ -117,12 +119,12 @@ class Phase21RpcTests(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_roadmap_status_rpc(self) -> None:
-        resp = self.methods.handle(_request("roadmap.status", self.project_id))
+        resp = self.methods.handle(self.conn, _request("roadmap.status", self.project_id))
         self.assertTrue(resp.ok, resp.error)
         self.assertIn("project_id", resp.result)
 
     def test_roadmap_next_rpc_returns_ready_items_only(self) -> None:
-        resp = self.methods.handle(_request("roadmap.next", self.project_id))
+        resp = self.methods.handle(self.conn, _request("roadmap.next", self.project_id))
         self.assertTrue(resp.ok, resp.error)
         items = resp.result.get("items") or []
         for item in items:
@@ -130,7 +132,7 @@ class Phase21RpcTests(unittest.TestCase):
             self.assertIn("reason", item)
 
     def test_roadmap_blocked_rpc(self) -> None:
-        resp = self.methods.handle(_request("roadmap.blocked", self.project_id))
+        resp = self.methods.handle(self.conn, _request("roadmap.blocked", self.project_id))
         self.assertTrue(resp.ok, resp.error)
         self.assertIn("items", resp.result)
 
@@ -192,7 +194,8 @@ class Phase21SlashRoutingTests(unittest.TestCase):
         register_project(self.conn, inspect_project(self.repo), confirmed=True)
         self.conn.commit()
         self.conn.close()
-        self.server = FakeSupervisor(self.home / "config", self.repo)
+        self.server = FakeSupervisor(str(self.paths.socket))
+        self.server.start()
 
     def tearDown(self) -> None:
         self.server.stop()
