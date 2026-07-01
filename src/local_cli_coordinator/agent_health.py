@@ -117,6 +117,15 @@ def compute_agent_health(
     return snapshots
 
 
+def routing_health_penalty(status: str) -> float:
+    """Return score penalty used by the agent router for health status."""
+    if status == "healthy":
+        return 0.0
+    if status == "degraded":
+        return -25.0
+    return -100.0
+
+
 def snapshot_agent_health(
     conn: sqlite3.Connection,
     *,

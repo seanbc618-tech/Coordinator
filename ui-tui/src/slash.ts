@@ -69,7 +69,10 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/jump', description: 'Resolve task, log, or worktree target', method: 'project.jump' },
   { name: '/open', description: 'Alias of /jump', method: 'project.jump' },
   { name: '/logs', description: 'Show recent logs', method: 'project.logs' },
-  { name: '/agents', description: 'Show agent scorecards and routing hints', method: 'project.agents' },
+  { name: '/agents', description: 'List agent capability profiles and health', method: 'agent.list' },
+  { name: '/agent', description: 'Show one agent capability profile', method: 'agent.detail' },
+  { name: '/route', description: 'Preview routing decision for a task', method: 'agent.route.preview' },
+  { name: '/benchmark agents', description: 'Run local fixture benchmarks for workers', method: 'agent.benchmark' },
   { name: '/pause', description: 'Pause project scheduling', method: 'project.pause' },
   { name: '/resume', description: 'Resume project scheduling', method: 'project.resume' },
   { name: '/stop', description: 'Stop project at safe boundary', method: 'project.stop', destructive: true },
@@ -105,6 +108,7 @@ const MULTI_WORD_COMMANDS = [
   '/pause all',
   '/resume all',
   '/rollback-onboard',
+  '/benchmark agents',
 ] as const
 
 export function parse(input: string): Parsed {
@@ -179,6 +183,9 @@ const HELP_COMMAND_NAMES = new Set([
   '/dismiss',
   '/recoveries',
   '/agents',
+  '/agent',
+  '/route',
+  '/benchmark agents',
   '/overnight',
   '/loop',
   '/plan',
@@ -358,7 +365,19 @@ export function formatHelpText(): string {
       continue
     }
     if (cmd.name === '/agents') {
-      lines.push('/agents - Show agent scorecards and routing hints')
+      lines.push('/agents - List agent capability profiles and health')
+      continue
+    }
+    if (cmd.name === '/agent') {
+      lines.push('/agent <id> - Show one agent capability profile')
+      continue
+    }
+    if (cmd.name === '/route') {
+      lines.push('/route <task-id> - Preview routing decision for a task')
+      continue
+    }
+    if (cmd.name === '/benchmark agents') {
+      lines.push('/benchmark agents - Run local fixture benchmarks for workers')
       continue
     }
     if (cmd.name === '/overnight') {

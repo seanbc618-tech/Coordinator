@@ -545,6 +545,10 @@ def _agents_for_task(
     capabilities: list[str],
     *,
     preferred_agent_id: str | None = None,
+    conn: sqlite3.Connection | None = None,
+    project_id: str | None = None,
+    task_id: str | None = None,
+    repo_id: str | None = None,
 ) -> list:
     if preferred_agent_id is not None:
         agent = config.agents.get(preferred_agent_id)
@@ -553,6 +557,22 @@ def _agents_for_task(
         if not set(capabilities).issubset(set(agent.capabilities)):
             return []
         return [agent]
+    if conn is not None and project_id is not None:
+        from .agent_router import rank_agents_for_task
+
+        ranked_ids = rank_agents_for_task(
+            conn,
+            config,
+            project_id=project_id,
+            capabilities=capabilities,
+            task_id=task_id,
+            repo_id=repo_id,
+        )
+        return [
+            config.agents[agent_id]
+            for agent_id in ranked_ids
+            if agent_id in config.agents
+        ]
     return list(iter_agents_by_role(config, "worker", capabilities))
 
 
@@ -588,6 +608,10 @@ def claim_project_ready_task(
                 config,
                 capabilities,
                 preferred_agent_id=preferred_agent_id,
+                conn=conn,
+                project_id=project_id,
+                task_id=task["id"],
+                repo_id=str(task["repo"]) if task["repo"] else None,
             ):
                 if active_lease_count(conn, agent.id) >= agent.max_concurrency:
                     continue
@@ -595,6 +619,18 @@ def claim_project_ready_task(
                     if _try_acquire_task_lease(
                         conn, task["id"], agent.id, duration_seconds
                     ):
+                        from .agent_router import route_and_record
+
+                        route_and_record(
+                            conn,
+                            config,
+                            project_id=project_id,
+                            task_id=task["id"],
+                            capabilities=capabilities,
+                            repo_id=str(task["repo"]) if task["repo"] else None,
+                            selected_agent_id=agent.id,
+                            commit=False,
+                        )
                         conn.commit()
                         return task, agent.id
                 except sqlite3.IntegrityError:
@@ -631,6 +667,10 @@ def project_has_claimable_task(
             config,
             capabilities,
             preferred_agent_id=preferred_agent_id,
+            conn=conn,
+            project_id=project_id,
+            task_id=task["id"],
+            repo_id=str(task["repo"]) if task["repo"] else None,
         ):
             if active_lease_count(conn, agent.id) < agent.max_concurrency:
                 return True
@@ -661,6 +701,10 @@ def peek_project_claim(
             config,
             capabilities,
             preferred_agent_id=preferred_agent_id,
+            conn=conn,
+            project_id=project_id,
+            task_id=task["id"],
+            repo_id=str(task["repo"]) if task["repo"] else None,
         ):
             if active_lease_count(conn, agent.id) < agent.max_concurrency:
                 return task, agent.id

@@ -443,7 +443,8 @@ export function formatSlashResponse(
       ].join('\n')
     }
 
-    case 'project.agents': {
+    case 'project.agents':
+    case 'agent.list': {
       const agents = (result.agents as Array<Record<string, unknown>> | undefined) ?? []
       if (!agents.length) {
         return 'Agents — (none configured)'
@@ -452,8 +453,49 @@ export function formatSlashResponse(
         'Agents:',
         ...agents.map(
           a => (
-            `- ${a.agent_id} [${a.role}] ok=${a.successes ?? 0} `
-            + `fail=${a.failures ?? 0} rank=${a.preferred_rank ?? '-'}`
+            `- ${a.agent_id} [${a.role}] enabled=${a.enabled ?? true} `
+            + `health=${a.health_status ?? 'healthy'} `
+            + `ok=${a.successes ?? 0} fail=${a.failures ?? 0}`
+          ),
+        ),
+      ].join('\n')
+    }
+
+    case 'agent.detail': {
+      const profile = (result.profile as Record<string, unknown> | undefined) ?? {}
+      return [
+        `Agent ${result.agent_id} [${result.role}]`,
+        `  risk=${profile.risk_tier ?? 'normal'} review=${profile.review_strength ?? 'unknown'}`,
+        `  skills=${(profile.skills as string[] | undefined)?.join(', ') ?? ''}`,
+      ].join('\n')
+    }
+
+    case 'agent.route.preview': {
+      const selected = String(result.selected_agent_id ?? '')
+      const candidates = (result.candidates as Array<Record<string, unknown>> | undefined) ?? []
+      const lines = [
+        `Route ${result.task_id}: ${selected || '(none)'}`,
+        `Reason: ${result.reason ?? ''}`,
+      ]
+      for (const item of candidates.slice(0, 5)) {
+        lines.push(
+          `  - ${item.agent_id} score=${item.score} eligible=${item.eligible}`,
+        )
+      }
+      return lines.join('\n')
+    }
+
+    case 'agent.benchmark': {
+      const runs = (result.results as Array<Record<string, unknown>> | undefined) ?? []
+      if (!runs.length) {
+        return 'Benchmarks — no runs'
+      }
+      return [
+        'Benchmarks:',
+        ...runs.map(
+          r => (
+            `- ${r.agent_id} ${r.benchmark_name} [${r.status}] `
+            + `score=${r.score}`
           ),
         ),
       ].join('\n')

@@ -701,6 +701,7 @@ def _parse_slash_command(text: str) -> tuple[str, str]:
         "/pause all",
         "/resume all",
         "/rollback-onboard",
+        "/benchmark agents",
     ):
         if lowered.startswith(multi):
             return multi, stripped[len(multi) :].strip()
@@ -1515,6 +1516,92 @@ def _handle_slash(
             user_reply=reply,
             intent="status_question",
         )
+    if command == "/agents":
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="agent.list",
+            params={},
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        agents = result.get("agents") or []
+        lines = ["Agents:"]
+        for entry in agents:
+            lines.append(
+                f"  {entry.get('agent_id')} [{entry.get('role')}] "
+                f"enabled={entry.get('enabled')} health={entry.get('health_status')}"
+            )
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply="\n".join(lines) if agents else "Agents — (none configured)",
+            intent="status_question",
+        )
+    if command == "/agent":
+        agent_id = args_text.strip().split()[0] if args_text.strip() else ""
+        if not agent_id:
+            return _error_outcome("invalid_args", "usage: /agent <id>")
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="agent.detail",
+            params={"agent_id": agent_id},
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        profile = result.get("profile") or {}
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=(
+                f"Agent {agent_id}: role={result.get('role')} "
+                f"risk={profile.get('risk_tier')} "
+                f"review={profile.get('review_strength')}"
+            ),
+            intent="status_question",
+        )
+    if command == "/route":
+        task_id = args_text.strip().split()[0] if args_text.strip() else ""
+        if not task_id:
+            return _error_outcome("invalid_args", "usage: /route <task-id>")
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="agent.route.preview",
+            params={"task_id": task_id},
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=(
+                f"Route {task_id}: agent={result.get('selected_agent_id') or '(none)'} "
+                f"reason={result.get('reason')}"
+            ),
+            intent="status_question",
+        )
+    if command == "/benchmark agents":
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="agent.benchmark",
+            params={"scope": "agents"},
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        results = result.get("results") or []
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=f"Benchmark agents: {len(results)} run(s)",
+            intent="status_question",
+        )
     if command == "/recoveries":
         result, err, _envelope = _send_rpc(
             paths,
@@ -2230,6 +2317,54 @@ def _rpc_slash(
             project_id=project_id,
             method=method,
             params=params,
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/agents":
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="agent.list",
+            params={},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/agent":
+        agent_id = args_text.strip().split()[0] if args_text.strip() else ""
+        if not agent_id:
+            outcome = _error_outcome("invalid_args", "usage: /agent <id>")
+            return _outcome_to_rpc(outcome), 1
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="agent.detail",
+            params={"agent_id": agent_id},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/route":
+        task_id = args_text.strip().split()[0] if args_text.strip() else ""
+        if not task_id:
+            outcome = _error_outcome("invalid_args", "usage: /route <task-id>")
+            return _outcome_to_rpc(outcome), 1
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="agent.route.preview",
+            params={"task_id": task_id},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command == "/benchmark agents":
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method="agent.benchmark",
+            params={"scope": "agents"},
         )
         if envelope is not None:
             return envelope, 0 if envelope.ok else 1

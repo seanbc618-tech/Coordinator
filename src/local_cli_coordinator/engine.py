@@ -99,10 +99,13 @@ def _select_agent(
     if not capabilities:
         return None
     if conn is not None and role == "worker":
-        from .agent_scorecard import rank_workers_for_capabilities
+        from .agent_router import rank_agents_for_task
 
-        ranked = rank_workers_for_capabilities(
-            config, conn, capabilities=capabilities
+        ranked = rank_agents_for_task(
+            conn,
+            config,
+            project_id="legacy-default",
+            capabilities=capabilities,
         )
         if ranked:
             return config.agents.get(ranked[0])

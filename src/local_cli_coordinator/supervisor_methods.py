@@ -278,6 +278,10 @@ class SupervisorMethods:
             "project.onboard.simulate": self._handle_project_onboard_simulate,
             "project.onboard.rollback": self._handle_project_onboard_rollback,
             "fleet.scan": self._handle_fleet_scan,
+            "agent.list": self._handle_agent_list,
+            "agent.detail": self._handle_agent_detail,
+            "agent.route.preview": self._handle_agent_route_preview,
+            "agent.benchmark": self._handle_agent_benchmark,
             "events.subscribe": self._handle_events_subscribe,
             "events.replay": self._handle_events_replay,
             "events.v2.replay": self._handle_events_v2_replay,
@@ -1925,6 +1929,258 @@ class SupervisorMethods:
         return self._ok(
             request,
             scan_fleet(Path(root), conn=conn, max_depth=max_depth),
+        )
+
+    def _handle_agent_list(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .agent_benchmarks import get_latest_benchmark_scores
+        from .agent_capabilities import load_capability_profiles
+        from .agent_health import compute_agent_health
+        from .agent_scorecard import get_agent_scorecard
+
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        if self._config is None:
+            return self._error(request, "supervisor config is unavailable")
+        profiles = load_capability_profiles(conn, self._config, sync=True)
+        health_by_agent = {
+            item["agent_id"]: item
+            for item in compute_agent_health(
+                conn, config=self._config, project_id=project_id
+            )
+        }
+        agents_payload: list[dict[str, object]] = []
+        for agent_id, agent in self._config.agents.items():
+            profile = profiles.get(agent_id)
+            card = get_agent_scorecard(
+                conn,
+                agent_id=agent_id,
+                role=agent.role,
+            )
+            benchmarks = get_latest_benchmark_scores(conn, agent_id=agent_id)
+            health = health_by_agent.get(agent_id, {})
+            agents_payload.append(
+                {
+                    "agent_id": agent_id,
+                    "role": agent.role,
+                    "capabilities": list(agent.capabilities),
+                    "skills": list(profile.skills) if profile else list(agent.capabilities),
+                    "risk_tier": profile.risk_tier if profile else "normal",
+                    "review_strength": (
+                        profile.review_strength if profile else "unknown"
+                    ),
+                    "enabled": profile.enabled if profile else True,
+                    "health_status": health.get("status", "healthy"),
+                    "successes": card.successes,
+                    "failures": card.failures,
+                    "timeouts": card.timeouts,
+                    "benchmark_scores": benchmarks,
+                }
+            )
+        return self._ok(
+            request,
+            {
+                "project_id": project_id,
+                "agents": agents_payload,
+            },
+        )
+
+    def _handle_agent_detail(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .agent_benchmarks import list_benchmark_runs
+        from .agent_capabilities import get_capability_profile, load_capability_profiles
+        from .agent_fallback_graph import list_fallback_edges
+        from .agent_health import compute_agent_health
+        from .agent_scorecard import get_agent_scorecard
+
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        if self._config is None:
+            return self._error(request, "supervisor config is unavailable")
+        agent_id = request.params.get("agent_id")
+        if not isinstance(agent_id, str) or not agent_id.strip():
+            return self._error(request, "agent_id is required")
+        agent = self._config.agents.get(agent_id)
+        if agent is None:
+            return self._error(request, f"unknown agent: {agent_id}")
+        load_capability_profiles(conn, self._config, sync=True)
+        profile = get_capability_profile(conn, agent_id=agent_id)
+        card = get_agent_scorecard(conn, agent_id=agent_id, role=agent.role)
+        health = next(
+            (
+                item
+                for item in compute_agent_health(
+                    conn, config=self._config, project_id=project_id
+                )
+                if item["agent_id"] == agent_id
+            ),
+            None,
+        )
+        return self._ok(
+            request,
+            {
+                "project_id": project_id,
+                "agent_id": agent_id,
+                "role": agent.role,
+                "capabilities": list(agent.capabilities),
+                "profile": {
+                    "skills": list(profile.skills) if profile else list(agent.capabilities),
+                    "risk_tier": profile.risk_tier if profile else "normal",
+                    "review_strength": (
+                        profile.review_strength if profile else "unknown"
+                    ),
+                    "max_task_minutes": (
+                        profile.max_task_minutes if profile else 30
+                    ),
+                    "enabled": profile.enabled if profile else True,
+                },
+                "scorecard": {
+                    "successes": card.successes,
+                    "failures": card.failures,
+                    "timeouts": card.timeouts,
+                    "cooldown_until": card.cooldown_until,
+                },
+                "health": health,
+                "benchmark_runs": list_benchmark_runs(conn, agent_id=agent_id, limit=5),
+                "fallback_edges": [
+                    {
+                        "from_agent_id": edge.from_agent_id,
+                        "to_agent_id": edge.to_agent_id,
+                        "max_hops": edge.max_hops,
+                        "enabled": edge.enabled,
+                    }
+                    for edge in list_fallback_edges(conn, from_agent_id=agent_id)
+                ],
+            },
+        )
+
+    def _handle_agent_route_preview(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .agent_router import preview_route
+
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        if self._config is None:
+            return self._error(request, "supervisor config is unavailable")
+        task_id = request.params.get("task_id")
+        if not isinstance(task_id, str) or not task_id.strip():
+            return self._error(request, "task_id is required")
+        decision = preview_route(
+            conn,
+            self._config,
+            project_id=project_id,
+            task_id=task_id,
+        )
+        if decision is None:
+            return self._error(request, f"task not found: {task_id}")
+        return self._ok(
+            request,
+            {
+                "project_id": project_id,
+                "task_id": task_id,
+                "selected_agent_id": decision.selected_agent_id,
+                "reason": decision.reason,
+                "candidates": [
+                    {
+                        "agent_id": item.agent_id,
+                        "score": item.score,
+                        "eligible": item.eligible,
+                        "reason": item.reason,
+                    }
+                    for item in decision.candidate_scores
+                ],
+            },
+        )
+
+    def _handle_agent_benchmark(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .agent_benchmarks import (
+            BENCHMARK_FIXTURES,
+            run_agent_benchmark,
+            run_all_agent_benchmarks,
+        )
+
+        project_id = self._require_registered_project(conn, request)
+        if not isinstance(project_id, str):
+            return project_id
+        if self._config is None:
+            return self._error(request, "supervisor config is unavailable")
+        scope = str(request.params.get("scope") or "agents")
+        if scope != "agents":
+            return self._error(request, f"unsupported benchmark scope: {scope}")
+        agent_id = request.params.get("agent_id")
+        benchmark_name = request.params.get("benchmark_name")
+        results: list[dict[str, object]] = []
+        if isinstance(agent_id, str) and agent_id.strip():
+            agent = self._config.agents.get(agent_id)
+            if agent is None:
+                return self._error(request, f"unknown agent: {agent_id}")
+            if isinstance(benchmark_name, str) and benchmark_name.strip():
+                result = run_agent_benchmark(
+                    conn,
+                    agent_id=agent_id,
+                    benchmark_name=benchmark_name,
+                    agent_command=agent.command,
+                )
+                results.append(
+                    {
+                        "agent_id": result.agent_id,
+                        "benchmark_name": result.benchmark_name,
+                        "status": result.status,
+                        "score": result.score,
+                        "duration_seconds": result.duration_seconds,
+                    }
+                )
+            else:
+                for item in run_all_agent_benchmarks(
+                    conn,
+                    agent_id=agent_id,
+                    agent_command=agent.command,
+                ):
+                    results.append(
+                        {
+                            "agent_id": item.agent_id,
+                            "benchmark_name": item.benchmark_name,
+                            "status": item.status,
+                            "score": item.score,
+                            "duration_seconds": item.duration_seconds,
+                        }
+                    )
+            conn.commit()
+        else:
+            for current_id, agent in self._config.agents.items():
+                if agent.role != "worker":
+                    continue
+                for item in run_all_agent_benchmarks(
+                    conn,
+                    agent_id=current_id,
+                    agent_command=agent.command,
+                ):
+                    results.append(
+                        {
+                            "agent_id": item.agent_id,
+                            "benchmark_name": item.benchmark_name,
+                            "status": item.status,
+                            "score": item.score,
+                            "duration_seconds": item.duration_seconds,
+                        }
+                    )
+            conn.commit()
+        return self._ok(
+            request,
+            {
+                "project_id": project_id,
+                "scope": scope,
+                "benchmarks": sorted(BENCHMARK_FIXTURES),
+                "results": results,
+            },
         )
 
     def _handle_operator_approval_create(

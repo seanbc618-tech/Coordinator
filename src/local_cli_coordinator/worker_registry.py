@@ -38,6 +38,11 @@ class WorkerRegistry:
         with self._lock:
             return self._processes.get(task_id)
 
+    def active_count(self) -> int:
+        """Return the number of in-process worker subprocesses."""
+        with self._lock:
+            return len(self._processes)
+
     def terminate(
         self,
         task_id: str,

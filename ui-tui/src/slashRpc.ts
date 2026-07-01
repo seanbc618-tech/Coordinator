@@ -289,9 +289,44 @@ export function buildSlashRpc(
   if (commandName === '/agents') {
     return {
       ok: true,
-      method: 'project.agents',
+      method: 'agent.list',
       params: {},
-      displayMethod: 'project.agents',
+      displayMethod: 'agent.list',
+    }
+  }
+
+  if (commandName === '/agent') {
+    const agentId = args.trim().split(/\s+/)[0] ?? ''
+    if (!agentId) {
+      return { ok: false, error: 'usage: /agent <id>' }
+    }
+    return {
+      ok: true,
+      method: 'agent.detail',
+      params: { agent_id: agentId },
+      displayMethod: 'agent.detail',
+    }
+  }
+
+  if (commandName === '/route') {
+    const taskId = args.trim().split(/\s+/)[0] ?? ''
+    if (!taskId) {
+      return { ok: false, error: 'usage: /route <task-id>' }
+    }
+    return {
+      ok: true,
+      method: 'agent.route.preview',
+      params: { task_id: taskId },
+      displayMethod: 'agent.route.preview',
+    }
+  }
+
+  if (commandName === '/benchmark agents') {
+    return {
+      ok: true,
+      method: 'agent.benchmark',
+      params: { scope: 'agents' },
+      displayMethod: 'agent.benchmark',
     }
   }
 
