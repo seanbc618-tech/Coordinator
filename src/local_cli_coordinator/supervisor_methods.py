@@ -293,6 +293,12 @@ class SupervisorMethods:
             "preference.approve": self._handle_preference_approve,
             "preference.reject": self._handle_preference_reject,
             "preference.delete": self._handle_preference_delete,
+            "release.backup.create": self._handle_release_backup_create,
+            "release.backup.verify": self._handle_release_backup_verify,
+            "release.restore": self._handle_release_restore,
+            "release.upgrade_preflight": self._handle_release_upgrade_preflight,
+            "release.extensions.list": self._handle_release_extensions_list,
+            "release.check": self._handle_release_check,
             "events.subscribe": self._handle_events_subscribe,
             "events.replay": self._handle_events_replay,
             "events.v2.replay": self._handle_events_v2_replay,
@@ -2885,6 +2891,94 @@ class SupervisorMethods:
             limit=limit,
         )
         return self._ok(request, {"events": events})
+
+    def _handle_release_backup_create(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .backup_manager import create_backup
+
+        if self._paths is None:
+            return self._error(request, "runtime paths not configured")
+        payload = create_backup(conn, self._paths)
+        return self._ok(request, payload)
+
+    def _handle_release_backup_verify(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .backup_manager import get_latest_backup_record, mark_backup_verified, verify_backup
+
+        if self._paths is None:
+            return self._error(request, "runtime paths not configured")
+        backup_path = request.params.get("backup_path")
+        if backup_path:
+            path = Path(str(backup_path))
+        else:
+            record = get_latest_backup_record(conn)
+            if record is None:
+                return self._error(request, "no backup records found")
+            path = Path(record.backup_path)
+        try:
+            payload = verify_backup(path)
+        except ValueError as exc:
+            return self._error(request, str(exc))
+        if payload.get("ok") and payload.get("backup_id"):
+            mark_backup_verified(conn, str(payload["backup_id"]))
+        return self._ok(request, payload)
+
+    def _handle_release_restore(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .backup_manager import restore_backup
+
+        if self._paths is None:
+            return self._error(request, "runtime paths not configured")
+        backup_path = request.params.get("backup_path")
+        if not backup_path:
+            return self._error(request, "backup_path is required")
+        apply = bool(request.params.get("apply"))
+        try:
+            payload = restore_backup(
+                Path(str(backup_path)),
+                self._paths,
+                dry_run=not apply,
+                apply=apply,
+                force_compatible_risk=bool(
+                    request.params.get("force_compatible_risk")
+                ),
+            )
+        except ValueError as exc:
+            return self._error(request, str(exc))
+        return self._ok(request, payload)
+
+    def _handle_release_upgrade_preflight(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .upgrade_preflight import run_upgrade_preflight
+
+        if self._paths is None:
+            return self._error(request, "runtime paths not configured")
+        payload = run_upgrade_preflight(conn, self._paths)
+        return self._ok(request, payload)
+
+    def _handle_release_extensions_list(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .extension_loader import list_extensions
+
+        if self._paths is None:
+            return self._error(request, "runtime paths not configured")
+        payload = list_extensions(conn, self._paths, reload=True)
+        return self._ok(request, payload)
+
+    def _handle_release_check(
+        self, conn: sqlite3.Connection, request: RequestEnvelope
+    ) -> ResponseEnvelope:
+        from .release_checks import run_release_checks
+
+        if self._paths is None:
+            return self._error(request, "runtime paths not configured")
+        payload = run_release_checks(conn, self._paths)
+        return self._ok(request, payload)
 
     @staticmethod
     def _ok(request: RequestEnvelope, result: dict[str, Any]) -> ResponseEnvelope:

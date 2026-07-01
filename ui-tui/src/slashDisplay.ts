@@ -642,6 +642,48 @@ export function formatSlashResponse(
       return `Preference deleted: ${rule.id}`
     }
 
+    case 'release.backup.create': {
+      return `Backup created: ${String(result.backup_id ?? '')} (${String(result.file_count ?? 0)} file(s))`
+    }
+
+    case 'release.backup.verify': {
+      const status = result.ok ? 'verified' : 'failed'
+      return `Backup ${String(result.backup_id ?? '')}: ${status}`
+    }
+
+    case 'release.upgrade_preflight': {
+      const findings = (result.findings as Array<Record<string, unknown>> | undefined) ?? []
+      const lines = [`Upgrade preflight: ${String(result.status ?? 'unknown')}`]
+      for (const finding of findings) {
+        lines.push(`- [${finding.severity}] ${finding.message}`)
+      }
+      return lines.join('\n')
+    }
+
+    case 'release.extensions.list': {
+      const extensions = (result.extensions as Array<Record<string, unknown>> | undefined)
+        ?? (result.enabled as Array<Record<string, unknown>> | undefined)
+        ?? []
+      if (!extensions.length) {
+        return 'Extensions — (none)'
+      }
+      return [
+        `Extensions (${extensions.length}):`,
+        ...extensions.map(ext =>
+          `- ${ext.id} ${ext.name}@${ext.version} [${ext.status}]`,
+        ),
+      ].join('\n')
+    }
+
+    case 'release.check': {
+      const checks = (result.checks as Array<Record<string, unknown>> | undefined) ?? []
+      const lines = [`Release check: ${String(result.status ?? 'unknown')}`]
+      for (const check of checks) {
+        lines.push(`- [${check.ok ? 'ok' : 'fail'}] ${check.name}`)
+      }
+      return lines.join('\n')
+    }
+
     default:
       return JSON.stringify(result, null, 2)
   }

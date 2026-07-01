@@ -734,6 +734,20 @@ export function buildSlashRpc(
     }
   }
 
+  if (
+    commandName === '/backup'
+    || commandName === '/upgrade-check'
+    || commandName === '/extensions'
+    || commandName === '/release-check'
+  ) {
+    return {
+      ok: true,
+      method,
+      params: {},
+      displayMethod: method,
+    }
+  }
+
   return { ok: true, method, params: { args }, displayMethod: method }
 }
 

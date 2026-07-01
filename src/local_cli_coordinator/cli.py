@@ -1370,6 +1370,11 @@ _ADMIN_COMMANDS = frozenset({
     "pause",
     "resume",
     "mock-provider",
+    "backup",
+    "restore",
+    "upgrade",
+    "extensions",
+    "release",
 })
 
 _PROMPT_FLAGS = frozenset({
@@ -1710,6 +1715,40 @@ def build_parser() -> argparse.ArgumentParser:
     mock_provider_run.add_argument("--fixture", required=True)
     mock_provider_run.add_argument("--prompt")
 
+    backup = subparsers.add_parser("backup")
+    backup_subparsers = backup.add_subparsers(dest="backup_command")
+    backup_subparsers.required = True
+    backup_create = backup_subparsers.add_parser("create")
+    backup_create.add_argument("--json", action="store_true")
+    backup_verify = backup_subparsers.add_parser("verify")
+    backup_verify.add_argument("--latest", action="store_true")
+    backup_verify.add_argument("--path", dest="backup_path")
+    backup_verify.add_argument("--json", action="store_true")
+
+    restore = subparsers.add_parser("restore")
+    restore.add_argument("backup_path")
+    restore.add_argument("--apply", action="store_true")
+    restore.add_argument("--force-compatible-risk", action="store_true")
+    restore.add_argument("--json", action="store_true")
+
+    upgrade = subparsers.add_parser("upgrade")
+    upgrade_subparsers = upgrade.add_subparsers(dest="upgrade_command")
+    upgrade_subparsers.required = True
+    upgrade_preflight = upgrade_subparsers.add_parser("preflight")
+    upgrade_preflight.add_argument("--json", action="store_true")
+
+    extensions = subparsers.add_parser("extensions")
+    extensions_subparsers = extensions.add_subparsers(dest="extensions_command")
+    extensions_subparsers.required = True
+    extensions_list = extensions_subparsers.add_parser("list")
+    extensions_list.add_argument("--json", action="store_true")
+
+    release = subparsers.add_parser("release")
+    release_subparsers = release.add_subparsers(dest="release_command")
+    release_subparsers.required = True
+    release_check = release_subparsers.add_parser("check")
+    release_check.add_argument("--json", action="store_true")
+
     return parser
 
 
@@ -1852,5 +1891,31 @@ def main(argv: list[str] | None = None) -> int:
         except MockProviderError as exc:
             print(str(exc), file=sys.stderr)
             return 2
+    if args.command == "backup":
+        from .release_commands import (
+            run_backup_create_command,
+            run_backup_verify_command,
+        )
+
+        if args.backup_command == "create":
+            return run_backup_create_command(args)
+        if args.backup_command == "verify":
+            return run_backup_verify_command(args)
+    if args.command == "restore":
+        from .release_commands import run_restore_command
+
+        return run_restore_command(args)
+    if args.command == "upgrade" and args.upgrade_command == "preflight":
+        from .release_commands import run_upgrade_preflight_command
+
+        return run_upgrade_preflight_command(args)
+    if args.command == "extensions" and args.extensions_command == "list":
+        from .release_commands import run_extensions_list_command
+
+        return run_extensions_list_command(args)
+    if args.command == "release" and args.release_command == "check":
+        from .release_commands import run_release_check_command
+
+        return run_release_check_command(args)
     print(f"{args.command}: command is registered")
     return 0

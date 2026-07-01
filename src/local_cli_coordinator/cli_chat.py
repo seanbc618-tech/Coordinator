@@ -2052,6 +2052,40 @@ def _handle_slash(
             user_reply=f"Preference deleted: {rule.get('id')}",
             intent="status_question",
         )
+    if command in {"/backup", "/upgrade-check", "/extensions", "/release-check"}:
+        method_params = {
+            "/backup": ("release.backup.create", {}),
+            "/upgrade-check": ("release.upgrade_preflight", {}),
+            "/extensions": ("release.extensions.list", {}),
+            "/release-check": ("release.check", {}),
+        }[command]
+        result, err, _envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method=method_params[0],
+            params=method_params[1],
+        )
+        if err is not None:
+            return err
+        assert result is not None
+        if command == "/backup":
+            reply = (
+                f"Backup created: {result.get('backup_id')} "
+                f"({result.get('file_count', 0)} file(s))"
+            )
+        elif command == "/upgrade-check":
+            reply = f"Upgrade preflight: {result.get('status', 'unknown')}"
+        elif command == "/extensions":
+            extensions = result.get("extensions") or result.get("enabled") or []
+            reply = f"Extensions: {len(extensions)} loaded"
+        else:
+            reply = f"Release check: {result.get('status', 'unknown')}"
+        return PromptOutcome(
+            ok=True,
+            project_id=project_id,
+            user_reply=reply,
+            intent="status_question",
+        )
     return _error_outcome("unknown_slash", f"Unknown command: {command}. Use /help.")
 
 
@@ -2834,6 +2868,22 @@ def _rpc_slash(
             project_id=project_id,
             method="preference.delete",
             params={"rule_id": rule_id},
+        )
+        if envelope is not None:
+            return envelope, 0 if envelope.ok else 1
+        return _outcome_to_rpc(err or _error_outcome("supervisor_error", "request failed")), 1
+    if command in {"/backup", "/upgrade-check", "/extensions", "/release-check"}:
+        method_params = {
+            "/backup": ("release.backup.create", {}),
+            "/upgrade-check": ("release.upgrade_preflight", {}),
+            "/extensions": ("release.extensions.list", {}),
+            "/release-check": ("release.check", {}),
+        }[command]
+        _, err, envelope = _send_rpc(
+            paths,
+            project_id=project_id,
+            method=method_params[0],
+            params=method_params[1],
         )
         if envelope is not None:
             return envelope, 0 if envelope.ok else 1

@@ -31,6 +31,18 @@ class RuntimePaths:
     def lock(self) -> Path:
         return self.state_dir / "supervisor.lock"
 
+    @property
+    def coordinator_home(self) -> Path:
+        return self.config_dir.parent
+
+    @property
+    def extensions_dir(self) -> Path:
+        return self.config_dir / "extensions"
+
+    @property
+    def backups_dir(self) -> Path:
+        return self.data_dir / "backups"
+
     def create(self) -> None:
         """Create all directories with mode 0o700."""
         for directory in (self.config_dir, self.data_dir, self.state_dir):

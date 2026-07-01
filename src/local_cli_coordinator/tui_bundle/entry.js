@@ -39407,7 +39407,19 @@ function formatHelpText() {
       continue;
     }
     if (cmd.name === "/evidence") {
-      lines.push("/evidence <task-id> - Show durable task evidence");
+      lines.push("/evidence [search [type]] | /evidence <task-id> - Warehouse search or task evidence");
+      continue;
+    }
+    if (cmd.name === "/artifacts") {
+      lines.push("/artifacts - List registered warehouse artifacts");
+      continue;
+    }
+    if (cmd.name === "/export evidence") {
+      lines.push("/export evidence [task-id] - Export redacted evidence bundle");
+      continue;
+    }
+    if (cmd.name === "/retention") {
+      lines.push("/retention [apply] - Plan evidence retention (dry-run default)");
       continue;
     }
     if (cmd.name === "/review") {
@@ -39536,7 +39548,19 @@ function formatHelpText() {
       continue;
     }
     if (cmd.name === "/agents") {
-      lines.push("/agents - Show agent scorecards and routing hints");
+      lines.push("/agents - List agent capability profiles and health");
+      continue;
+    }
+    if (cmd.name === "/agent") {
+      lines.push("/agent <id> - Show one agent capability profile");
+      continue;
+    }
+    if (cmd.name === "/route") {
+      lines.push("/route <task-id> - Preview routing decision for a task");
+      continue;
+    }
+    if (cmd.name === "/benchmark agents") {
+      lines.push("/benchmark agents - Run local fixture benchmarks for workers");
       continue;
     }
     if (cmd.name === "/overnight") {
@@ -39593,7 +39617,10 @@ var init_slash = __esm({
       { name: "/cancel", description: "Cancel a running task", method: "project.task.cancel", destructive: true },
       { name: "/dashboard", description: "Show multi-project dashboard", method: "supervisor.dashboard" },
       { name: "/strategy", description: "Show current milestone objective", method: "project.strategy" },
-      { name: "/evidence", description: "Show durable task evidence", method: "project.evidence" },
+      { name: "/evidence", description: "Search warehouse evidence or show task evidence", method: "evidence.search" },
+      { name: "/artifacts", description: "List registered warehouse artifacts", method: "artifact.list" },
+      { name: "/export evidence", description: "Export redacted evidence bundle", method: "evidence.export" },
+      { name: "/retention", description: "Plan evidence retention (dry-run default)", method: "retention.plan" },
       { name: "/review", description: "Show evidence review summary", method: "project.review" },
       { name: "/risk", description: "Show task risk assessment", method: "project.risk" },
       { name: "/merge-ready", description: "Check merge readiness under repo policy", method: "project.merge_ready" },
@@ -39614,7 +39641,8 @@ var init_slash = __esm({
       { name: "/why", description: "Explain task failure or file path", method: "operator.explain_failure" },
       { name: "/profile", description: "Show current project profile and preset", method: "project.profile" },
       { name: "/onboard", description: "Preview onboarding plan for current repo", method: "project.onboard.plan" },
-      { name: "/simulate", description: "Simulate preset autonomy without enabling it", method: "project.onboard.simulate" },
+      { name: "/simulate", description: "Forecast autonomy run without executing it", method: "simulation.run" },
+      { name: "/what-if", description: "Alias for autonomy simulation forecast", method: "simulation.run" },
       { name: "/fleet", description: "Scan a directory for Git repos to onboard", method: "fleet.scan" },
       { name: "/rollback-onboard", description: "Rollback onboarding config snapshot", method: "project.onboard.rollback", destructive: true },
       { name: "/doctor", description: "Run doctor repair dry-run", method: "operator.doctor" },
@@ -39643,7 +39671,18 @@ var init_slash = __esm({
       { name: "/jump", description: "Resolve task, log, or worktree target", method: "project.jump" },
       { name: "/open", description: "Alias of /jump", method: "project.jump" },
       { name: "/logs", description: "Show recent logs", method: "project.logs" },
-      { name: "/agents", description: "Show agent scorecards and routing hints", method: "project.agents" },
+      { name: "/agents", description: "List agent capability profiles and health", method: "agent.list" },
+      { name: "/agent", description: "Show one agent capability profile", method: "agent.detail" },
+      { name: "/route", description: "Preview routing decision for a task", method: "agent.route.preview" },
+      { name: "/benchmark agents", description: "Run local fixture benchmarks for workers", method: "agent.benchmark" },
+      { name: "/preferences", description: "List editable preference rules", method: "preference.list" },
+      { name: "/learned", description: "Show learned preference suggestions", method: "preference.list" },
+      { name: "/prefer", description: "Create or approve a preference rule", method: "preference.approve" },
+      { name: "/forget", description: "Delete a preference rule", method: "preference.delete" },
+      { name: "/backup", description: "Create a Coordinator home backup", method: "release.backup.create" },
+      { name: "/upgrade-check", description: "Run upgrade preflight checks", method: "release.upgrade_preflight" },
+      { name: "/extensions", description: "List declarative local extensions", method: "release.extensions.list" },
+      { name: "/release-check", description: "Run release readiness diagnostics", method: "release.check" },
       { name: "/pause", description: "Pause project scheduling", method: "project.pause" },
       { name: "/resume", description: "Resume project scheduling", method: "project.resume" },
       { name: "/stop", description: "Stop project at safe boundary", method: "project.stop", destructive: true },
@@ -39654,12 +39693,15 @@ var init_slash = __esm({
       { name: "/quit", description: "Detach the TUI", method: "system.quit" }
     ];
     MULTI_WORD_COMMANDS = [
+      "/what-if",
+      "/export evidence",
       "/ci failures",
       "/pr update",
       "/notify test",
       "/pause all",
       "/resume all",
-      "/rollback-onboard"
+      "/rollback-onboard",
+      "/benchmark agents"
     ];
     HELP_COMMAND_NAMES = /* @__PURE__ */ new Set([
       "/status",
@@ -39671,6 +39713,9 @@ var init_slash = __esm({
       "/dashboard",
       "/strategy",
       "/evidence",
+      "/artifacts",
+      "/export evidence",
+      "/retention",
       "/review",
       "/risk",
       "/merge-ready",
@@ -39703,6 +39748,9 @@ var init_slash = __esm({
       "/dismiss",
       "/recoveries",
       "/agents",
+      "/agent",
+      "/route",
+      "/benchmark agents",
       "/overnight",
       "/loop",
       "/plan",
@@ -40147,7 +40195,62 @@ function buildSlashRpc(commandName, method, args) {
       displayMethod: method
     };
   }
-  if (commandName === "/evidence" || commandName === "/review" || commandName === "/risk" || commandName === "/merge-ready" || commandName === "/deliver" || commandName === "/ci" || commandName === "/delivery") {
+  if (commandName === "/evidence") {
+    const parts = args.trim().split(/\s+/).filter(Boolean);
+    if (!parts.length || parts[0]?.toLowerCase() === "search") {
+      const artifactType = parts[0]?.toLowerCase() === "search" ? parts[1] : void 0;
+      return {
+        ok: true,
+        method: "evidence.search",
+        params: {
+          scope: "project",
+          ...artifactType ? { artifact_type: artifactType } : {}
+        },
+        displayMethod: "evidence.search"
+      };
+    }
+    if (parts[0]?.startsWith("task-")) {
+      return {
+        ok: true,
+        method: "project.evidence",
+        params: { task_id: parts[0] },
+        displayMethod: "project.evidence"
+      };
+    }
+    return {
+      ok: true,
+      method: "evidence.search",
+      params: { scope: "project", artifact_type: parts[0] },
+      displayMethod: "evidence.search"
+    };
+  }
+  if (commandName === "/artifacts") {
+    return {
+      ok: true,
+      method: "artifact.list",
+      params: {},
+      displayMethod: "artifact.list"
+    };
+  }
+  if (commandName === "/export evidence") {
+    const taskId = args.trim().split(/\s+/)[0];
+    return {
+      ok: true,
+      method: "evidence.export",
+      params: taskId ? { scope: "task", task_id: taskId } : { scope: "project" },
+      displayMethod: "evidence.export"
+    };
+  }
+  if (commandName === "/retention") {
+    const apply = args.trim().toLowerCase() === "apply";
+    return {
+      ok: true,
+      method: "retention.plan",
+      params: { scope: "project", mode: apply ? "apply" : "dry_run" },
+      displayMethod: "retention.plan"
+    };
+  }
+  if (commandName === "/review" || commandName === "/risk" || commandName === "/merge-ready" || commandName === "/deliver" || commandName === "/ci" || commandName === "/delivery") {
     const taskId = args.trim().split(/\s+/)[0] ?? "";
     if (!taskId) {
       return { ok: false, error: `usage: ${commandName} <task-id>` };
@@ -40170,9 +40273,41 @@ function buildSlashRpc(commandName, method, args) {
   if (commandName === "/agents") {
     return {
       ok: true,
-      method: "project.agents",
+      method: "agent.list",
       params: {},
-      displayMethod: "project.agents"
+      displayMethod: "agent.list"
+    };
+  }
+  if (commandName === "/agent") {
+    const agentId = args.trim().split(/\s+/)[0] ?? "";
+    if (!agentId) {
+      return { ok: false, error: "usage: /agent <id>" };
+    }
+    return {
+      ok: true,
+      method: "agent.detail",
+      params: { agent_id: agentId },
+      displayMethod: "agent.detail"
+    };
+  }
+  if (commandName === "/route") {
+    const taskId = args.trim().split(/\s+/)[0] ?? "";
+    if (!taskId) {
+      return { ok: false, error: "usage: /route <task-id>" };
+    }
+    return {
+      ok: true,
+      method: "agent.route.preview",
+      params: { task_id: taskId },
+      displayMethod: "agent.route.preview"
+    };
+  }
+  if (commandName === "/benchmark agents") {
+    return {
+      ok: true,
+      method: "agent.benchmark",
+      params: { scope: "agents" },
+      displayMethod: "agent.benchmark"
     };
   }
   if (commandName === "/overnight") {
@@ -40383,13 +40518,31 @@ function buildSlashRpc(commandName, method, args) {
       displayMethod: "project.onboard.plan"
     };
   }
-  if (commandName === "/simulate") {
-    const preset = args.trim().split(/\s+/)[0] ?? "overnight";
+  if (commandName === "/simulate" || commandName === "/what-if") {
+    const parts = args.trim().split(/\s+/).filter(Boolean);
+    if (parts[0]?.toLowerCase() === "preset") {
+      const preset = parts[1] ?? "overnight";
+      return {
+        ok: true,
+        method: "project.onboard.simulate",
+        params: { preset, path: "." },
+        displayMethod: "project.onboard.simulate"
+      };
+    }
+    if (parts[0]?.toLowerCase() === "project") {
+      const hours = parts[1] ? Number(parts[1]) : 8;
+      return {
+        ok: true,
+        method: "simulation.run",
+        params: { scope: "project", horizon_hours: Number.isFinite(hours) ? hours : 8 },
+        displayMethod: "simulation.run"
+      };
+    }
     return {
       ok: true,
-      method: "project.onboard.simulate",
-      params: { preset, path: "." },
-      displayMethod: "project.onboard.simulate"
+      method: "simulation.run",
+      params: { scope: "global", horizon_hours: 8 },
+      displayMethod: "simulation.run"
     };
   }
   if (commandName === "/fleet") {
@@ -40419,6 +40572,70 @@ function buildSlashRpc(commandName, method, args) {
       method: "project.profile",
       params: {},
       displayMethod: "project.profile"
+    };
+  }
+  if (commandName === "/preferences") {
+    return {
+      ok: true,
+      method: "preference.list",
+      params: {},
+      displayMethod: "preference.list"
+    };
+  }
+  if (commandName === "/learned") {
+    return {
+      ok: true,
+      method: "preference.list",
+      params: { learned_only: true },
+      displayMethod: "preference.list"
+    };
+  }
+  if (commandName === "/prefer") {
+    const parts = args.trim().split(/\s+/);
+    if (parts.length < 2) {
+      return { ok: false, error: "usage: /prefer <rule_type> <json-or-key=value>" };
+    }
+    const ruleType = parts[0];
+    const ruleText = parts.slice(1).join(" ");
+    let rule;
+    try {
+      if (ruleText.startsWith("{")) {
+        rule = JSON.parse(ruleText);
+      } else {
+        const eq = ruleText.indexOf("=");
+        if (eq < 0) {
+          return { ok: false, error: "rule body must be JSON or key=value" };
+        }
+        rule = { [ruleText.slice(0, eq).trim()]: ruleText.slice(eq + 1).trim() };
+      }
+    } catch {
+      return { ok: false, error: "rule body must be JSON or key=value" };
+    }
+    return {
+      ok: true,
+      method: "preference.approve",
+      params: { rule_type: ruleType, rule },
+      displayMethod: "preference.approve"
+    };
+  }
+  if (commandName === "/forget") {
+    const ruleId = args.trim().split(/\s+/)[0] ?? "";
+    if (!ruleId) {
+      return { ok: false, error: "usage: /forget <rule-id>" };
+    }
+    return {
+      ok: true,
+      method: "preference.delete",
+      params: { rule_id: ruleId },
+      displayMethod: "preference.delete"
+    };
+  }
+  if (commandName === "/backup" || commandName === "/upgrade-check" || commandName === "/extensions" || commandName === "/release-check") {
+    return {
+      ok: true,
+      method,
+      params: {},
+      displayMethod: method
     };
   }
   return { ok: true, method, params: { args }, displayMethod: method };
@@ -40841,7 +41058,8 @@ ${tail}`;
         )
       ].join("\n");
     }
-    case "project.agents": {
+    case "project.agents":
+    case "agent.list": {
       const agents = result.agents ?? [];
       if (!agents.length) {
         return "Agents \u2014 (none configured)";
@@ -40849,9 +41067,72 @@ ${tail}`;
       return [
         "Agents:",
         ...agents.map(
-          (a) => `- ${a.agent_id} [${a.role}] ok=${a.successes ?? 0} fail=${a.failures ?? 0} rank=${a.preferred_rank ?? "-"}`
+          (a) => `- ${a.agent_id} [${a.role}] enabled=${a.enabled ?? true} health=${a.health_status ?? "healthy"} ok=${a.successes ?? 0} fail=${a.failures ?? 0}`
         )
       ].join("\n");
+    }
+    case "agent.detail": {
+      const profile = result.profile ?? {};
+      return [
+        `Agent ${result.agent_id} [${result.role}]`,
+        `  risk=${profile.risk_tier ?? "normal"} review=${profile.review_strength ?? "unknown"}`,
+        `  skills=${profile.skills?.join(", ") ?? ""}`
+      ].join("\n");
+    }
+    case "agent.route.preview": {
+      const selected = String(result.selected_agent_id ?? "");
+      const candidates = result.candidates ?? [];
+      const lines = [
+        `Route ${result.task_id}: ${selected || "(none)"}`,
+        `Reason: ${result.reason ?? ""}`
+      ];
+      for (const item of candidates.slice(0, 5)) {
+        lines.push(
+          `  - ${item.agent_id} score=${item.score} eligible=${item.eligible}`
+        );
+      }
+      return lines.join("\n");
+    }
+    case "agent.benchmark": {
+      const runs = result.results ?? [];
+      if (!runs.length) {
+        return "Benchmarks \u2014 no runs";
+      }
+      return [
+        "Benchmarks:",
+        ...runs.map(
+          (r) => `- ${r.agent_id} ${r.benchmark_name} [${r.status}] score=${r.score}`
+        )
+      ].join("\n");
+    }
+    case "evidence.search": {
+      const count = Number(result.count ?? 0);
+      return `Evidence search \u2014 ${count} artifact(s)`;
+    }
+    case "artifact.list": {
+      const count = Number(result.count ?? 0);
+      return `Artifacts \u2014 ${count} registered`;
+    }
+    case "evidence.export": {
+      return `Export ${String(result.export_id ?? "")} [${String(result.status ?? "")}]`;
+    }
+    case "retention.plan": {
+      const plan = result.plan ?? {};
+      return `Retention ${String(result.mode ?? "dry_run")} \u2014 ${Number(plan.candidate_count ?? 0)} candidate(s)`;
+    }
+    case "simulation.run": {
+      const report = result.report ?? {};
+      const scheduled = report.scheduled_projects ?? [];
+      const skipped = report.skipped_projects ?? [];
+      const warnings = report.safety_warnings ?? [];
+      const lines = [
+        `FORECAST run ${String(result.simulation_run_id ?? "")}`,
+        `Would schedule: ${scheduled.length}; would skip: ${skipped.length}`
+      ];
+      if (warnings.length) {
+        lines.push(`Warnings: ${warnings.slice(0, 3).join("; ")}`);
+      }
+      return lines.join("\n");
     }
     case "project.overnight": {
       const latest = result.latest_summary;
@@ -40898,6 +41179,74 @@ ${goal.objective}`;
         return "Goal \u2014 none. Use /goal <objective> to create one.";
       }
       return JSON.stringify(result, null, 2);
+    }
+    case "preference.list": {
+      const rules = result.rules ?? [];
+      if (!rules.length) {
+        return "Preferences \u2014 (none)";
+      }
+      return [
+        `Preferences (${rules.length}):`,
+        ...rules.map(
+          (rule) => `- ${rule.id} [${rule.status}] ${rule.rule_type}: ${JSON.stringify(rule.rule)}`
+        )
+      ].join("\n");
+    }
+    case "preference.approve": {
+      const rule = result.rule;
+      if (!rule) {
+        return "Preference approved";
+      }
+      return `Preference active: ${rule.id} [${rule.status}] ${rule.rule_type}`;
+    }
+    case "preference.reject": {
+      const rule = result.rule;
+      if (!rule) {
+        return "Preference rejected";
+      }
+      return `Preference rejected: ${rule.id}`;
+    }
+    case "preference.delete": {
+      const rule = result.rule;
+      if (!rule) {
+        return "Preference deleted";
+      }
+      return `Preference deleted: ${rule.id}`;
+    }
+    case "release.backup.create": {
+      return `Backup created: ${String(result.backup_id ?? "")} (${String(result.file_count ?? 0)} file(s))`;
+    }
+    case "release.backup.verify": {
+      const status = result.ok ? "verified" : "failed";
+      return `Backup ${String(result.backup_id ?? "")}: ${status}`;
+    }
+    case "release.upgrade_preflight": {
+      const findings = result.findings ?? [];
+      const lines = [`Upgrade preflight: ${String(result.status ?? "unknown")}`];
+      for (const finding of findings) {
+        lines.push(`- [${finding.severity}] ${finding.message}`);
+      }
+      return lines.join("\n");
+    }
+    case "release.extensions.list": {
+      const extensions = result.extensions ?? result.enabled ?? [];
+      if (!extensions.length) {
+        return "Extensions \u2014 (none)";
+      }
+      return [
+        `Extensions (${extensions.length}):`,
+        ...extensions.map(
+          (ext) => `- ${ext.id} ${ext.name}@${ext.version} [${ext.status}]`
+        )
+      ].join("\n");
+    }
+    case "release.check": {
+      const checks = result.checks ?? [];
+      const lines = [`Release check: ${String(result.status ?? "unknown")}`];
+      for (const check2 of checks) {
+        lines.push(`- [${check2.ok ? "ok" : "fail"}] ${check2.name}`);
+      }
+      return lines.join("\n");
     }
     default:
       return JSON.stringify(result, null, 2);
