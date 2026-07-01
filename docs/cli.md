@@ -159,6 +159,11 @@ Supported commands:
 
 ```bash
 coordinator doctor --json
+coordinator doctor --repair --dry-run --json
+coordinator doctor --repair --apply --json
+coordinator pause --all --reason "overnight" --json
+coordinator resume --all --json
+coordinator operator summary --morning --json
 coordinator supervisor status --json
 coordinator config --json
 coordinator config explain --json

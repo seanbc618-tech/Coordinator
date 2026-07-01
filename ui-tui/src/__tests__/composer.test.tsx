@@ -170,7 +170,7 @@ describe('Composer: slash completion', () => {
 
   it('completes /h to heal and help commands', () => {
     const results = completePartial('/h')
-    expect(results).toEqual(['/heal', '/help'])
+    expect(results).toEqual(['/heal', '/health', '/help'])
   })
 
   it('returns empty for non-slash input', () => {

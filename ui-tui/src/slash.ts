@@ -37,7 +37,13 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/brain', description: 'Show project brain snapshot', method: 'project.brain' },
   { name: '/map', description: 'Show project structure map', method: 'project.map' },
   { name: '/where', description: 'Find where to make a change', method: 'project.where' },
-  { name: '/why', description: 'Explain a file path', method: 'project.why' },
+  { name: '/why', description: 'Explain task failure or file path', method: 'operator.explain_failure' },
+  { name: '/doctor', description: 'Run doctor repair dry-run', method: 'operator.doctor' },
+  { name: '/repair', description: 'Plan or apply safe repairs (dry-run default)', method: 'operator.repair' },
+  { name: '/health', description: 'Show agent health from durable state', method: 'operator.health' },
+  { name: '/morning', description: 'Show morning handoff summary', method: 'operator.morning' },
+  { name: '/pause all', description: 'Pause all projects globally', method: 'global.pause', destructive: true },
+  { name: '/resume all', description: 'Resume projects paused by global pause', method: 'global.resume' },
   { name: '/impact', description: 'Show impact of changing a file', method: 'project.impact' },
   { name: '/context', description: 'Show task context packet', method: 'project.context' },
   { name: '/inbox', description: 'Show operator inbox for this project', method: 'operator.inbox' },
@@ -87,7 +93,13 @@ export interface ParsedUnknownCommand {
 
 export type Parsed = ParsedSlash | ParsedMessage | ParsedUnknownCommand
 
-const MULTI_WORD_COMMANDS = ['/ci failures', '/pr update', '/notify test'] as const
+const MULTI_WORD_COMMANDS = [
+  '/ci failures',
+  '/pr update',
+  '/notify test',
+  '/pause all',
+  '/resume all',
+] as const
 
 export function parse(input: string): Parsed {
   const trimmed = input.trim()

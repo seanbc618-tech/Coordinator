@@ -28,6 +28,32 @@ node --version
 
 Then retry `coordinator`.
 
+## Stale lock or socket after a crash
+
+**Symptom:** Supervisor will not start; `coordinator doctor` warns about stale
+state.
+
+**Fix:** Run a safe dry-run first, then apply only whitelisted repairs:
+
+```bash
+coordinator doctor --repair --dry-run --json
+coordinator doctor --repair --apply --json
+```
+
+Repairs never modify Git remotes, source repos, or task history. Stale lock/socket
+removal requires the path to live under `COORDINATOR_HOME`, rejects symlinks, and
+verifies the lock PID is absent before deletion.
+
+## Global pause before maintenance
+
+```bash
+coordinator pause --all --reason "maintenance" --json
+coordinator resume --all --json
+```
+
+Global pause does not kill running workers. `resume --all` restores only projects
+paused by the most recent global pause unless you pass `--include-manual`.
+
 ## `error: Supervisor failed to become ready`
 
 **Symptom:** Launcher or first TUI connect fails after ~30 seconds.
