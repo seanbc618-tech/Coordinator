@@ -123,7 +123,11 @@ class Phase13RpcTests(unittest.TestCase):
         transition_task(self.conn, self.task_id, "awaiting_human", "needs review")
         self.conn.commit()
         self.config = load_config_for_paths(self.paths)
-        self.methods = SupervisorMethods(config=self.config, broker=EventBroker())
+        self.methods = SupervisorMethods(
+            config=self.config,
+            broker=EventBroker(),
+            paths=self.paths,
+        )
         self.item = upsert_operator_item(
             self.conn,
             project_id=self.project_id,
@@ -166,6 +170,20 @@ class Phase13RpcTests(unittest.TestCase):
         )
         self.assertTrue(resp.ok, resp.error)
         self.assertIn("channels", resp.result)
+
+    def test_operator_notify_rpc_uses_runtime_paths_state_dir(self) -> None:
+        resp = self.methods.handle(
+            self.conn,
+            _request(
+                "operator.notify",
+                self.project_id,
+                dry_run=True,
+                args="test",
+            ),
+        )
+        self.assertTrue(resp.ok, resp.error)
+        self.assertTrue(resp.result.get("dry_run"))
+        self.assertIn("deliveries", resp.result)
 
     def test_operator_approval_approve_rpc_consumes_token(self) -> None:
         created = self.methods.handle(

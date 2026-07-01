@@ -1537,7 +1537,7 @@ class SupervisorMethods:
             commit=True,
         )
         items = list_operator_items(conn, project_id=project_id)
-        state_dir = self._paths.state if self._paths is not None else Path("state")
+        state_dir = self._paths.state_dir if self._paths is not None else Path("state")
         payload = dispatch_project_notifications(
             conn,
             project_id=project_id,
